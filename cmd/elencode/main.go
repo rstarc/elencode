@@ -58,13 +58,18 @@ func runTool(name string, input json.RawMessage) (string, error) {
 	}
 }
 
+const ANTHROPIC_API_KEY_ENV_VAR_NAME = "ANTHROPIC_API_KEY"
+
 func main() {
 
+	// Check for API Key
+	if _, ok := os.LookupEnv(ANTHROPIC_API_KEY_ENV_VAR_NAME); !ok {
+		fmt.Printf("API Key Environment Variable (%s) not set, exiting\n", ANTHROPIC_API_KEY_ENV_VAR_NAME)
+		os.Exit(1)
+	}
+
 	// Initialize Client
-	// TODO: Check for API Key
-	// TODO: Verify API Key
 	client := anthropic.NewClient()
-	// option.WithAPIKey("my-anthropic-api-key"), // defaults to os.LookupEnv("ANTHROPIC_API_KEY")
 
 	// Define Tools
 	tools := []anthropic.ToolUnionParam{
@@ -110,7 +115,7 @@ func main() {
 		// Evaluate response and resolve tool calls until response is returned
 		for {
 			response, err := client.Messages.New(context.TODO(), anthropic.MessageNewParams{
-				MaxTokens: 1024,
+				MaxTokens: 4096,
 				Messages:  sessionMessages,
 				Model:     anthropic.ModelClaudeHaiku4_5,
 				Tools:     tools,

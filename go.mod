@@ -1,4 +1,4 @@
-module github.com/rstarc/tedd-code
+module github.com/rstarc/elencode
 
 go 1.26.1
 

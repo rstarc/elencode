@@ -1,8 +1,8 @@
-BINARY_NAME=tedd-code
+BINARY_NAME=elencode
 
 .PHONY: build
 build:
-	go build -o ./bin/$(BINARY_NAME) ./cmd/tedd-code 
+	go build -o ./bin/$(BINARY_NAME) ./cmd/elencode
 
 .PHONY: run
 run: build
