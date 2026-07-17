@@ -7,58 +7,31 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"strings"
-	"time"
+
+	"github.com/rstarc/elencode/internal/tools"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	// "github.com/anthropics/anthropic-sdk-go/option"
 )
 
-func pingHostTool(host pingInput) (string, error) {
-
-	var cmd *exec.Cmd
-	timeout := 5 * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	cmd = exec.CommandContext(ctx, "ping", host.Host)
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		// ping returns non-zero on packet loss/unreachable — still return output
-		if len(out) > 0 {
-			return string(out), nil
-		}
-		return "", err
-	}
-	return string(out), nil
-
-}
-
-type pingInput struct {
-	Host string `json:"host"`
-}
-
-func runTool(name string, input json.RawMessage) (string, error) {
-	switch name {
-	case "ping":
-		var p pingInput
-		if err := json.Unmarshal(input, &p); err != nil {
-			return "", fmt.Errorf("error parsing input: %v", err)
-		}
-
-		fmt.Printf("[%s %s]\n", name, input)
-		result, err := pingHostTool(p)
-
-		fmt.Printf("[>\n%s>]\n", result)
-		return result, err
-	default:
-		return "unknown tool", fmt.Errorf("Unknown tool!")
-	}
+type Tool interface {
+	Name() string
+	Description() string
+	InputSchema() anthropic.ToolInputSchemaParam
+	Execute(ctx context.Context, input json.RawMessage) (string, error)
 }
 
 const ANTHROPIC_API_KEY_ENV_VAR_NAME = "ANTHROPIC_API_KEY"
+
+func toolParam(t Tool) *anthropic.ToolParam {
+	return &anthropic.ToolParam{
+		Name:        t.Name(),
+		Description: anthropic.String(t.Description()),
+		InputSchema: t.InputSchema(),
+	}
+
+}
 
 func main() {
 
@@ -68,22 +41,22 @@ func main() {
 		os.Exit(1)
 	}
 
+	ctx := context.Background()
+
 	// Initialize Client
 	client := anthropic.NewClient()
 
 	// Define Tools
+
+	// TODO: Use os.OpenRoot instead
+	root := os.DirFS(".")
+	readTool := tools.NewReadTool(root)
+
+	toolMap := map[string]Tool{readTool.Name(): &readTool}
+
 	tools := []anthropic.ToolUnionParam{
 		{
-			OfTool: &anthropic.ToolParam{
-				Name:        "ping",
-				Description: anthropic.String("Ping a host on the network"),
-				InputSchema: anthropic.ToolInputSchemaParam{
-					Properties: map[string]any{
-						"host": map[string]any{"type": "string", "description": "Hostname or IP address to ping"},
-					},
-					Required: []string{"host"},
-				},
-			},
+			OfTool: toolParam(&readTool),
 		},
 	}
 
@@ -147,7 +120,7 @@ func main() {
 			for _, block := range response.Content {
 				if toolUseBlock, ok := block.AsAny().(anthropic.ToolUseBlock); ok {
 					fmt.Printf("[tool: %s]\n", toolUseBlock.Name)
-					result, err := runTool(toolUseBlock.Name, toolUseBlock.Input)
+					result, err := toolMap[toolUseBlock.Name].Execute(ctx, toolUseBlock.Input)
 					toolResults = append(toolResults, anthropic.NewToolResultBlock(toolUseBlock.ID, result, err != nil))
 				}
 			}
