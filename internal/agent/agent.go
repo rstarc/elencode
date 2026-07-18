@@ -22,27 +22,6 @@ type Agent struct {
 	Tools map[string]Tool
 }
 
-func toolParam(t Tool) *anthropic.ToolParam {
-	return &anthropic.ToolParam{
-		Name:        t.Name(),
-		Description: anthropic.String(t.Description()),
-		InputSchema: t.InputSchema(),
-	}
-}
-
-func (a Agent) AnthropicTools() []anthropic.ToolUnionParam {
-	tools := []anthropic.ToolUnionParam{}
-
-	for _, tool := range a.Tools {
-		t := anthropic.ToolUnionParam{
-			OfTool: toolParam(tool),
-		}
-		tools = append(tools, t)
-	}
-	return tools
-
-}
-
 func (a Agent) UseTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
 	fmt.Printf("[tool: %s]\n", name)
 	result, err := a.Tools[name].Execute(ctx, input)
