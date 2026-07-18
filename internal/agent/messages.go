@@ -16,13 +16,20 @@ type Message struct {
 	Content []Block
 }
 
+func NewUserMessage(content []Block) Message {
+	return Message{
+		Role:    RoleUser,
+		Content: content,
+	}
+}
+
 // Block is a part of a message
 // By definining it as an interface with an unexported function, we emulate a sum type in Go
 type Block interface{ block() }
 
 type TextBlock struct{ Text string }
 
-func (TextBlock) block() {}
+func (b TextBlock) block() {}
 
 type ToolUseBlock struct {
 	ID    string // opaque, provider specific. never change this
@@ -30,7 +37,7 @@ type ToolUseBlock struct {
 	Input json.RawMessage
 }
 
-func (ToolUseBlock) block() {}
+func (b ToolUseBlock) block() {}
 
 type ToolResultBlock struct {
 	ToolUseID string // ID of ToolUseBlock
@@ -38,4 +45,12 @@ type ToolResultBlock struct {
 	IsError   bool   // Whether the ToolUse failed
 }
 
-func (ToolResultBlock) block() {}
+func (b ToolResultBlock) block() {}
+
+func NewToolResultBlock(id string, content string, isError bool) ToolResultBlock {
+	return ToolResultBlock{
+		ToolUseID: id,
+		Content:   content,
+		IsError:   isError,
+	}
+}

@@ -8,8 +8,8 @@ import (
 	"os"
 	"strings"
 
-	"github.com/anthropics/anthropic-sdk-go"
-	"github.com/rstarc/elencode/internal/agent"
+	llm "github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/provider/anthropic"
 )
 
 const ANTHROPIC_API_KEY_ENV_VAR_NAME = "ANTHROPIC_API_KEY"
@@ -25,16 +25,15 @@ func main() {
 	ctx := context.Background()
 
 	// Initialize Client
-	client := anthropic.NewClient()
+	client := anthropic.New()
 
 	// Define Agent
 
 	// TODO: Use os.OpenRoot instead
 	root := os.DirFS(".")
-	agent := agent.NewAgent(root)
-	tools := agent.AnthropicTools()
+	agent := llm.NewAgent(root)
 
-	var sessionMessages []anthropic.MessageParam
+	var sessionMessages []llm.Message
 	scanner := bufio.NewScanner(os.Stdin)
 
 	// REPL
@@ -56,30 +55,36 @@ func main() {
 		fmt.Println()
 
 		// Add user message to session
-		userMessage := anthropic.NewUserMessage(anthropic.NewTextBlock(userInput))
+		// userMessage := anthropic.NewUserMessage(anthropic.NewTextBlock(userInput))
+		userMessage := llm.Message{
+			Role:    llm.RoleUser,
+			Content: []llm.Block{llm.TextBlock{Text: userInput}},
+		}
 		sessionMessages = append(sessionMessages, userMessage)
 
 		// Evaluate response and resolve tool calls until response is returned
 		for {
-			response, err := client.Messages.New(ctx, anthropic.MessageNewParams{
-				MaxTokens: 4096,
-				Messages:  sessionMessages,
-				Model:     anthropic.ModelClaudeHaiku4_5,
-				Tools:     tools,
-			})
+			response, err := client.Process(ctx,
+				llm.Request{
+					MaxTokens: 4096,
+					Tools:     []llm.Tool{}, // TODO
+					Messages:  sessionMessages,
+				},
+			)
 
 			if err != nil {
 				log.Fatal(err)
 			}
 
 			// Add response to session
-			sessionMessages = append(sessionMessages, response.ToParam())
+			sessionMessages = append(sessionMessages, response.Message)
 
 			// Check if the output is ready for the user
-			if response.StopReason != anthropic.StopReasonToolUse {
+			if response.StopReason != llm.StopReasonToolUse {
 				// Print output response text to user
-				for _, block := range response.Content {
-					if textBlock, ok := block.AsAny().(anthropic.TextBlock); ok {
+				for _, block := range response.Message.Content {
+					// TODO: Fix block type conversion
+					if textBlock, ok := block.(llm.TextBlock); ok {
 						fmt.Println(textBlock.Text)
 					}
 				}
@@ -90,17 +95,16 @@ func main() {
 			}
 
 			// Evaluate tool use
-			var toolResults []anthropic.ContentBlockParamUnion
-			for _, block := range response.Content {
-				if toolUseBlock, ok := block.AsAny().(anthropic.ToolUseBlock); ok {
-					fmt.Printf("[tool: %s]\n", toolUseBlock.Name)
+			var toolResults []llm.Block
+			for _, block := range response.Message.Content {
+				if toolUseBlock, ok := block.(llm.ToolUseBlock); ok {
 					result, err := agent.UseTool(ctx, toolUseBlock.Name, toolUseBlock.Input)
-					toolResults = append(toolResults, anthropic.NewToolResultBlock(toolUseBlock.ID, result, err != nil))
+					toolResults = append(toolResults, llm.NewToolResultBlock(toolUseBlock.ID, result, err != nil))
 				}
 			}
 
 			// Add tool result
-			sessionMessages = append(sessionMessages, anthropic.NewUserMessage(toolResults...))
+			sessionMessages = append(sessionMessages, llm.NewUserMessage(toolResults))
 		}
 
 	}

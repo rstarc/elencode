@@ -20,3 +20,12 @@ type Response struct {
 }
 
 type StopReason string
+
+const (
+	StopReasonEndTurn      StopReason = "end_turn"
+	StopReasonMaxTokens    StopReason = "max_tokens"
+	StopReasonStopSequence StopReason = "stop_sequence"
+	StopReasonToolUse      StopReason = "tool_use"
+	StopReasonPauseTurn    StopReason = "pause_turn"
+	StopReasonRefusal      StopReason = "refusal"
+)
