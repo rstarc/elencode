@@ -3,35 +3,16 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
 	"os"
 	"strings"
 
-	"github.com/rstarc/elencode/internal/tools"
-
 	"github.com/anthropics/anthropic-sdk-go"
-	// "github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/rstarc/elencode/internal/agent"
 )
 
-type Tool interface {
-	Name() string
-	Description() string
-	InputSchema() anthropic.ToolInputSchemaParam
-	Execute(ctx context.Context, input json.RawMessage) (string, error)
-}
-
 const ANTHROPIC_API_KEY_ENV_VAR_NAME = "ANTHROPIC_API_KEY"
-
-func toolParam(t Tool) *anthropic.ToolParam {
-	return &anthropic.ToolParam{
-		Name:        t.Name(),
-		Description: anthropic.String(t.Description()),
-		InputSchema: t.InputSchema(),
-	}
-
-}
 
 func main() {
 
@@ -46,19 +27,12 @@ func main() {
 	// Initialize Client
 	client := anthropic.NewClient()
 
-	// Define Tools
+	// Define Agent
 
 	// TODO: Use os.OpenRoot instead
 	root := os.DirFS(".")
-	readTool := tools.NewReadTool(root)
-
-	toolMap := map[string]Tool{readTool.Name(): &readTool}
-
-	tools := []anthropic.ToolUnionParam{
-		{
-			OfTool: toolParam(&readTool),
-		},
-	}
+	agent := agent.NewAgent(root)
+	tools := agent.AnthropicTools()
 
 	var sessionMessages []anthropic.MessageParam
 	scanner := bufio.NewScanner(os.Stdin)
@@ -87,7 +61,7 @@ func main() {
 
 		// Evaluate response and resolve tool calls until response is returned
 		for {
-			response, err := client.Messages.New(context.TODO(), anthropic.MessageNewParams{
+			response, err := client.Messages.New(ctx, anthropic.MessageNewParams{
 				MaxTokens: 4096,
 				Messages:  sessionMessages,
 				Model:     anthropic.ModelClaudeHaiku4_5,
@@ -120,7 +94,7 @@ func main() {
 			for _, block := range response.Content {
 				if toolUseBlock, ok := block.AsAny().(anthropic.ToolUseBlock); ok {
 					fmt.Printf("[tool: %s]\n", toolUseBlock.Name)
-					result, err := toolMap[toolUseBlock.Name].Execute(ctx, toolUseBlock.Input)
+					result, err := agent.UseTool(ctx, toolUseBlock.Name, toolUseBlock.Input)
 					toolResults = append(toolResults, anthropic.NewToolResultBlock(toolUseBlock.ID, result, err != nil))
 				}
 			}
