@@ -19,20 +19,23 @@ type Tool interface {
 
 type Agent struct {
 	// TODO: ContextWindow
-	Tools map[string]Tool
+	ToolsMap map[string]Tool
+	Tools    []Tool
 }
 
 func (a Agent) UseTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
 	fmt.Printf("[tool: %s]\n", name)
-	result, err := a.Tools[name].Execute(ctx, input)
+	result, err := a.ToolsMap[name].Execute(ctx, input)
 	fmt.Printf("[>\n %s\n<]\n", result)
 	return result, err
 }
 
 func NewAgent(root fs.FS) Agent {
 	readTool := tools.NewReadTool(root)
-	toolMap := map[string]Tool{
-		readTool.Name(): &readTool,
+	tools := []Tool{&readTool}
+	toolMap := map[string]Tool{}
+	for _, tool := range tools {
+		toolMap[tool.Name()] = tool
 	}
-	return Agent{Tools: toolMap}
+	return Agent{ToolsMap: toolMap, Tools: tools}
 }

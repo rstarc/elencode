@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	llm "github.com/rstarc/elencode/internal/agent"
-	"github.com/rstarc/elencode/internal/provider/anthropic"
+	provider "github.com/rstarc/elencode/internal/provider/anthropic"
 )
 
 const ANTHROPIC_API_KEY_ENV_VAR_NAME = "ANTHROPIC_API_KEY"
@@ -25,7 +25,7 @@ func main() {
 	ctx := context.Background()
 
 	// Initialize Client
-	client := anthropic.New()
+	client := provider.New()
 
 	// Define Agent
 
@@ -67,7 +67,7 @@ func main() {
 			response, err := client.Process(ctx,
 				llm.Request{
 					MaxTokens: 4096,
-					Tools:     []llm.Tool{}, // TODO
+					Tools:     agent.Tools,
 					Messages:  sessionMessages,
 				},
 			)
