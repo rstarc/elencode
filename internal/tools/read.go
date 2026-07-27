@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+
+	"github.com/rstarc/elencode/internal/agent"
 )
 
-var readToolInputSchema InputSchema = InputSchema{
-	Properties: map[string]Property{
+var readToolInputSchema agent.InputSchema = agent.InputSchema{
+	Properties: map[string]agent.Property{
 		"path": {Type: "string", Description: "Path to the file, relative to the workspace root"},
 	},
 	Required: []string{"path"},
@@ -18,20 +20,19 @@ type readToolInput struct {
 	Path string `json:"path"`
 }
 
-type ReadTool struct {
-	root fs.FS // Workspace Root
+func NewReadTool(root fs.FS) agent.Tool {
+	return agent.Tool{
+		Name:             "read",
+		Description:      "Read a file.",
+		InputSchema:      readToolInputSchema,
+		RequiresApproval: false,
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+			return readFile(ctx, input, root)
+		},
+	}
 }
 
-func NewReadTool(root fs.FS) ReadTool {
-	return ReadTool{root: root}
-}
-
-func (rt ReadTool) Name() string             { return "read" }
-func (rt ReadTool) Description() string      { return "Read a file" }
-func (rt ReadTool) InputSchema() InputSchema { return readToolInputSchema }
-func (rt ReadTool) RequiresApproval() bool   { return false }
-
-func (rt ReadTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+func readFile(ctx context.Context, input json.RawMessage, root fs.FS) (string, error) {
 	// TOOD: Implement offset and limit?
 
 	// Decode input
@@ -44,7 +45,7 @@ func (rt ReadTool) Execute(ctx context.Context, input json.RawMessage) (string, 
 		return "", fmt.Errorf("read: %q is not a valid workspace path", toolInput.Path)
 	}
 
-	fileBytes, err := fs.ReadFile(rt.root, toolInput.Path)
+	fileBytes, err := fs.ReadFile(root, toolInput.Path)
 	if err != nil {
 		return "", fmt.Errorf("read: %w", err)
 	}

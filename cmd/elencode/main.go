@@ -8,8 +8,9 @@ import (
 	"os"
 	"strings"
 
-	llm "github.com/rstarc/elencode/internal/agent"
-	provider "github.com/rstarc/elencode/internal/provider/anthropic"
+	"github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/provider/anthropic"
+	"github.com/rstarc/elencode/internal/tools"
 )
 
 const ANTHROPIC_API_KEY_ENV_VAR_NAME = "ANTHROPIC_API_KEY"
@@ -25,11 +26,17 @@ func main() {
 	ctx := context.Background()
 
 	// Initialize agent
-	provider := provider.New()
+	provider := anthropic.New()
 
 	// TODO: Use os.OpenRoot instead
 	root := os.DirFS(".")
-	agent := llm.New(root, provider)
+	tools := []agent.Tool{
+		tools.NewReadTool(root),
+		tools.NewWriteTool(root),
+		tools.NewEditTool(root),
+		tools.NewBashTool(root),
+	}
+	agentConfig := agent.New(provider, tools)
 
 	scanner := bufio.NewScanner(os.Stdin)
 
@@ -52,26 +59,26 @@ func main() {
 		fmt.Println()
 
 		// Add user message to context
-		userMessage := llm.NewUserMessage([]llm.Block{llm.TextBlock{Text: userInput}})
-		agent.ContextWindow = append(agent.ContextWindow, userMessage)
+		userMessage := agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: userInput}})
+		agentConfig.ContextWindow = append(agentConfig.ContextWindow, userMessage)
 
 		// Evaluate response and resolve tool calls until response is returned
 		for {
-			response, err := agent.ProcessTurn(ctx)
+			response, err := agentConfig.ProcessTurn(ctx)
 
 			if err != nil {
 				log.Fatal(err)
 			}
 
 			// Add response to context
-			agent.ContextWindow = append(agent.ContextWindow, response.Message)
+			agentConfig.ContextWindow = append(agentConfig.ContextWindow, response.Message)
 
 			// Check if the output is ready for the user
-			if response.StopReason != llm.StopReasonToolUse {
+			if response.StopReason != agent.StopReasonToolUse {
 				// Print output response text to user
 				for _, block := range response.Message.Content {
 					// TODO: Fix block type conversion
-					if textBlock, ok := block.(llm.TextBlock); ok {
+					if textBlock, ok := block.(agent.TextBlock); ok {
 						fmt.Println(textBlock.Text)
 					}
 				}
@@ -82,16 +89,16 @@ func main() {
 			}
 
 			// Evaluate tool use
-			var toolResults []llm.Block
+			var toolResults []agent.Block
 			for _, block := range response.Message.Content {
-				if toolUseBlock, ok := block.(llm.ToolUseBlock); ok {
-					result, err := agent.UseTool(ctx, scanner, toolUseBlock.Name, toolUseBlock.Input)
-					toolResults = append(toolResults, llm.NewToolResultBlock(toolUseBlock.ID, result, err != nil))
+				if toolUseBlock, ok := block.(agent.ToolUseBlock); ok {
+					result, err := agentConfig.UseTool(ctx, scanner, toolUseBlock.Name, toolUseBlock.Input)
+					toolResults = append(toolResults, agent.NewToolResultBlock(toolUseBlock.ID, result, err != nil))
 				}
 			}
 
 			// Add tool result
-			agent.ContextWindow = append(agent.ContextWindow, llm.NewUserMessage(toolResults))
+			agentConfig.ContextWindow = append(agentConfig.ContextWindow, agent.NewUserMessage(toolResults))
 		}
 	}
 }

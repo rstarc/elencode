@@ -7,11 +7,13 @@ import (
 	"io/fs"
 	"os/exec"
 	"time"
+
+	"github.com/rstarc/elencode/internal/agent"
 )
 
 // TODO: Change schema to allow batching multiple edits in a single tool call
-var bashToolInputSchema InputSchema = InputSchema{
-	Properties: map[string]Property{
+var bashToolInputSchema agent.InputSchema = agent.InputSchema{
+	Properties: map[string]agent.Property{
 		"command": {Type: "string", Description: "Bash command to execute"},
 		"timeout": {Type: "string", Description: "optional, timeout in seconds. No default timeout"},
 	},
@@ -23,22 +25,20 @@ type BashToolInput struct {
 	TimeoutSeconds int    `json:"timeout"`
 }
 
-type BashTool struct {
-	root fs.FS // Workspace Root
+func NewBashTool(root fs.FS) agent.Tool {
+	return agent.Tool{
+		Name:             "bash",
+		Description:      "Execute a bash command in the current workspace directory. Returns stdout and stderr.",
+		InputSchema:      bashToolInputSchema,
+		RequiresApproval: true,
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+			return executeBashTool(ctx, input)
+
+		},
+	}
 }
 
-func NewBashTool(root fs.FS) BashTool {
-	return BashTool{root: root}
-}
-
-func (rt BashTool) Name() string { return "bash" }
-func (rt BashTool) Description() string {
-	return "Execute a bash command in the current workspace directory. Returns stdout and stderr."
-}
-func (rt BashTool) InputSchema() InputSchema { return bashToolInputSchema }
-func (rt BashTool) RequiresApproval() bool   { return true }
-
-func (rt BashTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+func executeBashTool(ctx context.Context, input json.RawMessage) (string, error) {
 
 	// Decode input
 	var toolInput BashToolInput

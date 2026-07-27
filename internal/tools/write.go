@@ -7,10 +7,12 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+
+	"github.com/rstarc/elencode/internal/agent"
 )
 
-var writeToolInputSchema InputSchema = InputSchema{
-	Properties: map[string]Property{
+var writeToolInputSchema agent.InputSchema = agent.InputSchema{
+	Properties: map[string]agent.Property{
 		"path":    {Type: "string", Description: "Path to the file, relative to the workspace root"},
 		"content": {Type: "string", Description: "The literal file content"},
 	},
@@ -23,22 +25,19 @@ type writeToolInput struct {
 	// TODO: File Mode
 }
 
-type WriteTool struct {
-	root fs.FS // Workspace Root
+func NewWriteTool(root fs.FS) agent.Tool {
+	return agent.Tool{
+		Name:             "write",
+		Description:      "Create a new file or completely replace a file, recursively creating the directory tree.",
+		InputSchema:      writeToolInputSchema,
+		RequiresApproval: true,
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+			return createOrReplaceFile(ctx, input)
+		},
+	}
 }
 
-func NewWriteTool(root fs.FS) WriteTool {
-	return WriteTool{root: root}
-}
-
-func (rt WriteTool) Name() string { return "write" }
-func (rt WriteTool) Description() string {
-	return "Create a new file or completely replace a file, recursively creating the directory tree."
-}
-func (rt WriteTool) InputSchema() InputSchema { return writeToolInputSchema }
-func (rt WriteTool) RequiresApproval() bool   { return true }
-
-func (rt WriteTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+func createOrReplaceFile(ctx context.Context, input json.RawMessage) (string, error) {
 
 	// Decode input
 	var toolInput writeToolInput

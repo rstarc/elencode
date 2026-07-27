@@ -5,18 +5,28 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io/fs"
 	"strings"
-
-	"github.com/rstarc/elencode/internal/tools"
 )
 
-type Tool interface {
-	Name() string
-	Description() string
-	InputSchema() tools.InputSchema
-	RequiresApproval() bool
-	Execute(ctx context.Context, input json.RawMessage) (string, error)
+type Tool struct {
+	Name             string
+	Description      string
+	InputSchema      InputSchema
+	RequiresApproval bool
+	Execute          func(ctx context.Context, input json.RawMessage) (string, error)
+}
+
+// Property is the typified struct of the JSON Schema for the Tool Schema's Property type
+type Property struct {
+	Type        string `json:"type"`
+	Description string `json:"description"`
+}
+
+// InputSchema is the struct matching the JSON Schema for the Tool Input
+type InputSchema struct {
+	Type       string `json:"type" default:"object"`
+	Properties map[string]Property
+	Required   []string // Names of required properties TODO: Track in Property struct instead?
 }
 
 type Agent struct {
@@ -36,7 +46,7 @@ func (a Agent) UseTool(ctx context.Context, scanner *bufio.Scanner, name string,
 	var err error
 	var result string = ""
 
-	if tool.RequiresApproval() {
+	if tool.RequiresApproval {
 		// Prompt for tool use confirmation
 		fmt.Printf(" > Allow tool use? [y/N])")
 		// line, err := stdin.ReadString("\n")
@@ -67,18 +77,12 @@ func (a Agent) ProcessTurn(ctx context.Context) (Response, error) {
 	)
 }
 
-func New(root fs.FS, provider Provider) Agent {
+func New(provider Provider, tools []Tool) Agent {
 	// TODO: Use functional options
-	tools := []Tool{
-		tools.NewReadTool(root),
-		tools.NewWriteTool(root),
-		tools.NewEditTool(root),
-		tools.NewBashTool(root),
-	}
 
 	toolMap := map[string]Tool{}
 	for _, tool := range tools {
-		toolMap[tool.Name()] = tool
+		toolMap[tool.Name] = tool
 	}
 
 	return Agent{

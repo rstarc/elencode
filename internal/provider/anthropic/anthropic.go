@@ -1,4 +1,4 @@
-package sdk
+package anthropic
 
 import (
 	"context"
@@ -46,11 +46,11 @@ func (c *Client) Process(ctx context.Context, req agent.Request) (agent.Response
 
 func toolParam(t agent.Tool) *sdk.ToolParam {
 
-	toolSchema := t.InputSchema()
+	toolSchema := t.InputSchema
 
 	return &sdk.ToolParam{
-		Name:        t.Name(),
-		Description: sdk.String(t.Description()),
+		Name:        t.Name,
+		Description: sdk.String(t.Description),
 		InputSchema: sdk.ToolInputSchemaParam{
 			Properties: toolSchema.Properties,
 			Required:   toolSchema.Required,

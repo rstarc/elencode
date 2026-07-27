@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+
+	"github.com/rstarc/elencode/internal/agent"
 )
 
 // TODO: Change schema to allow batching multiple edits in a single tool call
-var editToolInputSchema InputSchema = InputSchema{
-	Properties: map[string]Property{
+var editToolInputSchema agent.InputSchema = agent.InputSchema{
+	Properties: map[string]agent.Property{
 		"path":    {Type: "string", Description: "Path to the file, relative to the workspace root"},
 		"oldText": {Type: "string", Description: "Exact text to find and replace. Must match byte for byte"},
 		"newText": {Type: "string", Description: "New text to replace the old text"},
@@ -25,23 +27,20 @@ type EditToolInput struct {
 	NewText string `json:"newText"`
 }
 
-type EditTool struct {
-	root fs.FS // Workspace Root
+func NewEditTool(root fs.FS) agent.Tool {
+	return agent.Tool{
+		Name:             "edit",
+		Description:      "Edit a file by replacing exact text. The old text must match byte for byte.",
+		InputSchema:      editToolInputSchema,
+		RequiresApproval: true,
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+			return editFile(ctx, input, root)
+
+		},
+	}
 }
 
-func NewEditTool(root fs.FS) EditTool {
-	return EditTool{root: root}
-}
-
-func (rt EditTool) Name() string { return "edit" }
-func (rt EditTool) Description() string {
-	return "Edit a file by replacing exact text. The old text must match byte for byte."
-}
-func (rt EditTool) InputSchema() InputSchema { return editToolInputSchema }
-
-func (rt EditTool) RequiresApproval() bool { return true }
-
-func (rt EditTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
+func editFile(ctx context.Context, input json.RawMessage, root fs.FS) (string, error) {
 
 	// Decode input
 	var toolInput EditToolInput
@@ -53,7 +52,7 @@ func (rt EditTool) Execute(ctx context.Context, input json.RawMessage) (string, 
 		return "", fmt.Errorf("%q is not a valid workspace path", toolInput.Path)
 	}
 
-	fileBytes, err := fs.ReadFile(rt.root, toolInput.Path)
+	fileBytes, err := fs.ReadFile(root, toolInput.Path)
 	if err != nil {
 		return "", err
 	}
