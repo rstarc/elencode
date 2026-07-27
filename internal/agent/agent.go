@@ -23,6 +23,8 @@ type Agent struct {
 	ToolsMap      map[string]Tool
 	Tools         []Tool
 	ContextWindow []Message
+	MaxTokens     int64
+	provider      Provider
 }
 
 func (a Agent) UseTool(ctx context.Context, scanner *bufio.Scanner, name string, input json.RawMessage) (string, error) {
@@ -55,7 +57,17 @@ func (a Agent) UseTool(ctx context.Context, scanner *bufio.Scanner, name string,
 	return result, err
 }
 
-func New(root fs.FS) Agent {
+func (a Agent) ProcessTurn(ctx context.Context) (Response, error) {
+	return a.provider.Process(ctx,
+		Request{
+			MaxTokens: a.MaxTokens, // TODO: set dynamically from API query if not set explicitly, requires streaming if set sufficiently high
+			Tools:     a.Tools,
+			Messages:  a.ContextWindow,
+		},
+	)
+}
+
+func New(root fs.FS, provider Provider) Agent {
 	// TODO: Use functional options
 	tools := []Tool{
 		tools.NewReadTool(root),
@@ -69,5 +81,11 @@ func New(root fs.FS) Agent {
 		toolMap[tool.Name()] = tool
 	}
 
-	return Agent{ToolsMap: toolMap, Tools: tools, ContextWindow: []Message{}}
+	return Agent{
+		MaxTokens:     8092,
+		ToolsMap:      toolMap,
+		Tools:         tools,
+		ContextWindow: []Message{},
+		provider:      provider,
+	}
 }

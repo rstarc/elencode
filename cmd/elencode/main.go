@@ -24,14 +24,12 @@ func main() {
 
 	ctx := context.Background()
 
-	// Initialize Client
-	client := provider.New()
-
-	// Define Agent
+	// Initialize agent
+	provider := provider.New()
 
 	// TODO: Use os.OpenRoot instead
 	root := os.DirFS(".")
-	agent := llm.New(root)
+	agent := llm.New(root, provider)
 
 	scanner := bufio.NewScanner(os.Stdin)
 
@@ -59,13 +57,7 @@ func main() {
 
 		// Evaluate response and resolve tool calls until response is returned
 		for {
-			response, err := client.Process(ctx,
-				llm.Request{
-					MaxTokens: 8192, // TODO: set dynamically from API query if not set explicitly, requires streaming if set sufficiently high
-					Tools:     agent.Tools,
-					Messages:  agent.ContextWindow,
-				},
-			)
+			response, err := agent.ProcessTurn(ctx)
 
 			if err != nil {
 				log.Fatal(err)

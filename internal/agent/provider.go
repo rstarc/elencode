@@ -8,7 +8,7 @@ type Provider interface {
 
 // Request represents a single Request we send to the provider's API
 type Request struct {
-	MaxTokens int
+	MaxTokens int64
 	Tools     []Tool
 	Messages  []Message
 }
