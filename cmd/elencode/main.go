@@ -72,7 +72,7 @@ func main() {
 			}
 
 			// Add response to context
-			agent.ContextWindow = append(agent.ContextWindow, userMessage)
+			agent.ContextWindow = append(agent.ContextWindow, response.Message)
 
 			// Check if the output is ready for the user
 			if response.StopReason != llm.StopReasonToolUse {

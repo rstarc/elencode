@@ -23,19 +23,26 @@ type Agent struct {
 }
 
 func (a Agent) UseTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
-	fmt.Printf("[tool: %s]\n", name)
+	fmt.Print("[\n")
+	fmt.Printf(" $ %s\n", name)
+	fmt.Printf(" <- %s\n", input)
 	result, err := a.ToolsMap[name].Execute(ctx, input)
-	fmt.Printf("[>\n %s\n<]\n", result)
+	fmt.Printf(" -> %q", result)
+	fmt.Print("\n]\n")
 	return result, err
 }
 
 func New(root fs.FS) Agent {
 	// TODO: Functional options
-	readTool := tools.NewReadTool(root)
-	tools := []Tool{&readTool}
+	tools := []Tool{
+		tools.NewReadTool(root),
+		tools.NewWriteTool(root),
+	}
+
 	toolMap := map[string]Tool{}
 	for _, tool := range tools {
 		toolMap[tool.Name()] = tool
 	}
+
 	return Agent{ToolsMap: toolMap, Tools: tools, ContextWindow: []Message{}}
 }
