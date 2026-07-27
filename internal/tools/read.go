@@ -29,6 +29,7 @@ func NewReadTool(root fs.FS) ReadTool {
 func (rt ReadTool) Name() string             { return "read" }
 func (rt ReadTool) Description() string      { return "Read a file" }
 func (rt ReadTool) InputSchema() InputSchema { return readToolInputSchema }
+func (rt ReadTool) RequiresApproval() bool   { return false }
 
 func (rt ReadTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
 	// TOOD: Implement offset and limit?

@@ -36,6 +36,7 @@ func (rt WriteTool) Description() string {
 	return "Create a new file or completely replace a file, recursively creating the directory tree."
 }
 func (rt WriteTool) InputSchema() InputSchema { return writeToolInputSchema }
+func (rt WriteTool) RequiresApproval() bool   { return true }
 
 func (rt WriteTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
 

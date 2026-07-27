@@ -1,6 +1,6 @@
 # Basics
 
-- [ ] Hook up an adapter and basic model I/O against the anthropic SDK
+- [x] Hook up an adapter and basic model I/O against the anthropic SDK
 
 
 # Workflow

@@ -61,7 +61,7 @@ func main() {
 		for {
 			response, err := client.Process(ctx,
 				llm.Request{
-					MaxTokens: 4096,
+					MaxTokens: 8192, // TODO: set dynamically from API query if not set explicitly, requires streaming if set sufficiently high
 					Tools:     agent.Tools,
 					Messages:  agent.ContextWindow,
 				},
@@ -93,7 +93,7 @@ func main() {
 			var toolResults []llm.Block
 			for _, block := range response.Message.Content {
 				if toolUseBlock, ok := block.(llm.ToolUseBlock); ok {
-					result, err := agent.UseTool(ctx, toolUseBlock.Name, toolUseBlock.Input)
+					result, err := agent.UseTool(ctx, scanner, toolUseBlock.Name, toolUseBlock.Input)
 					toolResults = append(toolResults, llm.NewToolResultBlock(toolUseBlock.ID, result, err != nil))
 				}
 			}
