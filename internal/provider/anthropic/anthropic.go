@@ -19,7 +19,7 @@ type Client struct {
 }
 
 func New() *Client {
-	// TODO: model, client
+	// TODO: model, client with functional options
 	return &Client{client: sdk.NewClient(), model: sdk.ModelClaudeHaiku4_5}
 }
 
@@ -45,10 +45,16 @@ func (c *Client) Process(ctx context.Context, req agent.Request) (agent.Response
 }
 
 func toolParam(t agent.Tool) *sdk.ToolParam {
+
+	toolSchema := t.InputSchema()
+
 	return &sdk.ToolParam{
 		Name:        t.Name(),
 		Description: sdk.String(t.Description()),
-		InputSchema: t.InputSchema(),
+		InputSchema: sdk.ToolInputSchemaParam{
+			Properties: toolSchema.Properties,
+			Required:   toolSchema.Required,
+		},
 	}
 }
 

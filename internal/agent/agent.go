@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/anthropics/anthropic-sdk-go"
 	"io/fs"
 
 	"github.com/rstarc/elencode/internal/tools"
@@ -13,7 +12,7 @@ import (
 type Tool interface {
 	Name() string
 	Description() string
-	InputSchema() anthropic.ToolInputSchemaParam
+	InputSchema() tools.InputSchema
 	Execute(ctx context.Context, input json.RawMessage) (string, error)
 }
 

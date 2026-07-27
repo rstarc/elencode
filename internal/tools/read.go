@@ -5,13 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
-
-	"github.com/anthropics/anthropic-sdk-go"
 )
 
-var readToolInputSchema anthropic.ToolInputSchemaParam = anthropic.ToolInputSchemaParam{
-	Properties: map[string]any{
-		"path": map[string]any{"type": "string", "description": "Path to the file, relative to the workspace root"},
+var readToolInputSchema InputSchema = InputSchema{
+	Properties: map[string]Property{
+		"path": {Type: "string", Description: "Path to the file, relative to the workspace root"},
 	},
 	Required: []string{"path"},
 }
@@ -28,9 +26,10 @@ func NewReadTool(root fs.FS) ReadTool {
 	return ReadTool{root: root}
 }
 
-func (rt ReadTool) Name() string                                { return "read" }
-func (rt ReadTool) Description() string                         { return "Read a file" }
-func (rt ReadTool) InputSchema() anthropic.ToolInputSchemaParam { return readToolInputSchema }
+func (rt ReadTool) Name() string             { return "read" }
+func (rt ReadTool) Description() string      { return "Read a file" }
+func (rt ReadTool) InputSchema() InputSchema { return readToolInputSchema }
+
 func (rt ReadTool) Execute(ctx context.Context, input json.RawMessage) (string, error) {
 	// TOOD: Implement offset and limit?
 

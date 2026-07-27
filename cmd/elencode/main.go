@@ -18,7 +18,7 @@ func main() {
 
 	// Check for API Key
 	if _, ok := os.LookupEnv(ANTHROPIC_API_KEY_ENV_VAR_NAME); !ok {
-		fmt.Printf("API Key Environment Variable (%s) not set, exiting\n", ANTHROPIC_API_KEY_ENV_VAR_NAME)
+		fmt.Printf("API Key Environment Variable %q not set, exiting\n", ANTHROPIC_API_KEY_ENV_VAR_NAME)
 		os.Exit(1)
 	}
 
