@@ -17,9 +17,9 @@ type Tool interface {
 }
 
 type Agent struct {
-	// TODO: ContextWindow
-	ToolsMap map[string]Tool
-	Tools    []Tool
+	ToolsMap      map[string]Tool
+	Tools         []Tool
+	ContextWindow []Message
 }
 
 func (a Agent) UseTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
@@ -29,12 +29,13 @@ func (a Agent) UseTool(ctx context.Context, name string, input json.RawMessage) 
 	return result, err
 }
 
-func NewAgent(root fs.FS) Agent {
+func New(root fs.FS) Agent {
+	// TODO: Functional options
 	readTool := tools.NewReadTool(root)
 	tools := []Tool{&readTool}
 	toolMap := map[string]Tool{}
 	for _, tool := range tools {
 		toolMap[tool.Name()] = tool
 	}
-	return Agent{ToolsMap: toolMap, Tools: tools}
+	return Agent{ToolsMap: toolMap, Tools: tools, ContextWindow: []Message{}}
 }

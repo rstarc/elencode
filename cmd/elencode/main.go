@@ -31,9 +31,8 @@ func main() {
 
 	// TODO: Use os.OpenRoot instead
 	root := os.DirFS(".")
-	agent := llm.NewAgent(root)
+	agent := llm.New(root)
 
-	var sessionMessages []llm.Message
 	scanner := bufio.NewScanner(os.Stdin)
 
 	// REPL
@@ -54,13 +53,9 @@ func main() {
 
 		fmt.Println()
 
-		// Add user message to session
-		// userMessage := anthropic.NewUserMessage(anthropic.NewTextBlock(userInput))
-		userMessage := llm.Message{
-			Role:    llm.RoleUser,
-			Content: []llm.Block{llm.TextBlock{Text: userInput}},
-		}
-		sessionMessages = append(sessionMessages, userMessage)
+		// Add user message to context
+		userMessage := llm.NewUserMessage([]llm.Block{llm.TextBlock{Text: userInput}})
+		agent.ContextWindow = append(agent.ContextWindow, userMessage)
 
 		// Evaluate response and resolve tool calls until response is returned
 		for {
@@ -68,7 +63,7 @@ func main() {
 				llm.Request{
 					MaxTokens: 4096,
 					Tools:     agent.Tools,
-					Messages:  sessionMessages,
+					Messages:  agent.ContextWindow,
 				},
 			)
 
@@ -76,8 +71,8 @@ func main() {
 				log.Fatal(err)
 			}
 
-			// Add response to session
-			sessionMessages = append(sessionMessages, response.Message)
+			// Add response to context
+			agent.ContextWindow = append(agent.ContextWindow, userMessage)
 
 			// Check if the output is ready for the user
 			if response.StopReason != llm.StopReasonToolUse {
@@ -104,8 +99,7 @@ func main() {
 			}
 
 			// Add tool result
-			sessionMessages = append(sessionMessages, llm.NewUserMessage(toolResults))
+			agent.ContextWindow = append(agent.ContextWindow, llm.NewUserMessage(toolResults))
 		}
-
 	}
 }
