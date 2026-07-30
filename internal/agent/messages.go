@@ -23,11 +23,9 @@ func NewUserMessage(content []Block) Message {
 }
 
 func RenderMessage(msg Message) string {
-	// TODO: render differently by role
 	render := ""
 	for _, block := range msg.Content {
 		render = render + renderBlock(block) + "\n"
 	}
-	// append footer?
 	return render
 }
