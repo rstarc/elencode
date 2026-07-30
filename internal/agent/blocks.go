@@ -1,23 +1,27 @@
 package agent
 
 import (
+	"charm.land/lipgloss/v2"
 	"encoding/json"
-	"fmt"
 )
 
 // Block is a part of a message
 // By definining it as an interface with an unexported function, we emulate a sum type in Go
 type Block interface{ block() }
 
+var textBlockStyle = lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderForeground(lipgloss.BrightBlack).Padding(1, 1).Width(90)
+
+var toolUseStyle = textBlockStyle.BorderForeground(lipgloss.BrightBlue)
+
 func renderBlock(block Block) string {
 	render := ""
 	switch block := block.(type) {
 	case TextBlock:
-		render = render + fmt.Sprintln(block.Text)
+		render = render + block.Text
+		render = textBlockStyle.Render(render)
 	case ToolUseBlock:
-		render = render + fmt.Sprintln("[ %w", block.Name)
-		render = render + fmt.Sprintln(" $ %w", string(block.Input))
-		render = render + fmt.Sprintln("]")
+		render = render + block.Name + string(block.Input)
+		render = toolUseStyle.Render(render)
 	default:
 	}
 	return render

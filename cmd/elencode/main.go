@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 
+	"charm.land/lipgloss/v2"
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/provider/anthropic"
 	"github.com/rstarc/elencode/internal/tools"
@@ -72,7 +73,7 @@ func main() {
 			agentConfig.ContextWindow = append(agentConfig.ContextWindow, response.Message)
 
 			// Print output response text to user
-			fmt.Println(agent.RenderMessage(response.Message))
+			lipgloss.Println(agent.RenderMessage(response.Message))
 
 			// Check if the output is ready for the user
 			if response.StopReason != agent.StopReasonToolUse {
