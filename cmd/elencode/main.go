@@ -56,8 +56,6 @@ func main() {
 			break
 		}
 
-		fmt.Println()
-
 		// Add user message to context
 		userMessage := agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: userInput}})
 		agentConfig.ContextWindow = append(agentConfig.ContextWindow, userMessage)
@@ -73,17 +71,11 @@ func main() {
 			// Add response to context
 			agentConfig.ContextWindow = append(agentConfig.ContextWindow, response.Message)
 
+			// Print output response text to user
+			fmt.Println(agent.RenderMessage(response.Message))
+
 			// Check if the output is ready for the user
 			if response.StopReason != agent.StopReasonToolUse {
-				// Print output response text to user
-				for _, block := range response.Message.Content {
-					// TODO: Fix block type conversion
-					if textBlock, ok := block.(agent.TextBlock); ok {
-						fmt.Println(textBlock.Text)
-					}
-				}
-				fmt.Println()
-
 				// break inner loop, return to prompt
 				break
 			}

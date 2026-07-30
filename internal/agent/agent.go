@@ -38,9 +38,6 @@ type Agent struct {
 }
 
 func (a Agent) UseTool(ctx context.Context, scanner *bufio.Scanner, name string, input json.RawMessage) (string, error) {
-	fmt.Print("[\n")
-	fmt.Printf(" $ %s\n", name)
-	fmt.Printf(" <- %s\n", input)
 
 	tool := a.ToolsMap[name]
 	var err error
@@ -62,8 +59,6 @@ func (a Agent) UseTool(ctx context.Context, scanner *bufio.Scanner, name string,
 		result, err = tool.Execute(ctx, input)
 	}
 
-	fmt.Printf(" -> %q", result)
-	fmt.Print("\n]\n")
 	return result, err
 }
 
