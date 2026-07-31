@@ -7,6 +7,7 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
 // type Provider interface {
@@ -18,9 +19,9 @@ type Client struct {
 	model  sdk.Model
 }
 
-func New() *Client {
+func New(apiKey string) *Client {
 	// TODO: model, client with functional options
-	return &Client{client: sdk.NewClient(), model: sdk.ModelClaudeHaiku4_5}
+	return &Client{client: sdk.NewClient(option.WithAPIKey(apiKey)), model: sdk.ModelClaudeHaiku4_5}
 }
 
 func (c *Client) Process(ctx context.Context, req agent.Request) (agent.Response, error) {

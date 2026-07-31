@@ -6,22 +6,22 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/config"
 	"github.com/rstarc/elencode/internal/provider/anthropic"
 	"github.com/rstarc/elencode/internal/tools"
 )
 
-const ANTHROPIC_API_KEY_ENV_VAR_NAME = "ANTHROPIC_API_KEY"
-
 func main() {
 
-	// Check for API Key
-	if _, ok := os.LookupEnv(ANTHROPIC_API_KEY_ENV_VAR_NAME); !ok {
-		fmt.Printf("API Key Environment Variable %q not set, exiting\n", ANTHROPIC_API_KEY_ENV_VAR_NAME)
+	// Load config
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Println(err)
 		os.Exit(1)
 	}
 
-	// Initialize agent
-	provider := anthropic.New()
+	// Initialize provider
+	provider := anthropic.New(cfg.AnthropicAPIKey)
 
 	// TODO: Use os.OpenRoot instead
 	root := os.DirFS(".")
