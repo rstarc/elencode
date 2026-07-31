@@ -11,7 +11,7 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 )
 
-// TODO: Change schema to allow batching multiple edits in a single tool call
+// TODO: Change schema to allow batching multiple edits in a single tool call?
 var bashToolInputSchema agent.InputSchema = agent.InputSchema{
 	Properties: map[string]agent.Property{
 		"command": {Type: "string", Description: "Bash command to execute"},
@@ -56,7 +56,6 @@ func executeBashTool(ctx context.Context, input json.RawMessage) (string, error)
 		cmdContext = ctx
 	}
 
-	// TODO: Use landlock or containers to further restrict bash tool
 	cmd := exec.CommandContext(cmdContext, "bash", "-c", toolInput.Command)
 	// Limit the time spent waiting on the child process to exit after completion, as CommandContext only kills the direct child process otherwise
 	cmd.WaitDelay = 2 * time.Second

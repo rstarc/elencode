@@ -85,7 +85,7 @@ func main() {
 			var toolResults []agent.Block
 			for _, block := range response.Message.Content {
 				if toolUseBlock, ok := block.(agent.ToolUseBlock); ok {
-					result, err := agentConfig.UseTool(ctx, scanner, toolUseBlock.Name, toolUseBlock.Input)
+					result, err := agentConfig.UseTool(ctx, toolUseBlock.Name, toolUseBlock.Input)
 					toolResults = append(toolResults, agent.NewToolResultBlock(toolUseBlock.ID, result, err != nil))
 				}
 			}

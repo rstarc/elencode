@@ -2,10 +2,12 @@ module github.com/rstarc/elencode
 
 go 1.26.1
 
-require github.com/anthropics/anthropic-sdk-go v1.57.0
+require (
+	charm.land/lipgloss/v2 v2.0.5
+	github.com/anthropics/anthropic-sdk-go v1.57.0
+)
 
 require (
-	charm.land/lipgloss/v2 v2.0.5 // indirect
 	github.com/bahlo/generic-list-go v0.2.0 // indirect
 	github.com/buger/jsonparser v1.2.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.3 // indirect

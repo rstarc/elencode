@@ -1,11 +1,8 @@
 package agent
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
-	"strings"
 )
 
 type Tool struct {
@@ -37,29 +34,9 @@ type Agent struct {
 	provider      Provider
 }
 
-func (a Agent) UseTool(ctx context.Context, scanner *bufio.Scanner, name string, input json.RawMessage) (string, error) {
-
+func (a Agent) UseTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
 	tool := a.ToolsMap[name]
-	var err error
-	var result string = ""
-
-	if tool.RequiresApproval {
-		// Prompt for tool use confirmation
-		fmt.Printf(" > Allow tool use? [y/N])")
-		// line, err := stdin.ReadString("\n")
-		scanner.Scan()
-		userInput := strings.ToLower(strings.TrimSpace(scanner.Text()))
-
-		if userInput == "y" || userInput == "yes" {
-			result, err = tool.Execute(ctx, input)
-		} else {
-			err = fmt.Errorf("Tool use rejected by user")
-		}
-	} else {
-		result, err = tool.Execute(ctx, input)
-	}
-
-	return result, err
+	return tool.Execute(ctx, input)
 }
 
 func (a Agent) ProcessTurn(ctx context.Context) (Response, error) {
