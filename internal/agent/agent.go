@@ -57,7 +57,7 @@ func (a *Agent) useTool(ctx context.Context, name string, input json.RawMessage)
 func (a *Agent) Run(ctx context.Context, userInput string) <-chan Event {
 	events := make(chan Event, eventBuffer)
 
-	a.AppendMessage(NewUserMessage([]Block{TextBlock{Text: userInput}}))
+	mark := a.beginTurn(NewUserMessage([]Block{TextBlock{Text: userInput}}))
 
 	go func() {
 		defer close(events)
@@ -65,11 +65,13 @@ func (a *Agent) Run(ctx context.Context, userInput string) <-chan Event {
 		for {
 			response, ok := a.infer(ctx, events)
 			if !ok {
+				a.rollback(mark)
 				return
 			}
 
 			a.AppendMessage(response.Message)
 			if !send(ctx, events, MessageEvent{Message: response.Message}) {
+				a.rollback(mark)
 				return
 			}
 
@@ -81,6 +83,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) <-chan Event {
 			toolMessage := NewUserMessage(results)
 			a.AppendMessage(toolMessage)
 			if !send(ctx, events, MessageEvent{Message: toolMessage}) {
+				a.rollback(mark)
 				return
 			}
 		}
@@ -152,6 +155,30 @@ func (a *Agent) AppendMessage(msg Message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.contextWindow = append(a.contextWindow, msg)
+}
+
+// beginTurn appends the turn's opening message and returns a mark: the length
+// of the context window before it. Appending and reading the length happen
+// under one lock, so the mark can never point past a message another turn added.
+func (a *Agent) beginTurn(msg Message) int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	mark := len(a.contextWindow)
+	a.contextWindow = append(a.contextWindow, msg)
+	return mark
+}
+
+// rollback discards everything a failed turn added, back to mark.
+//
+// A turn that stops partway leaves the context window in a shape the API
+// rejects: a prompt with no reply would make the next turn send two user
+// messages in a row, and a tool_use block with no matching tool_result is
+// unsendable outright. Either way every later turn fails too, so a failed turn
+// undoes itself rather than poisoning the conversation.
+func (a *Agent) rollback(mark int) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.contextWindow = a.contextWindow[:mark]
 }
 
 // New returns a pointer because Agent holds a Mutex and must not be copied

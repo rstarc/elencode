@@ -203,9 +203,57 @@ func TestRunForwardsProviderError(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("events = %#v, want %#v", got, want)
 	}
-	// A failed round must not append an empty assistant message
-	if len(a.contextWindow) != 1 {
-		t.Errorf("context window has %d messages, want 1 (the user prompt only)", len(a.contextWindow))
+	// A failed turn is rolled back whole. Leaving the prompt behind would make
+	// the next turn send two user messages in a row, which the API rejects.
+	if len(a.contextWindow) != 0 {
+		t.Errorf("context window = %#v, want it rolled back to empty", a.contextWindow)
+	}
+}
+
+func TestRunRollsBackFailedToolRound(t *testing.T) {
+	toolUse := ToolUseBlock{ID: "toolu_1", Name: "read", Input: json.RawMessage(`{}`)}
+	provider := &scriptedProvider{turns: [][]Event{
+		{ResponseEvent{Response: Response{
+			Message:    assistantMessage(toolUse),
+			StopReason: StopReasonToolUse,
+		}}},
+		{ErrorEvent{Err: errors.New("api exploded")}},
+	}}
+	read := Tool{
+		Name: "read",
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+			return "file contents", nil
+		},
+	}
+	a := New(provider, []Tool{read})
+
+	collect(t, a.Run(context.Background(), "read a.txt"))
+
+	// The rollback must reach past the tool round too: a tool_use block left in
+	// the window with no matching tool_result is permanently unsendable.
+	if len(a.contextWindow) != 0 {
+		t.Errorf("context window = %#v, want it rolled back to empty", a.contextWindow)
+	}
+}
+
+func TestRunRollsBackOnlyItsOwnTurn(t *testing.T) {
+	assistant := assistantMessage(TextBlock{Text: "hello"})
+	provider := &scriptedProvider{turns: [][]Event{
+		{ResponseEvent{Response: Response{Message: assistant, StopReason: StopReasonEndTurn}}},
+		{ErrorEvent{Err: errors.New("api exploded")}},
+	}}
+	a := New(provider, nil)
+
+	collect(t, a.Run(context.Background(), "hi"))
+	collect(t, a.Run(context.Background(), "hi again"))
+
+	// The first turn succeeded, so it survives; only the second is undone.
+	wantWindow := []Message{
+		NewUserMessage([]Block{TextBlock{Text: "hi"}}),
+		assistant,
+	}
+	if !reflect.DeepEqual(a.contextWindow, wantWindow) {
+		t.Errorf("context window =\n\t%#v\nwant\n\t%#v", a.contextWindow, wantWindow)
 	}
 }
 
