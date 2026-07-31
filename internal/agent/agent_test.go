@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -254,6 +255,41 @@ func TestRunRollsBackOnlyItsOwnTurn(t *testing.T) {
 	}
 	if !reflect.DeepEqual(a.contextWindow, wantWindow) {
 		t.Errorf("context window =\n\t%#v\nwant\n\t%#v", a.contextWindow, wantWindow)
+	}
+}
+
+func TestRunRecoversFromToolPanic(t *testing.T) {
+	toolUse := ToolUseBlock{ID: "toolu_1", Name: "read", Input: json.RawMessage(`{}`)}
+	provider := &scriptedProvider{turns: [][]Event{
+		{ResponseEvent{Response: Response{
+			Message:    assistantMessage(toolUse),
+			StopReason: StopReasonToolUse,
+		}}},
+	}}
+	read := Tool{
+		Name: "read",
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+			panic("tool blew up")
+		},
+	}
+	a := New(provider, []Tool{read})
+
+	// Run's work happens on its own goroutine, so an unrecovered panic here
+	// takes down the whole process rather than failing this test.
+	got := collect(t, a.Run(context.Background(), "read a.txt"))
+
+	if len(got) == 0 {
+		t.Fatal("no events, want the panic reported as an ErrorEvent")
+	}
+	last, ok := got[len(got)-1].(ErrorEvent)
+	if !ok {
+		t.Fatalf("last event = %#v, want an ErrorEvent", got[len(got)-1])
+	}
+	if !strings.Contains(last.Err.Error(), "tool blew up") {
+		t.Errorf("error = %q, want it to mention the panic value", last.Err)
+	}
+	if len(a.contextWindow) != 0 {
+		t.Errorf("context window = %#v, want it rolled back to empty", a.contextWindow)
 	}
 }
 

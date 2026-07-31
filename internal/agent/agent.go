@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 )
 
@@ -61,6 +62,16 @@ func (a *Agent) Run(ctx context.Context, userInput string) <-chan Event {
 
 	go func() {
 		defer close(events)
+		// Registered after close, so it runs first and the ErrorEvent is sent
+		// while the channel is still open. Without this a panic anywhere in the
+		// loop — most plausibly inside a tool's Execute — takes down the whole
+		// program from a goroutine the TUI cannot recover on.
+		defer func() {
+			if r := recover(); r != nil {
+				a.rollback(mark)
+				send(ctx, events, ErrorEvent{Err: fmt.Errorf("panic during turn: %v", r)})
+			}
+		}()
 
 		for {
 			response, ok := a.infer(ctx, events)
