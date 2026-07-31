@@ -27,6 +27,11 @@ func renderBlock(block Block) string {
 	return render
 }
 
+// RenderStreamingText renders in-progress assistant text
+func RenderStreamingText(text string) string {
+	return renderBlock(TextBlock{Text: text})
+}
+
 type TextBlock struct{ Text string }
 
 func (b TextBlock) block() {}

@@ -10,9 +10,10 @@ import (
 	"github.com/anthropics/anthropic-sdk-go/option"
 )
 
-// type Provider interface {
-// 	Process(ctx context.Context, req Request) (Response, error)
-// }
+// eventBuffer is the capacity of the Event channel returned by Stream. It
+// decouples the speed we read from the network from the speed the consumer
+// renders, without letting an unread stream grow without bound.
+const eventBuffer = 64
 
 type Client struct {
 	client sdk.Client
@@ -24,25 +25,67 @@ func New(apiKey string) *Client {
 	return &Client{client: sdk.NewClient(option.WithAPIKey(apiKey)), model: sdk.ModelClaudeHaiku4_5}
 }
 
-func (c *Client) Process(ctx context.Context, req agent.Request) (agent.Response, error) {
-	tools := toolParams(req.Tools)
+// Stream sends every event through a select on ctx.Done. Buffering delays a
+// blocked send but does not prevent one, so a send that is not cancellable
+// leaks this goroutine whenever the consumer abandons the turn.
+func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
+	events := make(chan agent.Event, eventBuffer)
 
-	message, err := c.client.Messages.New(ctx, sdk.MessageNewParams{
-		MaxTokens: int64(req.MaxTokens),
-		Messages:  toMessages(req.Messages),
-		Model:     c.model,
-		Tools:     tools,
-	})
+	go func() {
+		defer close(events)
 
-	if err != nil {
-		return agent.Response{}, err
-	}
+		stream := c.client.Messages.NewStreaming(ctx, sdk.MessageNewParams{
+			MaxTokens: req.MaxTokens,
+			Messages:  toMessages(req.Messages),
+			Model:     c.model,
+			Tools:     toolParams(req.Tools),
+		})
 
-	return agent.Response{
-		Message:    agent.Message{Role: agent.RoleAssistant, Content: toBlocks(message)},
-		StopReason: toStopReason(message.StopReason),
-	}, nil
+		// The SDK has no GetFinalMessage; Accumulate folds each event into
+		// message, rebuilding what a non-streaming call would have returned.
+		message := sdk.Message{}
+		for stream.Next() {
+			event := stream.Current()
 
+			if err := message.Accumulate(event); err != nil {
+				select {
+				case events <- agent.ErrorEvent{Err: err}:
+				case <-ctx.Done():
+				}
+				return
+			}
+
+			// Emit only what the UI needs to paint live. Everything else
+			// (tool inputs, usage, stop reason) is recovered from message.
+			if delta, ok := event.AsAny().(sdk.ContentBlockDeltaEvent); ok {
+				if text, ok := delta.Delta.AsAny().(sdk.TextDelta); ok {
+					select {
+					case events <- agent.TextDeltaEvent{Text: text.Text}:
+					case <-ctx.Done():
+						return
+					}
+				}
+			}
+		}
+
+		if err := stream.Err(); err != nil {
+			select {
+			case events <- agent.ErrorEvent{Err: err}:
+			case <-ctx.Done():
+			}
+			return
+		}
+
+		select {
+		case events <- agent.ResponseEvent{Response: agent.Response{
+			Message:    agent.Message{Role: agent.RoleAssistant, Content: toBlocks(&message)},
+			StopReason: toStopReason(message.StopReason),
+		}}:
+		case <-ctx.Done():
+		}
+	}()
+
+	return events
 }
 
 func toolParam(t agent.Tool) *sdk.ToolParam {

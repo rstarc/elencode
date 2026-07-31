@@ -30,8 +30,12 @@ func renderMessage(msg Message) string {
 	return render
 }
 
-// RenderTranscript returns a rendered string that contains the entire context window
+// RenderTranscript returns a rendered string that contains the entire context window.
+// Uses a Mutex to guard the contextWindow
 func RenderTranscript(agent *Agent) string {
+	agent.mu.Lock()
+	defer agent.mu.Unlock()
+
 	result := ""
 	for _, msg := range agent.contextWindow {
 		result = result + renderMessage(msg) + "\n"

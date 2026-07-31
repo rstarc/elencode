@@ -3,7 +3,14 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"sync"
 )
+
+// eventBuffer is the capacity of the Event channel returned by Run. It
+// decouples how fast we produce events from how fast the caller renders them,
+// without letting an unread stream grow without bound.
+// TODO: re-consider using a buffered vs unbuffered channel
+const eventBuffer = 64
 
 type Tool struct {
 	Name             string
@@ -29,27 +36,121 @@ type InputSchema struct {
 type Agent struct {
 	toolsMap      map[string]Tool
 	tools         []Tool
+	mu            sync.Mutex
 	contextWindow []Message
 	maxTokens     int64
 	provider      Provider
 }
 
-func (a *Agent) UseTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
+func (a *Agent) useTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
 	tool := a.toolsMap[name]
 	return tool.Execute(ctx, input)
 }
 
-func (a *Agent) ProcessTurn(ctx context.Context) (Response, error) {
-	return a.provider.Process(ctx,
-		Request{
-			MaxTokens: a.maxTokens, // TODO: set dynamically from API query if not set explicitly, requires streaming if set sufficiently high
-			Tools:     a.tools,
-			Messages:  a.contextWindow,
-		},
-	)
+// Run runs a full turn in a goroutine: inference, tool execution, and follow-up inference,
+// repeating until the model stops asking for tools. It returns immediately with
+// a channel of Events describing progress; the channel is closed when the turn
+// ends, whether it completed, failed, or ctx was cancelled.
+//
+// Run owns the agent loop so that every caller — TUI, headless CLI, tests —
+// only has to render Events rather than reimplement the loop.
+func (a *Agent) Run(ctx context.Context, userInput string) <-chan Event {
+	events := make(chan Event, eventBuffer)
+
+	a.AppendMessage(NewUserMessage([]Block{TextBlock{Text: userInput}}))
+
+	go func() {
+		defer close(events)
+
+		for {
+			response, ok := a.infer(ctx, events)
+			if !ok {
+				return
+			}
+
+			a.AppendMessage(response.Message)
+			if !send(ctx, events, MessageEvent{Message: response.Message}) {
+				return
+			}
+
+			if response.StopReason != StopReasonToolUse {
+				return
+			}
+
+			results := a.runTools(ctx, response)
+			toolMessage := NewUserMessage(results)
+			a.AppendMessage(toolMessage)
+			if !send(ctx, events, MessageEvent{Message: toolMessage}) {
+				return
+			}
+		}
+	}()
+
+	return events
+}
+
+// infer runs one round of inference, forwarding Events to the caller and
+// returning the assembled Response. ok is false if the turn should stop, which
+// covers provider errors and cancellation.
+func (a *Agent) infer(ctx context.Context, events chan<- Event) (Response, bool) {
+	a.mu.Lock()
+	req := Request{
+		MaxTokens: a.maxTokens, // TODO: set dynamically from API query if not set explicitly
+		Tools:     a.tools,
+		Messages:  a.contextWindow,
+	}
+	a.mu.Unlock()
+
+	for event := range a.provider.Stream(ctx, req) {
+		switch event := event.(type) {
+		case ResponseEvent:
+			// Terminal, and not forwarded: the caller sees the Message once it
+			// has actually been appended, as a MessageEvent.
+			return event.Response, true
+		case ErrorEvent:
+			send(ctx, events, event)
+			return Response{}, false
+		default:
+			if !send(ctx, events, event) {
+				return Response{}, false
+			}
+		}
+	}
+
+	return Response{}, false
+}
+
+// runTools executes every ToolUseBlock in the response, returning the matching
+// ToolResultBlocks
+func (a *Agent) runTools(ctx context.Context, response Response) []Block {
+	var results []Block
+	for _, block := range response.Message.Content {
+		toolUse, ok := block.(ToolUseBlock)
+		if !ok {
+			continue
+		}
+		result, err := a.useTool(ctx, toolUse.Name, toolUse.Input)
+		if err != nil {
+			result = err.Error()
+		}
+		results = append(results, NewToolResultBlock(toolUse.ID, result, err != nil))
+	}
+	return results
+}
+
+// send either sends the event to the channel or receives a ctx.Done
+func send(ctx context.Context, events chan<- Event, ev Event) bool {
+	select {
+	case events <- ev:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func (a *Agent) AppendMessage(msg Message) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	a.contextWindow = append(a.contextWindow, msg)
 }
 

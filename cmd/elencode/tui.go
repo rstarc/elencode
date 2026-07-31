@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"log"
 
 	"charm.land/bubbles/v2/cursor"
 	"charm.land/bubbles/v2/textinput"
@@ -22,9 +21,14 @@ const (
 type model struct {
 	// agent state
 	agent *agent.Agent
+	// in-flight turn, valid only while state is uiStateProcessing.
+	// Both are handles to this turn specifically, not to the agent.
+	events <-chan agent.Event
+	cancel context.CancelFunc
 	// TUI state
-	viewport viewport.Model
-	input    textinput.Model
+	partial  string          // assistant text streamed so far, not yet in the transcript
+	viewport viewport.Model  // viewport displaying the transcript
+	input    textinput.Model // user input field
 	state    uiState
 	err      error
 }
@@ -53,38 +57,62 @@ func newModel(agent *agent.Agent) model {
 	}
 }
 
-type agentResponseMsg struct {
-	response agent.Response
-	err      error
-}
+// streamEventMsg carries one Event from the in-flight turn
+type streamEventMsg struct{ event agent.Event }
 
-type toolsResultMsg struct {
-	results []agent.Block
-}
+// streamClosedMsg reports that the turn ended and the channel is drained
+type streamClosedMsg struct{}
 
-// Command: run the API call
-func (m model) processMessageCmd() tea.Cmd {
-	a := m.agent
+// waitForEvent receives one Event from the in-flight turn. Update re-issues it
+// after each event, since a tea.Cmd delivers exactly one message. The channel is captured
+// by value, so a command left over from a finished turn reads that turn's
+// closed channel rather than stealing an event from the next one.
+func waitForEvent(events <-chan agent.Event) tea.Cmd {
 	return func() tea.Msg {
-		// TODO: Correctly pass context
-		resp, err := a.ProcessTurn(context.Background())
-		return agentResponseMsg{resp, err}
-	}
-}
-
-func (m model) useToolsCmd(response agent.Response) tea.Cmd {
-	a := m.agent
-	return func() tea.Msg {
-		var toolResults []agent.Block
-		for _, block := range response.Message.Content {
-			if toolUseBlock, ok := block.(agent.ToolUseBlock); ok {
-				// TODO: Correctly pass context
-				result, err := a.UseTool(context.Background(), toolUseBlock.Name, toolUseBlock.Input)
-				toolResults = append(toolResults, agent.NewToolResultBlock(toolUseBlock.ID, result, err != nil))
-			}
+		event, ok := <-events
+		if !ok {
+			return streamClosedMsg{}
 		}
-		return toolsResultMsg{toolResults}
+		return streamEventMsg{event}
 	}
+}
+
+// startTurn hands userInput to the agent and begins receiving its Events
+func (m model) startTurn(userInput string) (model, tea.Cmd) {
+	ctx, cancel := context.WithCancel(context.Background())
+	m.cancel = cancel
+	m.events = m.agent.Run(ctx, userInput)
+	m.partial = ""
+	m.state = uiStateProcessing
+	m.err = nil
+	m.refresh()
+	return m, waitForEvent(m.events)
+}
+
+// endTurn releases the finished turn's resources and returns to idle
+func (m model) endTurn() model {
+	if m.cancel != nil {
+		m.cancel()
+		m.cancel = nil
+	}
+	m.events = nil
+	m.partial = ""
+	m.state = uiStateIdle
+	m.refresh()
+	return m
+}
+
+// refresh repaints the viewport from the transcript plus any in-flight text
+func (m *model) refresh() {
+	content := agent.RenderTranscript(m.agent)
+	if m.partial != "" {
+		content = content + agent.RenderStreamingText(m.partial) + "\n"
+	}
+	if m.err != nil {
+		content = content + m.err.Error() + "\n"
+	}
+	m.viewport.SetContent(content)
+	m.viewport.GotoBottom()
 }
 
 // Init implements the bubbletea Model interface
@@ -107,24 +135,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// handle user input
 		switch msg.String() {
 		case "ctrl+c":
-			lipgloss.Println("goodbye")
+			// Abandon any in-flight turn so its goroutine unblocks instead of
+			// waiting on a channel nobody will read again
+			if m.cancel != nil {
+				m.cancel()
+			}
 			return m, tea.Quit
 		case "enter":
 			// only actually do anything if we are not currently waiting and there is actual input
 			if m.state == uiStateIdle && m.input.Value() != "" {
-				// Get the text and clear the input
 				userInput := m.input.Value()
 				m.input.Reset()
-				// Update state and send cmd to process user message
-				m.state = uiStateProcessing
-				// Add user message to context
-				userMessage := agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: userInput}})
-				m.agent.AppendMessage(userMessage)
-				// Update viewport content
-				m.viewport.SetContent(agent.RenderTranscript(m.agent))
-				m.viewport.GotoBottom()
-				// Cmd to process message
-				return m, m.processMessageCmd()
+				return m.startTurn(userInput)
 			}
 		default:
 			// Send other keypresses to text input model
@@ -133,33 +155,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.input, cmd = m.input.Update(msg)
 			return m, cmd
 		}
-	case agentResponseMsg:
-		// handle agent response
-		if msg.err != nil {
-			log.Fatal(msg.err)
+	case streamEventMsg:
+		switch event := msg.event.(type) {
+		case agent.TextDeltaEvent:
+			m.partial = m.partial + event.Text
+		case agent.MessageEvent:
+			// The message is already in the transcript, so drop the partial
+			// copy we were painting to avoid rendering it twice
+			m.partial = ""
+		case agent.ErrorEvent:
+			m.err = event.Err
 		}
-
-		// Add response to context
-		m.agent.AppendMessage(msg.response.Message)
-		// Update viewport content
-		m.viewport.SetContent(agent.RenderTranscript(m.agent))
-		m.viewport.GotoBottom()
-
-		if msg.response.StopReason == agent.StopReasonToolUse {
-			// evaluate tool use
-			return m, m.useToolsCmd(msg.response)
-		}
-
-		// no tool use -> return to idle state
-		m.state = uiStateIdle
-		return m, nil
-	case toolsResultMsg:
-		// handle finished tool execution
-		// Add tool results as user message
-		m.agent.AppendMessage(agent.NewUserMessage(msg.results))
-		// TODO: Update viewport content
-		// Send Cmd to process Message again
-		return m, m.processMessageCmd()
+		m.refresh()
+		// Wait for the next event. The turn ends when the channel closes, not
+		// here: a MessageEvent may be followed by tool results and more inference.
+		return m, waitForEvent(m.events)
+	case streamClosedMsg:
+		return m.endTurn(), nil
 
 	case cursor.BlinkMsg:
 		// Forward to textinput
