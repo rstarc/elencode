@@ -50,6 +50,7 @@ func (a *Agent) ProcessTurn(ctx context.Context) (Response, error) {
 }
 
 func (a *Agent) AppendMessage(msg Message) {
+	a.contextWindow = append(a.contextWindow, msg)
 }
 
 func New(provider Provider, tools []Tool) Agent {

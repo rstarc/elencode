@@ -22,10 +22,19 @@ func NewUserMessage(content []Block) Message {
 	}
 }
 
-func RenderMessage(msg Message) string {
+func renderMessage(msg Message) string {
 	render := ""
 	for _, block := range msg.Content {
 		render = render + renderBlock(block) + "\n"
 	}
 	return render
+}
+
+// RenderTranscript returns a rendered string that contains the entire context window
+func RenderTranscript(agent *Agent) string {
+	result := ""
+	for _, msg := range agent.contextWindow {
+		result = result + renderMessage(msg) + "\n"
+	}
+	return result
 }
