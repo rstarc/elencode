@@ -59,7 +59,7 @@ func main() {
 
 		// Add user message to context
 		userMessage := agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: userInput}})
-		agentConfig.ContextWindow = append(agentConfig.ContextWindow, userMessage)
+		agentConfig.AppendMessage(userMessage)
 
 		// Evaluate response and resolve tool calls until response is returned
 		for {
@@ -70,7 +70,7 @@ func main() {
 			}
 
 			// Add response to context
-			agentConfig.ContextWindow = append(agentConfig.ContextWindow, response.Message)
+			agentConfig.AppendMessage(userMessage)
 
 			// Print output response text to user
 			lipgloss.Println(agent.RenderMessage(response.Message))
@@ -90,8 +90,8 @@ func main() {
 				}
 			}
 
-			// Add tool result
-			agentConfig.ContextWindow = append(agentConfig.ContextWindow, agent.NewUserMessage(toolResults))
+			// Add tool results as user message
+			agentConfig.AppendMessage(agent.NewUserMessage(toolResults))
 		}
 	}
 }

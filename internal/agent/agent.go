@@ -27,26 +27,29 @@ type InputSchema struct {
 }
 
 type Agent struct {
-	ToolsMap      map[string]Tool
-	Tools         []Tool
-	ContextWindow []Message
-	MaxTokens     int64
+	toolsMap      map[string]Tool
+	tools         []Tool
+	contextWindow []Message
+	maxTokens     int64
 	provider      Provider
 }
 
-func (a Agent) UseTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
-	tool := a.ToolsMap[name]
+func (a *Agent) UseTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
+	tool := a.toolsMap[name]
 	return tool.Execute(ctx, input)
 }
 
-func (a Agent) ProcessTurn(ctx context.Context) (Response, error) {
+func (a *Agent) ProcessTurn(ctx context.Context) (Response, error) {
 	return a.provider.Process(ctx,
 		Request{
-			MaxTokens: a.MaxTokens, // TODO: set dynamically from API query if not set explicitly, requires streaming if set sufficiently high
-			Tools:     a.Tools,
-			Messages:  a.ContextWindow,
+			MaxTokens: a.maxTokens, // TODO: set dynamically from API query if not set explicitly, requires streaming if set sufficiently high
+			Tools:     a.tools,
+			Messages:  a.contextWindow,
 		},
 	)
+}
+
+func (a *Agent) AppendMessage(msg Message) {
 }
 
 func New(provider Provider, tools []Tool) Agent {
@@ -58,10 +61,10 @@ func New(provider Provider, tools []Tool) Agent {
 	}
 
 	return Agent{
-		MaxTokens:     8092,
-		ToolsMap:      toolMap,
-		Tools:         tools,
-		ContextWindow: []Message{},
+		maxTokens:     8092,
+		toolsMap:      toolMap,
+		tools:         tools,
+		contextWindow: []Message{},
 		provider:      provider,
 	}
 }
