@@ -154,7 +154,8 @@ func (a *Agent) AppendMessage(msg Message) {
 	a.contextWindow = append(a.contextWindow, msg)
 }
 
-func New(provider Provider, tools []Tool) Agent {
+// New returns a pointer because Agent holds a Mutex and must not be copied
+func New(provider Provider, tools []Tool) *Agent {
 	// TODO: Use functional options
 
 	toolMap := map[string]Tool{}
@@ -162,7 +163,7 @@ func New(provider Provider, tools []Tool) Agent {
 		toolMap[tool.Name] = tool
 	}
 
-	return Agent{
+	return &Agent{
 		maxTokens:     8092,
 		toolsMap:      toolMap,
 		tools:         tools,

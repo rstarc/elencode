@@ -33,7 +33,7 @@ func main() {
 	}
 	agentConfig := agent.New(provider, tools)
 
-	tui := tea.NewProgram(newModel(&agentConfig))
+	tui := tea.NewProgram(newModel(agentConfig))
 	if _, err := tui.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to start TUI: %v\n", err)
 	}
