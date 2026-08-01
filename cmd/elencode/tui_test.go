@@ -124,6 +124,22 @@ func TestUpdateKeepsBannerBeforeAnythingIsSaid(t *testing.T) {
 	}
 }
 
+// TestUpdateShowsUserMessageAsSoonAsItIsSent asserts the message is in the
+// viewport the instant Enter is handled, before any Event has been read off
+// the turn's channel: agent.Run appends the user message to the context
+// window synchronously, ahead of the goroutine that talks to the provider.
+func TestUpdateShowsUserMessageAsSoonAsItIsSent(t *testing.T) {
+	m := newModel(agent.New(failingProvider{err: errors.New("boom")}, nil))
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
+	m.input.SetValue("hello there")
+
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if view := m.viewport.View(); !strings.Contains(view, "hello there") {
+		t.Errorf("viewport does not show the user's message right after Enter:\n%s", view)
+	}
+}
+
 func TestUpdateFitsErrorToNarrowTerminal(t *testing.T) {
 	const width = 40
 
@@ -186,6 +202,38 @@ func TestViewHidesSpinnerWhenIdle(t *testing.T) {
 
 	if view := m.View().Content; strings.Contains(view, "processing") {
 		t.Errorf("view shows the processing spinner while idle:\n%s", view)
+	}
+}
+
+// TestUpdateKeepsViewportUsableInTinyTerminal covers terminals too short to
+// hold the rows below the viewport: subtracting them leaves nothing, and a
+// viewport sized zero or less has no transcript area at all.
+func TestUpdateKeepsViewportUsableInTinyTerminal(t *testing.T) {
+	for _, height := range []int{1, 2, 3} {
+		t.Run(fmt.Sprintf("height%d", height), func(t *testing.T) {
+			m := newTestModel()
+			m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: height})
+
+			if got := m.viewport.Height(); got < 1 {
+				t.Errorf("viewport height = %d, want at least 1 row of transcript", got)
+			}
+		})
+	}
+}
+
+// TestViewFitsTerminalHeightWhileProcessing guards the spinner row: it makes
+// the view one row taller than the terminal, and the inline renderer drops the
+// top row of an oversized frame — which right after Enter is the user's own
+// message, so it only reappears once the turn ends and the spinner goes away.
+func TestViewFitsTerminalHeightWhileProcessing(t *testing.T) {
+	const height = 20
+
+	m := newTestModel()
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: height})
+	m.state = uiStateProcessing
+
+	if got := lipgloss.Height(m.View().Content); got > height {
+		t.Errorf("view is %d rows tall, want <= %d", got, height)
 	}
 }
 

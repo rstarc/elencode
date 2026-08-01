@@ -15,6 +15,12 @@ import (
 // banner is shown until there is a transcript to show instead
 const banner = "== elencode =="
 
+// inputPrompt mirrors agent.UserPromptMarker, which marks user messages in
+// the transcript, so the two stay visibly the same character. Declared at
+// package level (not inside newModel) because its *agent.Agent parameter
+// shadows the agent package name.
+const inputPrompt = agent.UserPromptMarker
+
 type uiState int
 
 const (
@@ -45,7 +51,7 @@ func newModel(agent *agent.Agent) model {
 	input.Placeholder = "start typing..."
 	input.SetVirtualCursor(false)
 	input.Focus()
-	input.Prompt = "> "
+	input.Prompt = inputPrompt + " "
 	input.CharLimit = 0
 
 	viewport := viewport.New()
@@ -68,6 +74,17 @@ func newModel(agent *agent.Agent) model {
 // while a turn is in flight.
 func (m model) spinnerLine() string {
 	return "processing" + m.spinner.View()
+}
+
+// chromeHeight is the number of rows View stacks below the viewport, measured
+// rather than assumed so the two cannot drift apart.
+//
+// The spinner row counts even while idle. Reserving it keeps the frame the
+// same height when a turn starts: the inline renderer drops the top row of a
+// frame taller than the terminal, and right after Enter that row is the line
+// the user just sent.
+func (m model) chromeHeight() int {
+	return lipgloss.Height(m.spinnerLine()) + lipgloss.Height(m.input.View())
 }
 
 // streamEventMsg carries one Event from the in-flight turn
@@ -147,8 +164,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// than the terminal. JoinVertical then pads every other row out to
 		// match, pushing the whole view past the right edge.
 		m.input.SetWidth(max(msg.Width-lipgloss.Width(m.input.Prompt)-1, 1))
-		// TODO: correctly compute height of text input
-		m.viewport.SetHeight(msg.Height - 1)
+		// Measured after SetWidth above, since the input's height depends on
+		// the width it was given. A terminal too short to hold even one row of
+		// transcript overflows rather than leaving the viewport empty.
+		m.viewport.SetHeight(max(msg.Height-m.chromeHeight(), 1))
 		// Blocks are laid out for a fixed width, so content rendered for the
 		// old size would be clipped at the new one until something else
 		// happened to repaint it.

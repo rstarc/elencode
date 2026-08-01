@@ -30,9 +30,18 @@ const (
 	markerRest  = "│"
 )
 
+// UserPromptMarker replaces markerFirst on a user message, matching the
+// textinput prompt so typed input is recognizable in the transcript.
+const UserPromptMarker = ">"
+
 var textBlockColor = lipgloss.BrightBlack
 var toolUseColor = lipgloss.BrightBlue
 var errorColor = lipgloss.Red
+
+// userBackground and userForeground give a user message a light gray
+// background, like a chat bubble, to set it apart from the assistant's.
+var userBackground = lipgloss.White
+var userForeground = lipgloss.Black
 
 // blockWidth fits a block to the space available, which includes the marker
 // column. available is 0 before the first WindowSizeMsg arrives.
@@ -41,30 +50,34 @@ func blockWidth(available int) int {
 }
 
 // renderBoxedBlock prefixes content, wrapped to width, with a colored marker
-// column: an asterisk on the first line, a continuing border rune on the
+// column: firstMarker on the first line, a continuing border rune on the
 // rest. No vertical padding, so blocks stay dense in the transcript.
-func renderBoxedBlock(content string, markerColor color.Color, width int) string {
+func renderBoxedBlock(content string, contentStyle lipgloss.Style, firstMarker string, markerColor color.Color, width int) string {
 	innerWidth := max(blockWidth(width)-2, 1) // marker + one space
-	wrapped := lipgloss.NewStyle().Width(innerWidth).Render(content)
+	wrapped := contentStyle.Width(innerWidth).Render(content)
 	marker := lipgloss.NewStyle().Foreground(markerColor)
 
 	lines := strings.Split(wrapped, "\n")
 	for i, line := range lines {
 		m := markerRest
 		if i == 0 {
-			m = markerFirst
+			m = firstMarker
 		}
 		lines[i] = marker.Render(m) + " " + line
 	}
 	return strings.Join(lines, "\n")
 }
 
-func renderBlock(block Block, width int) string {
+func renderBlock(block Block, role Role, width int) string {
 	switch block := block.(type) {
 	case TextBlock:
-		return renderBoxedBlock(block.Text, textBlockColor, width)
+		if role == RoleUser {
+			style := lipgloss.NewStyle().Background(userBackground).Foreground(userForeground)
+			return renderBoxedBlock(block.Text, style, UserPromptMarker, userBackground, width)
+		}
+		return renderBoxedBlock(block.Text, lipgloss.NewStyle(), markerFirst, textBlockColor, width)
 	case ToolUseBlock:
-		return renderBoxedBlock(block.Name+string(block.Input), toolUseColor, width)
+		return renderBoxedBlock(block.Name+string(block.Input), lipgloss.NewStyle(), markerFirst, toolUseColor, width)
 	default:
 		return ""
 	}
@@ -72,14 +85,14 @@ func renderBlock(block Block, width int) string {
 
 // RenderStreamingText renders in-progress assistant text
 func RenderStreamingText(text string, width int) string {
-	return renderBlock(TextBlock{Text: text}, width)
+	return renderBlock(TextBlock{Text: text}, RoleAssistant, width)
 }
 
 // RenderError renders a failed turn. It is marked like a block so it reads as
 // part of the transcript, but red and labelled so it is not mistaken for
 // something the assistant said.
 func RenderError(err error, width int) string {
-	return renderBoxedBlock("Error: "+err.Error(), errorColor, width)
+	return renderBoxedBlock("Error: "+err.Error(), lipgloss.NewStyle(), markerFirst, errorColor, width)
 }
 
 type TextBlock struct{ Text string }

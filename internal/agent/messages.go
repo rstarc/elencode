@@ -30,7 +30,7 @@ func NewUserMessage(content []Block) Message {
 func renderMessage(msg Message, width int) string {
 	var blocks []string
 	for _, block := range msg.Content {
-		if rendered := renderBlock(block, width); rendered != "" {
+		if rendered := renderBlock(block, msg.Role, width); rendered != "" {
 			blocks = append(blocks, rendered)
 		}
 	}
