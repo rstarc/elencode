@@ -84,6 +84,51 @@ func TestRenderMenuMarksTheHighlightedRow(t *testing.T) {
 	}
 }
 
+func TestUnhighlightedCommandUsesTheDefaultTextColor(t *testing.T) {
+	// A colored name on every row makes the highlight hard to pick out, so only
+	// the selected row's name is colored.
+	want := lipgloss.NewStyle().GetForeground()
+
+	if got := menuStyles(false).name.GetForeground(); got != want {
+		t.Errorf("unhighlighted command foreground = %v, want the default %v", got, want)
+	}
+}
+
+func TestHighlightedRowDiffersInBothColumns(t *testing.T) {
+	selected, plain := menuStyles(true), menuStyles(false)
+
+	if selected.name.GetForeground() == plain.name.GetForeground() {
+		t.Error("the highlighted command has the same color as an unhighlighted one")
+	}
+	if selected.description.GetForeground() == plain.description.GetForeground() {
+		t.Error("the highlighted description has the same color as an unhighlighted one")
+	}
+}
+
+// TestRenderMenuColorsOnlyTheHighlightedRow checks the styles are actually
+// wired into the output, not merely defined.
+func TestRenderMenuColorsOnlyTheHighlightedRow(t *testing.T) {
+	const highlighted = 1
+
+	lines := strings.Split(renderMenu(menuFixture, highlighted, 80), "\n")
+
+	for i, line := range lines {
+		colored := strings.Contains(line, stylePrefix(menuStyles(true).name))
+		if want := i == highlighted; colored != want {
+			t.Errorf("row %d carries the highlight color = %v, want %v:\n%q", i, colored, want, line)
+		}
+	}
+}
+
+// stylePrefix returns the escape sequence a style emits before its content, so
+// a test can look for that exact styling in a rendered row. Taken from the
+// style itself rather than rebuilt from its foreground, since attributes like
+// bold share the escape and would otherwise be missed.
+func stylePrefix(s lipgloss.Style) string {
+	prefix, _, _ := strings.Cut(s.Render("x"), "x")
+	return prefix
+}
+
 func TestRenderMenuReportsAnEmptyMatchSet(t *testing.T) {
 	// Silence would be ambiguous: the user cannot tell a live menu with no
 	// matches from a menu that never opened.

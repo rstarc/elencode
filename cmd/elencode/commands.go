@@ -62,6 +62,30 @@ var menuMarkerColor = lipgloss.BrightBlue
 var menuNameColor = lipgloss.BrightBlue
 var menuDescriptionColor = lipgloss.BrightBlack
 
+// The highlighted row is the only colored one. Coloring every command made the
+// selection hard to pick out, since the highlight then differed by its marker
+// alone; leaving the rest in the terminal's default text color lets the
+// selected row stand out on both columns.
+var menuSelectedNameColor = lipgloss.BrightCyan
+var menuSelectedDescriptionColor = lipgloss.White
+
+// menuRowStyles is how one menu row is painted, given whether it is selected
+type menuRowStyles struct{ name, description lipgloss.Style }
+
+func menuStyles(selected bool) menuRowStyles {
+	if selected {
+		return menuRowStyles{
+			name:        lipgloss.NewStyle().Foreground(menuSelectedNameColor).Bold(true),
+			description: lipgloss.NewStyle().Foreground(menuSelectedDescriptionColor),
+		}
+	}
+	return menuRowStyles{
+		// No foreground: the terminal's own text color
+		name:        lipgloss.NewStyle(),
+		description: lipgloss.NewStyle().Foreground(menuDescriptionColor),
+	}
+}
+
 // renderMenu draws one row per match, highlighting the one at index. Rows are
 // truncated rather than wrapped: a command and its description are one line
 // each, so the menu's height stays predictable as the user types.
@@ -70,17 +94,16 @@ func renderMenu(matches []command, index, width int) string {
 		return menuRow(menuMarker, lipgloss.NewStyle().Foreground(menuDescriptionColor).Render("no matching command"), width)
 	}
 
-	nameStyle := lipgloss.NewStyle().Foreground(menuNameColor)
-	descriptionStyle := lipgloss.NewStyle().Foreground(menuDescriptionColor)
-
 	rows := make([]string, len(matches))
 	for i, c := range matches {
+		selected := i == index
 		marker := menuMarker
-		if i == index {
+		if selected {
 			marker = menuMarkerSelected
 		}
-		name := nameStyle.Render(commandPrefix + c.name)
-		rows[i] = menuRow(marker, name+"  "+descriptionStyle.Render(c.description), width)
+		styles := menuStyles(selected)
+		name := styles.name.Render(commandPrefix + c.name)
+		rows[i] = menuRow(marker, name+"  "+styles.description.Render(c.description), width)
 	}
 	return strings.Join(rows, "\n")
 }
