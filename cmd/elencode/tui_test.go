@@ -1018,3 +1018,21 @@ func TestProgramPrintsThePromptAndTheReply(t *testing.T) {
 		t.Errorf("the reply is still in the frame, want it printed above:\n%s", view)
 	}
 }
+
+// TestSelectingAModelSaysSo covers the only feedback there is: the switch
+// changes nothing on screen by itself, since what is already printed stays.
+func TestSelectingAModelSaysSo(t *testing.T) {
+	m := update(t, newPickerModel(t, &modelProvider{models: testModels}), modelsMsg{models: testModels})
+
+	_, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	got := printed(t, cmd)
+	if !strings.Contains(got, "model-one") {
+		t.Errorf("printed %q, want it to name the model switched to", got)
+	}
+	// The conversation stays on screen but is no longer sent, which is only
+	// obvious if the notice says so.
+	if !strings.Contains(got, "context cleared") {
+		t.Errorf("printed %q, want it to say the context was cleared", got)
+	}
+}

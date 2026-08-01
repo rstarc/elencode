@@ -380,8 +380,13 @@ func (m model) selectModel(id string) (model, tea.Cmd) {
 		failed = m.reportError(fmt.Errorf("saving the model to %s: %w", m.config.Path, err))
 	}
 
+	// The switch changes nothing on screen by itself: what is printed stays
+	// printed, and the conversation above is no longer sent to anyone. The
+	// notice is the only thing that says so.
+	notice := agent.RenderNotice("switched to "+id+" (context cleared)", m.width)
+
 	// Sequenced, not batched: these have to reach the scrollback in this order
-	return m, tea.Sequence(printAbove(interrupted), failed)
+	return m, tea.Sequence(printAbove(interrupted), printAbove(notice), failed)
 }
 
 // updateModelPicker drives the picker, which owns the keyboard while it is

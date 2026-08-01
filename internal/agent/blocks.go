@@ -95,6 +95,32 @@ func RenderError(err error, width int) string {
 	return renderBoxedBlock("Error: "+err.Error(), lipgloss.NewStyle(), markerFirst, errorColor, width)
 }
 
+// RenderNotice renders something the program did rather than something either
+// side said — switching models, say. It is drawn as a rule across the
+// transcript, with none of the marker column a message block has, so it reads
+// as a break in the conversation instead of a turn in it.
+func RenderNotice(text string, width int) string {
+	style := lipgloss.NewStyle().Foreground(noticeColor)
+
+	total := blockWidth(width)
+	label := " " + text + " "
+
+	fill := total - lipgloss.Width(label)
+	if fill < 2 {
+		// No room for a rule on both sides; the text alone still reads as a
+		// notice, since nothing else in the transcript is unmarked.
+		return style.MaxWidth(total).Render(label)
+	}
+
+	left := fill / 2
+	return style.Render(strings.Repeat(noticeRule, left) + label + strings.Repeat(noticeRule, fill-left))
+}
+
+// noticeRule is the character the notice line is drawn with
+const noticeRule = "─"
+
+var noticeColor = lipgloss.BrightBlack
+
 type TextBlock struct{ Text string }
 
 func (b TextBlock) block() {}

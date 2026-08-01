@@ -98,3 +98,34 @@ func TestRenderStaysReadableWhenWidthIsUnusable(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderNoticeReadsAsNeitherSide covers what a notice is for: it reports
+// something the program did, so it must not look like a message from the user
+// or the assistant.
+func TestRenderNoticeReadsAsNeitherSide(t *testing.T) {
+	got := stripANSI(RenderNotice("switched to some-model", 80))
+
+	if !strings.Contains(got, "switched to some-model") {
+		t.Errorf("notice = %q, want it to carry the text", got)
+	}
+	for _, marker := range []string{markerFirst, markerRest, UserPromptMarker} {
+		if strings.HasPrefix(got, marker+" ") {
+			t.Errorf("notice = %q, want it not marked like a message block (%q)", got, marker)
+		}
+	}
+}
+
+func TestRenderNoticeIsOneLine(t *testing.T) {
+	if got := RenderNotice("switched to some-model", 80); strings.Contains(got, "\n") {
+		t.Errorf("notice = %q, want a single line", got)
+	}
+}
+
+func TestRenderNoticeFitsNarrowTerminal(t *testing.T) {
+	for _, width := range []int{10, 20, 40, 80} {
+		got := RenderNotice("switched to a model with a rather long name", width)
+		if lipgloss.Width(got) > max(width, minBlockWidth) {
+			t.Errorf("notice at width %d is %d columns wide:\n%s", width, lipgloss.Width(got), got)
+		}
+	}
+}
