@@ -21,7 +21,7 @@ func main() {
 	}
 
 	// Initialize provider
-	provider := anthropic.New(cfg.AnthropicAPIKey.Reveal())
+	provider := anthropic.New(cfg.AnthropicAPIKey.Reveal(), cfg.Model)
 
 	// TODO: Use os.OpenRoot instead
 	root := os.DirFS(".")

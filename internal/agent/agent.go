@@ -162,6 +162,21 @@ func send(ctx context.Context, events chan<- Event, ev Event) bool {
 	}
 }
 
+// Models lists the models the provider offers
+func (a *Agent) Models(ctx context.Context) ([]Model, error) {
+	return a.provider.Models(ctx)
+}
+
+// SetModel switches models and drops the conversation so far, which was
+// produced by the previous model and does not carry over.
+func (a *Agent) SetModel(id string) {
+	a.provider.SetModel(id)
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.contextWindow = []Message{}
+}
+
 func (a *Agent) AppendMessage(msg Message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -186,10 +201,12 @@ func (a *Agent) beginTurn(msg Message) int {
 // messages in a row, and a tool_use block with no matching tool_result is
 // unsendable outright. Either way every later turn fails too, so a failed turn
 // undoes itself rather than poisoning the conversation.
+// A mark past the end of the window is not a bug: SetModel clears the window
+// while a turn is still running, and there is then nothing left to undo.
 func (a *Agent) rollback(mark int) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.contextWindow = a.contextWindow[:mark]
+	a.contextWindow = a.contextWindow[:min(mark, len(a.contextWindow))]
 }
 
 // New returns a pointer because Agent holds a Mutex and must not be copied

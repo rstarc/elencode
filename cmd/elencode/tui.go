@@ -55,6 +55,11 @@ type model struct {
 	menuIndex     int  // highlighted row within the current match set
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
+	// model picker state, driven by /model
+	modelsLoading      bool          // the model list is being fetched
+	modelPickerVisible bool          // the picker has the keyboard
+	models             []agent.Model // what the last fetch returned
+	modelIndex         int           // highlighted row within models
 	// quit confirmation. quitGeneration counts armings so a disarm message left
 	// over from an earlier one cannot disarm the current one.
 	quitArmed      bool
@@ -100,6 +105,14 @@ func (m model) menuView() string {
 	return renderMenu(matchCommands(m.input.Value()), m.menuIndex, m.width)
 }
 
+// modelPickerView renders the model picker, or "" while it is closed
+func (m model) modelPickerView() string {
+	if !m.modelPickerVisible {
+		return ""
+	}
+	return renderModelMenu(m.models, m.modelIndex, m.width)
+}
+
 func newModel(agent *agent.Agent, cfg config.Config) model {
 
 	input := textinput.New()
@@ -129,7 +142,16 @@ func newModel(agent *agent.Agent, cfg config.Config) model {
 // spinnerLine renders the "processing..." indicator shown above the input
 // while a turn is in flight.
 func (m model) spinnerLine() string {
+	if m.modelsLoading {
+		return "loading models" + m.spinner.View()
+	}
 	return "processing" + m.spinner.View()
+}
+
+// busy reports whether anything is in flight, and so whether the spinner row is
+// drawn rather than only reserved
+func (m model) busy() bool {
+	return m.state == uiStateProcessing || m.modelsLoading
 }
 
 // chromeHeight is the number of rows View stacks below the viewport, measured
@@ -143,6 +165,9 @@ func (m model) chromeHeight() int {
 	height := lipgloss.Height(m.spinnerLine()) + lipgloss.Height(m.input.View())
 	if menu := m.menuView(); menu != "" {
 		height += lipgloss.Height(menu)
+	}
+	if picker := m.modelPickerView(); picker != "" {
+		height += lipgloss.Height(picker)
 	}
 	if hint := m.quitHint(); hint != "" {
 		height += lipgloss.Height(hint)
@@ -208,6 +233,8 @@ func (m model) runCommand() (model, tea.Cmd) {
 		return m, nil
 	}
 
+	_, arg := splitCommand(m.input.Value())
+
 	switch cmd.name {
 	case "config":
 		m.configVisible = true
@@ -215,6 +242,8 @@ func (m model) runCommand() (model, tea.Cmd) {
 		m.menuIndex = 0
 		m.resize()
 		return m, nil
+	case "model":
+		return m.loadModels(arg)
 	case "quit":
 		// Abandon any in-flight turn, as ctrl+c does, so its goroutine unblocks
 		if m.cancel != nil {
@@ -228,6 +257,120 @@ func (m model) runCommand() (model, tea.Cmd) {
 		m.refresh()
 		return m, nil
 	}
+}
+
+// modelsMsg carries the result of a /model lookup. choose is the model the user
+// named on the command line, empty when they asked for the picker instead.
+type modelsMsg struct {
+	models []agent.Model
+	choose string
+	err    error
+}
+
+// loadModels fetches the model list in the background, since it is an API call
+// and the UI must stay responsive while it runs.
+func (m model) loadModels(choose string) (model, tea.Cmd) {
+	m.modelsLoading = true
+	m.err = nil
+	m.input.Reset()
+	m.menuIndex = 0
+	m.resize()
+	m.refresh()
+
+	// Captured rather than read off m inside the closure: the command runs later,
+	// against whatever model value the loop happens to hold.
+	a := m.agent
+	fetch := func() tea.Msg {
+		models, err := a.Models(context.Background())
+		return modelsMsg{models: models, choose: choose, err: err}
+	}
+	return m, tea.Batch(fetch, m.spinner.Tick)
+}
+
+// showModels acts on a fetched model list: it either selects the model the user
+// named or opens the picker.
+func (m model) showModels(msg modelsMsg) model {
+	m.modelsLoading = false
+
+	if msg.err != nil {
+		m.err = fmt.Errorf("listing models: %w", msg.err)
+		m.resize()
+		m.refresh()
+		return m
+	}
+
+	if msg.choose != "" {
+		for _, candidate := range msg.models {
+			if strings.EqualFold(candidate.ID, msg.choose) {
+				return m.selectModel(candidate.ID)
+			}
+		}
+		// The list was just fetched, so an unknown id is the user's typo rather
+		// than a stale cache
+		m.err = fmt.Errorf("unknown model: %s", msg.choose)
+		m.resize()
+		m.refresh()
+		return m
+	}
+
+	m.models = msg.models
+	m.modelPickerVisible = true
+	// Start where the user already is, rather than making them find it
+	m.modelIndex = 0
+	for i, candidate := range msg.models {
+		if candidate.ID == m.config.Model {
+			m.modelIndex = i
+		}
+	}
+	m.resize()
+	return m
+}
+
+// selectModel switches to id, clearing the conversation the previous model
+// produced and remembering the choice for the next session.
+func (m model) selectModel(id string) model {
+	// The turn in flight was started on the old model and is about to lose the
+	// context window it belongs to, so it is abandoned rather than left running.
+	if m.state == uiStateProcessing {
+		m = m.endTurn()
+	}
+
+	m.agent.SetModel(id)
+	m.config.Model = id
+	m.modelPickerVisible = false
+	m.models = nil
+	m.modelIndex = 0
+
+	// Reported but not fatal: the model is switched for this session either way
+	if err := m.config.Save(); err != nil {
+		m.err = fmt.Errorf("saving the model to %s: %w", m.config.Path, err)
+	}
+	m.resize()
+	m.refresh()
+	return m
+}
+
+// updateModelPicker drives the picker, which owns the keyboard while it is
+// open: a keystroke reaching the input would open the command menu underneath.
+func (m model) updateModelPicker(msg tea.KeyPressMsg) (model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.modelPickerVisible = false
+		m.models = nil
+		m.modelIndex = 0
+		m.resize()
+	case "up", "down":
+		delta := 1
+		if msg.String() == "up" {
+			delta = -1
+		}
+		m.modelIndex = moveHighlight(m.modelIndex, delta, len(m.models))
+	case "enter":
+		if len(m.models) > 0 {
+			m = m.selectModel(m.models[m.modelIndex].ID)
+		}
+	}
+	return m, nil
 }
 
 // startTurn hands userInput to the agent and begins receiving its Events
@@ -313,6 +456,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitArmed = false
 			m.resize()
 		}
+		// The picker takes every key but ctrl+c, which keeps meaning "quit"
+		// wherever the user is.
+		if m.modelPickerVisible && msg.String() != "ctrl+c" {
+			return m.updateModelPicker(msg)
+		}
 		// handle user input
 		switch msg.String() {
 		case "ctrl+c":
@@ -394,6 +542,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Wait for the next event. The turn ends when the channel closes, not
 		// here: a MessageEvent may be followed by tool results and more inference.
 		return m, waitForEvent(m.events)
+	case modelsMsg:
+		return m.showModels(msg), nil
+
 	case quitDisarmMsg:
 		// Ignore a message from an earlier arming: the user has since disarmed and
 		// armed again, and this one would cancel a confirmation they just asked for.
@@ -414,7 +565,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case spinner.TickMsg:
 		// Once idle, stop re-issuing ticks so the spinner doesn't keep
 		// animating in the background between turns.
-		if m.state != uiStateProcessing {
+		if !m.busy() {
 			return m, nil
 		}
 		var cmd tea.Cmd
@@ -440,7 +591,7 @@ func (m model) View() tea.View {
 	inputView := m.input.View()
 
 	rows := []string{viewportView}
-	if m.state == uiStateProcessing {
+	if m.busy() {
 		rows = append(rows, m.spinnerLine())
 	}
 	if hint := m.quitHint(); hint != "" {
@@ -448,6 +599,9 @@ func (m model) View() tea.View {
 	}
 	if menu := m.menuView(); menu != "" {
 		rows = append(rows, menu)
+	}
+	if picker := m.modelPickerView(); picker != "" {
+		rows = append(rows, picker)
 	}
 	rows = append(rows, inputView)
 

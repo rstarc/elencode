@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/config"
 )
 
@@ -18,7 +19,15 @@ type command struct {
 
 var commands = []command{
 	{"config", "show the current configuration"},
+	{"model", "choose the model, optionally by id"},
 	{"quit", "exit elencode"},
+}
+
+// splitCommand separates a command line into the command and its argument, so
+// "/model some-id" runs /model with some-id rather than being looked up whole.
+func splitCommand(input string) (name, arg string) {
+	name, arg, _ = strings.Cut(strings.TrimSpace(input), " ")
+	return name, strings.TrimSpace(arg)
 }
 
 // renderConfig draws the read-only configuration view. The API key is printed
@@ -34,6 +43,7 @@ func renderConfig(cfg config.Config, width int) string {
 		menuRow(menuMarker, title, width),
 		menuRow(menuMarker, "", width),
 		configRow("anthropic_api_key", cfg.AnthropicAPIKey.String()+"  ("+source+")", width),
+		configRow("model", cfg.Model, width),
 		configRow("config file", cfg.Path, width),
 		menuRow(menuMarker, "", width),
 		menuRow(menuMarker, lipgloss.NewStyle().Foreground(menuDescriptionColor).Render("esc to close"), width),
@@ -86,24 +96,80 @@ func menuStyles(selected bool) menuRowStyles {
 	}
 }
 
+// menuItem is one row of a menu: what to type, and what it means
+type menuItem struct{ name, description string }
+
 // renderMenu draws one row per match, highlighting the one at index. Rows are
 // truncated rather than wrapped: a command and its description are one line
 // each, so the menu's height stays predictable as the user types.
 func renderMenu(matches []command, index, width int) string {
-	if len(matches) == 0 {
-		return menuRow(menuMarker, lipgloss.NewStyle().Foreground(menuDescriptionColor).Render("no matching command"), width)
+	items := make([]menuItem, len(matches))
+	for i, c := range matches {
+		items[i] = menuItem{commandPrefix + c.name, c.description}
+	}
+	return renderItems(items, index, width, "no matching command")
+}
+
+// renderModelMenu draws the model picker. The id is shown first because it is
+// what the user types after /model; the display name is only there to recognise
+// it by.
+func renderModelMenu(models []agent.Model, index, width int) string {
+	items := make([]menuItem, len(models))
+	for i, m := range models {
+		items[i] = menuItem{m.ID, m.DisplayName}
+	}
+	// Unlike the command list, this one comes from the API and is far longer
+	// than the menu has room for, so only a window around the highlight is drawn.
+	start, end := menuWindow(len(items), index)
+	return renderItems(alignNames(items[start:end]), index-start, width, "the API offered no models")
+}
+
+// alignNames pads every name to the widest, so the second column starts at one
+// place instead of following ids that range from "claude-opus-5" to
+// "claude-sonnet-4-5-20250929".
+func alignNames(items []menuItem) []menuItem {
+	widest := 0
+	for _, item := range items {
+		widest = max(widest, lipgloss.Width(item.name))
 	}
 
-	rows := make([]string, len(matches))
-	for i, c := range matches {
+	aligned := make([]menuItem, len(items))
+	for i, item := range items {
+		aligned[i] = menuItem{lipgloss.NewStyle().Width(widest).Render(item.name), item.description}
+	}
+	return aligned
+}
+
+// maxMenuRows caps how tall a menu may grow, leaving the transcript some room
+const maxMenuRows = 10
+
+// menuWindow returns the half-open range of rows to draw for a list of count
+// items with index highlighted. The highlight is kept centred rather than
+// scrolled minimally, so the window depends only on the current index and no
+// scroll position has to be carried around.
+func menuWindow(count, index int) (start, end int) {
+	if count <= maxMenuRows {
+		return 0, count
+	}
+	start = min(max(index-maxMenuRows/2, 0), count-maxMenuRows)
+	return start, start + maxMenuRows
+}
+
+// renderItems draws the rows of a menu, or emptyMessage when there are none
+func renderItems(items []menuItem, index, width int, emptyMessage string) string {
+	if len(items) == 0 {
+		return menuRow(menuMarker, lipgloss.NewStyle().Foreground(menuDescriptionColor).Render(emptyMessage), width)
+	}
+
+	rows := make([]string, len(items))
+	for i, item := range items {
 		selected := i == index
 		marker := menuMarker
 		if selected {
 			marker = menuMarkerSelected
 		}
 		styles := menuStyles(selected)
-		name := styles.name.Render(commandPrefix + c.name)
-		rows[i] = menuRow(marker, name+"  "+styles.description.Render(c.description), width)
+		rows[i] = menuRow(marker, styles.name.Render(item.name)+"  "+styles.description.Render(item.description), width)
 	}
 	return strings.Join(rows, "\n")
 }
@@ -155,7 +221,8 @@ func isSubsequence(query, name string) bool {
 // lookupCommand finds the command input names exactly. Enter uses this rather
 // than matchCommands, so a typo cannot run a command the user did not spell out.
 func lookupCommand(input string) (command, bool) {
-	name, ok := strings.CutPrefix(input, commandPrefix)
+	head, _ := splitCommand(input)
+	name, ok := strings.CutPrefix(head, commandPrefix)
 	if !ok {
 		return command{}, false
 	}

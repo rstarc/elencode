@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/config"
 )
 
@@ -24,7 +26,7 @@ func TestMatchCommands(t *testing.T) {
 		input string
 		want  []string
 	}{
-		{"slash alone lists everything", "/", []string{"config", "quit"}},
+		{"slash alone lists everything", "/", []string{"config", "model", "quit"}},
 		{"exact name", "/quit", []string{"quit"}},
 		{"prefix", "/qu", []string{"quit"}},
 		{"subsequence", "/qt", []string{"quit"}},
@@ -229,5 +231,126 @@ func TestLookupCommandRequiresExactName(t *testing.T) {
 	// A fuzzy match must not run on Enter, or a typo silently quits the program.
 	if _, ok := lookupCommand("/qt"); ok {
 		t.Error("lookupCommand(\"/qt\") matched, want no match for a non-exact name")
+	}
+}
+
+func TestSplitCommand(t *testing.T) {
+	tests := []struct {
+		name             string
+		input            string
+		wantCmd, wantArg string
+	}{
+		{"no argument", "/model", "/model", ""},
+		{"argument", "/model claude-opus-4-5", "/model", "claude-opus-4-5"},
+		{"extra spaces", "/model   claude-opus-4-5  ", "/model", "claude-opus-4-5"},
+		{"trailing space alone", "/model ", "/model", ""},
+		{"plain text", "hello there", "hello", "there"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			gotCmd, gotArg := splitCommand(test.input)
+			if gotCmd != test.wantCmd || gotArg != test.wantArg {
+				t.Errorf("splitCommand(%q) = %q, %q, want %q, %q", test.input, gotCmd, gotArg, test.wantCmd, test.wantArg)
+			}
+		})
+	}
+}
+
+// TestLookupCommandIgnoresTheArgument covers "/model some-id": the argument is
+// the command's input, not part of its name.
+func TestLookupCommandIgnoresTheArgument(t *testing.T) {
+	cmd, ok := lookupCommand("/model claude-opus-4-5")
+	if !ok {
+		t.Fatal("lookupCommand found nothing for a command with an argument")
+	}
+	if cmd.name != "model" {
+		t.Errorf("command = %q, want %q", cmd.name, "model")
+	}
+}
+
+// modelFixture stands in for what the API returns, so these tests do not depend
+// on which models exist today.
+var modelFixture = []agent.Model{
+	{ID: "model-one", DisplayName: "Model One"},
+	{ID: "model-two", DisplayName: "Model Two"},
+	{ID: "model-three", DisplayName: "Model Three"},
+}
+
+func TestRenderModelMenuShowsEveryModel(t *testing.T) {
+	view := renderModelMenu(modelFixture, 0, 80)
+
+	for _, m := range modelFixture {
+		if !strings.Contains(view, m.ID) {
+			t.Errorf("menu is missing %q:\n%s", m.ID, view)
+		}
+		// The id is what the user types after /model; the display name is what
+		// they recognise. Both are shown.
+		if !strings.Contains(view, m.DisplayName) {
+			t.Errorf("menu is missing the display name of %q:\n%s", m.ID, view)
+		}
+	}
+}
+
+func TestRenderModelMenuMarksTheHighlightedRow(t *testing.T) {
+	const highlighted = 1
+
+	for i, line := range strings.Split(renderModelMenu(modelFixture, highlighted, 80), "\n") {
+		marked := strings.Contains(line, menuMarkerSelected)
+		if want := i == highlighted; marked != want {
+			t.Errorf("row %d marked = %v, want %v:\n%s", i, marked, want, line)
+		}
+	}
+}
+
+// TestRenderModelMenuCapsItsHeight keeps a long list from pushing the transcript
+// off the screen: the API offers far more models than the menu has room for.
+func TestRenderModelMenuCapsItsHeight(t *testing.T) {
+	var many []agent.Model
+	for i := range maxMenuRows * 2 {
+		many = append(many, agent.Model{ID: fmt.Sprintf("model-%d", i), DisplayName: "Model"})
+	}
+
+	view := renderModelMenu(many, 0, 80)
+
+	if got := len(strings.Split(view, "\n")); got > maxMenuRows {
+		t.Errorf("menu is %d rows tall, want at most %d", got, maxMenuRows)
+	}
+}
+
+// TestRenderModelMenuScrollsToTheHighlight covers arrowing past the bottom of
+// the window: a selection that is not drawn cannot be seen.
+func TestRenderModelMenuScrollsToTheHighlight(t *testing.T) {
+	var many []agent.Model
+	for i := range maxMenuRows * 2 {
+		many = append(many, agent.Model{ID: fmt.Sprintf("model-%d", i), DisplayName: "Model"})
+	}
+	last := len(many) - 1
+
+	view := renderModelMenu(many, last, 80)
+
+	if !strings.Contains(view, many[last].ID) {
+		t.Errorf("menu does not show the highlighted model %q:\n%s", many[last].ID, view)
+	}
+}
+
+func TestRenderConfigShowsTheModel(t *testing.T) {
+	cfg := config.Config{Model: "claude-opus-4-5", Path: "/tmp/c.json"}
+
+	if view := renderConfig(cfg, 80); !strings.Contains(view, cfg.Model) {
+		t.Errorf("config view does not show the model:\n%s", view)
+	}
+}
+
+// TestAlignNamesPadsToTheWidest keeps the second column straight: model ids
+// range from "claude-opus-5" to "claude-sonnet-4-5-20250929", so unpadded rows
+// leave the display names scattered across the menu.
+func TestAlignNamesPadsToTheWidest(t *testing.T) {
+	got := alignNames([]menuItem{{"a", "A"}, {"bbb", "B"}, {"cc", "C"}})
+
+	for i, item := range got {
+		if lipgloss.Width(item.name) != 3 {
+			t.Errorf("row %d name = %q, want it padded to the widest (3)", i, item.name)
+		}
 	}
 }

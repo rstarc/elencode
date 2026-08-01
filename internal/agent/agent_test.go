@@ -21,7 +21,13 @@ type scriptedProvider struct {
 	turns    [][]Event
 	calls    int
 	requests []Request
+	models   []Model // what Models returns
+	model    string  // the last id SetModel was given
 }
+
+func (p *scriptedProvider) Models(ctx context.Context) ([]Model, error) { return p.models, nil }
+
+func (p *scriptedProvider) SetModel(id string) { p.model = id }
 
 func (p *scriptedProvider) Stream(ctx context.Context, req Request) <-chan Event {
 	p.requests = append(p.requests, req)
@@ -49,6 +55,10 @@ func (p *scriptedProvider) Stream(ctx context.Context, req Request) <-chan Event
 // blockingProvider stands in for a slow API call: it produces no terminal event
 // and only returns once ctx is cancelled.
 type blockingProvider struct{ started chan struct{} }
+
+func (p *blockingProvider) Models(ctx context.Context) ([]Model, error) { return nil, nil }
+
+func (p *blockingProvider) SetModel(id string) {}
 
 func (p *blockingProvider) Stream(ctx context.Context, req Request) <-chan Event {
 	events := make(chan Event)
@@ -307,5 +317,64 @@ func TestRunStopsWhenContextIsCancelled(t *testing.T) {
 	// cancellation would leave the channel open and time out here.
 	if got := collect(t, events); len(got) != 0 {
 		t.Errorf("events = %#v, want none after cancellation", got)
+	}
+}
+
+func TestModelsComeFromTheProvider(t *testing.T) {
+	provider := &scriptedProvider{models: []Model{{ID: "a", DisplayName: "A"}}}
+	a := New(provider, nil)
+
+	got, err := a.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Errorf("Models() = %v, want the provider's list", got)
+	}
+}
+
+// TestSetModelClearsTheContextWindow covers the point of switching models: the
+// conversation so far was produced by another model, and is not carried over.
+func TestSetModelClearsTheContextWindow(t *testing.T) {
+	provider := &scriptedProvider{turns: [][]Event{{
+		ResponseEvent{Response: Response{Message: assistantMessage(TextBlock{Text: "Hello"}), StopReason: StopReasonEndTurn}},
+	}}}
+	a := New(provider, nil)
+	collect(t, a.Run(context.Background(), "hi"))
+	if len(a.contextWindow) == 0 {
+		t.Fatal("context window is empty before switching models, nothing to clear")
+	}
+
+	a.SetModel("b")
+
+	if len(a.contextWindow) != 0 {
+		t.Errorf("context window has %d messages after switching models, want it cleared", len(a.contextWindow))
+	}
+	if provider.model != "b" {
+		t.Errorf("provider model = %q, want %q", provider.model, "b")
+	}
+}
+
+// TestRollbackSurvivesAModelSwitch covers switching models mid-turn: the turn
+// rolls back to a mark taken before the window was cleared, which would
+// otherwise be a slice bound past the end of it.
+func TestRollbackSurvivesAModelSwitch(t *testing.T) {
+	provider := &blockingProvider{started: make(chan struct{})}
+	a := New(provider, nil)
+	a.AppendMessage(NewUserMessage([]Block{TextBlock{Text: "an earlier turn"}}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := a.Run(ctx, "hi")
+	<-provider.started
+
+	a.SetModel("b")
+	cancel()
+
+	for _, event := range collect(t, events) {
+		if err, ok := event.(ErrorEvent); ok {
+			t.Errorf("turn ended with %v, want it to unwind cleanly", err.Err)
+		}
 	}
 }

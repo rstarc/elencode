@@ -2,6 +2,7 @@ package config
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path"
@@ -35,12 +36,70 @@ func (s Secret) Reveal() string { return string(s) }
 
 // Config represents the configuration options exposed to the user
 type Config struct {
-	AnthropicAPIKey Secret `json:"anthropic_api_key"`
+	// Every field is omitempty so Save can merge into the file: an unset value
+	// leaves whatever the file already said in place, rather than blanking it.
+	AnthropicAPIKey Secret `json:"anthropic_api_key,omitempty"`
+	// Model the provider should use. Empty means the provider's own default.
+	Model string `json:"model,omitempty"`
 	// Provenance, filled in by Load and never read from the file, so the config
 	// view can say where a value came from.
 	Path          string `json:"-"` // config file Load read
 	APIKeyFromEnv bool   `json:"-"` // the environment overrode the file value
 }
+
+// Save writes the configuration back to c.Path.
+//
+// It merges into what is already on disk rather than replacing it, so a file
+// holding settings this version does not know about survives a save. A key the
+// environment supplied is dropped first: persisting it would put a secret in
+// the file the user never chose to store there, and pin it even after the
+// environment moved on.
+func (c Config) Save() error {
+	if c.APIKeyFromEnv {
+		c.AnthropicAPIKey = ""
+	}
+
+	updates, err := json.Marshal(c)
+	if err != nil {
+		return err
+	}
+
+	settings, err := readSettings(c.Path)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(updates, &settings); err != nil {
+		return err
+	}
+
+	body, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(c.Path, append(body, '\n'), configFileMode)
+}
+
+// readSettings decodes the config file as raw JSON keys, so Save can write back
+// the ones it does not have a field for. A missing file is an empty set: the
+// first save writes it.
+func readSettings(path string) (map[string]json.RawMessage, error) {
+	body, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return map[string]json.RawMessage{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	settings := map[string]json.RawMessage{}
+	if err := json.Unmarshal(body, &settings); err != nil {
+		return nil, err
+	}
+	return settings, nil
+}
+
+// configFileMode keeps the file readable by its owner only: it holds an API key
+const configFileMode = 0o600
 
 const configDirectoryName = "elencode"
 

@@ -1,11 +1,17 @@
 package anthropic
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
+	"github.com/anthropics/anthropic-sdk-go/option"
 	"github.com/rstarc/elencode/internal/agent"
 )
 
@@ -118,5 +124,65 @@ func TestToMessagesConvertsEveryBlockKind(t *testing.T) {
 	}
 	if len(got) != len(msgs) {
 		t.Errorf("converted %d messages, want %d", len(got), len(msgs))
+	}
+}
+
+// TestNewUsesTheConfiguredModel and its sibling pin the two ways a model is
+// chosen: the config file, or the built-in default when it says nothing.
+func TestNewUsesTheConfiguredModel(t *testing.T) {
+	c := New("key", "claude-opus-4-5")
+
+	if got := string(c.model); got != "claude-opus-4-5" {
+		t.Errorf("model = %q, want the configured one", got)
+	}
+}
+
+func TestNewFallsBackToADefaultModel(t *testing.T) {
+	c := New("key", "")
+
+	if c.model == "" {
+		t.Error("model is empty with none configured, want the default")
+	}
+}
+
+func TestSetModelSwitchesTheModel(t *testing.T) {
+	c := New("key", "claude-opus-4-5")
+
+	c.SetModel("claude-haiku-4-5")
+
+	if got := string(c.model); got != "claude-haiku-4-5" {
+		t.Errorf("model = %q, want the one SetModel was given", got)
+	}
+}
+
+// TestModelsListsWhatTheAPIReturns runs against a stub of the models endpoint,
+// so it covers the request path and the conversion without a network call.
+func TestModelsListsWhatTheAPIReturns(t *testing.T) {
+	const body = `{"data":[
+		{"type":"model","id":"claude-opus-4-5","display_name":"Claude Opus 4.5","created_at":"2025-11-01T00:00:00Z"},
+		{"type":"model","id":"claude-haiku-4-5","display_name":"Claude Haiku 4.5","created_at":"2025-10-01T00:00:00Z"}
+	],"has_more":false}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/v1/models") {
+			t.Errorf("requested %q, want the models endpoint", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, body)
+	}))
+	defer server.Close()
+
+	c := newWithOptions("key", "", option.WithBaseURL(server.URL))
+	got, err := c.Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+
+	want := []agent.Model{
+		{ID: "claude-opus-4-5", DisplayName: "Claude Opus 4.5"},
+		{ID: "claude-haiku-4-5", DisplayName: "Claude Haiku 4.5"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Models() = %v, want %v", got, want)
 	}
 }

@@ -6,6 +6,18 @@ type Provider interface {
 	// Stream starts a turn and returns a channel of incremental Events.
 	// The turn is terminated by exactly one ResponseEvent or ErrorEvent.
 	Stream(ctx context.Context, req Request) <-chan Event
+	// Models lists the models this provider can be pointed at. It talks to the
+	// API, so it blocks and takes a ctx.
+	Models(ctx context.Context) ([]Model, error)
+	// SetModel points every later Stream at the given model. Providers are used
+	// from the turn goroutine, so this must be safe to call concurrently.
+	SetModel(id string)
+}
+
+// Model is one model the provider offers, as shown in the picker
+type Model struct {
+	ID          string
+	DisplayName string
 }
 
 // Event is an incremental update emitted while a turn is being processed.

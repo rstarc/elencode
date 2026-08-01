@@ -145,3 +145,115 @@ func TestLoadReportsThePathWhenItFails(t *testing.T) {
 		t.Errorf("Path = %q, want %q even on failure", cfg.Path, file)
 	}
 }
+
+func TestLoadReadsTheModel(t *testing.T) {
+	writeConfig(t, `{"anthropic_api_key":"`+realKey+`","model":"claude-sonnet-4-5"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Model != "claude-sonnet-4-5" {
+		t.Errorf("Model = %q, want %q", cfg.Model, "claude-sonnet-4-5")
+	}
+}
+
+func TestSaveIsReadBackByLoad(t *testing.T) {
+	file := writeConfig(t, `{"anthropic_api_key":"`+realKey+`"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+
+	cfg := Config{Path: file, Model: "claude-opus-4-5"}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	loaded, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Model != "claude-opus-4-5" {
+		t.Errorf("Model = %q, want the value Save wrote", loaded.Model)
+	}
+}
+
+// TestSaveKeepsSettingsItDoesNotKnowAbout guards against a wholesale rewrite
+// dropping keys a later version of elencode wrote.
+func TestSaveKeepsSettingsItDoesNotKnowAbout(t *testing.T) {
+	file := writeConfig(t, `{"anthropic_api_key":"`+realKey+`","future_setting":42}`)
+
+	cfg := Config{Path: file, AnthropicAPIKey: realKey, Model: "claude-opus-4-5"}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	saved := readConfig(t, file)
+	if saved["future_setting"] != float64(42) {
+		t.Errorf("Save dropped an unknown setting: %v", saved)
+	}
+	if saved["anthropic_api_key"] != realKey {
+		t.Error("Save lost the API key")
+	}
+}
+
+// TestSaveDoesNotWriteTheEnvironmentsAPIKey keeps a key that was only ever
+// meant to live in the environment out of the file: the in-memory Config holds
+// the override, so saving it back would persist a secret the user never put
+// there, and pin it even after the environment changes.
+func TestSaveDoesNotWriteTheEnvironmentsAPIKey(t *testing.T) {
+	const fileKey = "sk-ant-from-the-file"
+	file := writeConfig(t, `{"anthropic_api_key":"`+fileKey+`"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, realKey)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg.Model = "claude-opus-4-5"
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	saved := readConfig(t, file)
+	if saved["anthropic_api_key"] == realKey {
+		t.Error("Save wrote the environment's API key into the config file")
+	}
+	if saved["anthropic_api_key"] != fileKey {
+		t.Errorf("Save did not keep the file's own API key: %v", saved["anthropic_api_key"])
+	}
+}
+
+func TestSaveKeepsTheFilePrivate(t *testing.T) {
+	file := writeConfig(t, `{"anthropic_api_key":"`+realKey+`"}`)
+
+	cfg := Config{Path: file, AnthropicAPIKey: realKey, Model: "claude-opus-4-5"}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	// The file holds an API key, so a rewrite must not widen its permissions
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("config file mode = %o, want 600", perm)
+	}
+}
+
+// readConfig decodes the config file as plain JSON, so a test can assert on
+// what is actually on disk rather than on what Load makes of it.
+func readConfig(t *testing.T, file string) map[string]any {
+	t.Helper()
+
+	body, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("reading config back: %v", err)
+	}
+	settings := map[string]any{}
+	if err := json.Unmarshal(body, &settings); err != nil {
+		t.Fatalf("saved config is not valid JSON: %v\n%s", err, body)
+	}
+	return settings
+}

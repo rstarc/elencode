@@ -3,6 +3,7 @@ package anthropic
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/rstarc/elencode/internal/agent"
 
@@ -15,14 +16,59 @@ import (
 // renders, without letting an unread stream grow without bound.
 const eventBuffer = 64
 
+// defaultModel is used when the config file names none
+const defaultModel = sdk.ModelClaudeHaiku4_5
+
 type Client struct {
 	client sdk.Client
-	model  sdk.Model
+	// mu guards model alone: /model can switch it from the UI goroutine while a
+	// turn is streaming on another.
+	mu    sync.RWMutex
+	model sdk.Model
 }
 
-func New(apiKey string) *Client {
-	// TODO: model, client with functional options
-	return &Client{client: sdk.NewClient(option.WithAPIKey(apiKey)), model: sdk.ModelClaudeHaiku4_5}
+func New(apiKey, model string) *Client {
+	return newWithOptions(apiKey, model)
+}
+
+// newWithOptions is New with extra SDK options, which tests use to point the
+// client at a stub server.
+func newWithOptions(apiKey, model string, opts ...option.RequestOption) *Client {
+	chosen := sdk.Model(model)
+	if chosen == "" {
+		chosen = defaultModel
+	}
+	opts = append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
+	return &Client{client: sdk.NewClient(opts...), model: chosen}
+}
+
+// SetModel points every later Stream at the given model
+func (c *Client) SetModel(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.model = sdk.Model(id)
+}
+
+func (c *Client) currentModel() sdk.Model {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.model
+}
+
+// Models lists every model the API offers, newest first, following pagination
+// so a model past the first page is still selectable.
+func (c *Client) Models(ctx context.Context) ([]agent.Model, error) {
+	var models []agent.Model
+
+	pager := c.client.Models.ListAutoPaging(ctx, sdk.ModelListParams{})
+	for pager.Next() {
+		info := pager.Current()
+		models = append(models, agent.Model{ID: info.ID, DisplayName: info.DisplayName})
+	}
+	if err := pager.Err(); err != nil {
+		return nil, err
+	}
+	return models, nil
 }
 
 // Stream sends every event through a select on ctx.Done. Buffering delays a
@@ -45,7 +91,7 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 		stream := c.client.Messages.NewStreaming(ctx, sdk.MessageNewParams{
 			MaxTokens: req.MaxTokens,
 			Messages:  messages,
-			Model:     c.model,
+			Model:     c.currentModel(),
 			Tools:     toolParams(req.Tools),
 		})
 

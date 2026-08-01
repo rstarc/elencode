@@ -5,6 +5,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path"
 	"strings"
 	"testing"
 	"time"
@@ -483,6 +485,10 @@ func TestViewPutsCursorBelowTheMenu(t *testing.T) {
 // real program reaches the error path.
 type failingProvider struct{ err error }
 
+func (p failingProvider) Models(ctx context.Context) ([]agent.Model, error) { return nil, p.err }
+
+func (p failingProvider) SetModel(id string) {}
+
 func (p failingProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
 	events := make(chan agent.Event, 1)
 	events <- agent.ErrorEvent{Err: p.err}
@@ -769,3 +775,267 @@ func assertFitsWidth(t *testing.T, view string, width int) {
 type errStub struct{}
 
 func (errStub) Error() string { return "stub failure" }
+
+// modelProvider serves a fixed model list and records the model it was switched
+// to, so a test can assert the choice reached the provider.
+type modelProvider struct {
+	models []agent.Model
+	set    string
+}
+
+func (p *modelProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
+	events := make(chan agent.Event, 1)
+	events <- agent.ErrorEvent{Err: errors.New("never asked")}
+	close(events)
+	return events
+}
+
+func (p *modelProvider) Models(ctx context.Context) ([]agent.Model, error) { return p.models, nil }
+
+func (p *modelProvider) SetModel(id string) { p.set = id }
+
+var testModels = []agent.Model{
+	{ID: "model-one", DisplayName: "Model One"},
+	{ID: "model-two", DisplayName: "Model Two"},
+}
+
+// newPickerModel builds a sized model whose config points at a writable file,
+// so selecting a model can save without failing on the path.
+func newPickerModel(t *testing.T, provider agent.Provider) model {
+	t.Helper()
+
+	file := path.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(file, []byte(`{"anthropic_api_key":"key"}`), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	m := newModel(agent.New(provider, nil), config.Config{Path: file, AnthropicAPIKey: "key"})
+	return update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
+}
+
+// modelsFrom runs cmd and returns the model list message it produced. It
+// follows a batch, since the fetch is issued alongside the spinner tick.
+func modelsFrom(t *testing.T, cmd tea.Cmd) modelsMsg {
+	t.Helper()
+
+	if cmd == nil {
+		t.Fatal("command is nil, want one that fetches the model list")
+	}
+	switch msg := cmd().(type) {
+	case modelsMsg:
+		return msg
+	case tea.BatchMsg:
+		for _, sub := range msg {
+			if got, ok := sub().(modelsMsg); ok {
+				return got
+			}
+		}
+	}
+	t.Fatal("command produced no model list message")
+	return modelsMsg{}
+}
+
+func TestModelCommandFetchesTheModelList(t *testing.T) {
+	m := typeText(t, newPickerModel(t, &modelProvider{models: testModels}), "/model")
+
+	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if !m.modelsLoading {
+		t.Error("/model did not start loading the model list")
+	}
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want it cleared once the command ran", m.input.Value())
+	}
+	got := modelsFrom(t, cmd)
+	if len(got.models) != len(testModels) {
+		t.Errorf("fetched %d models, want %d", len(got.models), len(testModels))
+	}
+}
+
+func TestModelListOpensThePicker(t *testing.T) {
+	m := newPickerModel(t, &modelProvider{models: testModels})
+
+	m = update(t, m, modelsMsg{models: testModels})
+
+	if m.modelsLoading {
+		t.Error("still loading once the list arrived")
+	}
+	view := m.View().Content
+	for _, want := range testModels {
+		if !strings.Contains(view, want.ID) {
+			t.Errorf("picker does not offer %q:\n%s", want.ID, view)
+		}
+	}
+}
+
+// TestModelPickerStartsOnTheCurrentModel saves the user from hunting for where
+// they already are in a list of twenty.
+func TestModelPickerStartsOnTheCurrentModel(t *testing.T) {
+	m := newPickerModel(t, &modelProvider{models: testModels})
+	m.config.Model = "model-two"
+
+	m = update(t, m, modelsMsg{models: testModels})
+
+	if m.modelIndex != 1 {
+		t.Errorf("modelIndex = %d, want 1 (the model in use)", m.modelIndex)
+	}
+}
+
+func TestEnterSelectsTheHighlightedModel(t *testing.T) {
+	provider := &modelProvider{models: testModels}
+	m := update(t, newPickerModel(t, provider), modelsMsg{models: testModels})
+
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if provider.set != "model-two" {
+		t.Errorf("provider was switched to %q, want %q", provider.set, "model-two")
+	}
+	if m.config.Model != "model-two" {
+		t.Errorf("config model = %q, want %q", m.config.Model, "model-two")
+	}
+	if m.modelPickerVisible {
+		t.Error("picker still open after a choice")
+	}
+	if m.err != nil {
+		t.Errorf("selecting a model reported an error: %v", m.err)
+	}
+}
+
+// TestSelectingAModelPersistsIt covers the choice outliving the session: the
+// config file is what the next start reads.
+func TestSelectingAModelPersistsIt(t *testing.T) {
+	m := update(t, newPickerModel(t, &modelProvider{models: testModels}), modelsMsg{models: testModels})
+
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	body, err := os.ReadFile(m.config.Path)
+	if err != nil {
+		t.Fatalf("reading the saved config: %v", err)
+	}
+	if !strings.Contains(string(body), "model-one") {
+		t.Errorf("config file does not name the chosen model:\n%s", body)
+	}
+}
+
+// TestSelectingAModelClearsTheTranscript covers what a switch means: the
+// conversation so far belongs to the model that produced it.
+func TestSelectingAModelClearsTheTranscript(t *testing.T) {
+	a := agent.New(&modelProvider{models: testModels}, nil)
+	a.AppendMessage(agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "said earlier"}}))
+	file := path.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(file, []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("writing config: %v", err)
+	}
+	m := update(t, newModel(a, config.Config{Path: file}), tea.WindowSizeMsg{Width: 80, Height: 20})
+	m = update(t, m, modelsMsg{models: testModels})
+
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if view := m.viewport.View(); strings.Contains(view, "said earlier") {
+		t.Errorf("transcript survived the model switch:\n%s", view)
+	}
+}
+
+func TestModelArgumentSelectsWithoutOpeningThePicker(t *testing.T) {
+	provider := &modelProvider{models: testModels}
+	m := typeText(t, newPickerModel(t, provider), "/model model-two")
+
+	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = update(t, m, modelsFrom(t, cmd))
+
+	if provider.set != "model-two" {
+		t.Errorf("provider was switched to %q, want %q", provider.set, "model-two")
+	}
+	if m.modelPickerVisible {
+		t.Error("picker opened for a model named on the command line")
+	}
+}
+
+func TestUnknownModelArgumentIsReported(t *testing.T) {
+	provider := &modelProvider{models: testModels}
+	m := typeText(t, newPickerModel(t, provider), "/model model-nine")
+
+	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = update(t, m, modelsFrom(t, cmd))
+
+	if provider.set != "" {
+		t.Errorf("provider was switched to %q, want no switch for a model that does not exist", provider.set)
+	}
+	if m.err == nil {
+		t.Fatal("an unknown model reported no error")
+	}
+	if !strings.Contains(m.viewport.View(), "model-nine") {
+		t.Errorf("the error does not name the model asked for:\n%s", m.viewport.View())
+	}
+}
+
+func TestFailureToListModelsIsReported(t *testing.T) {
+	m := newPickerModel(t, failingProvider{err: errors.New("503 overloaded")})
+
+	m = update(t, m, modelsMsg{err: errors.New("503 overloaded")})
+
+	if m.modelsLoading {
+		t.Error("still loading after the request failed")
+	}
+	if m.modelPickerVisible {
+		t.Error("picker opened with no models to show")
+	}
+	if !strings.Contains(m.viewport.View(), "503 overloaded") {
+		t.Errorf("viewport does not show why the model list failed:\n%s", m.viewport.View())
+	}
+}
+
+func TestEscClosesTheModelPicker(t *testing.T) {
+	provider := &modelProvider{models: testModels}
+	m := update(t, newPickerModel(t, provider), modelsMsg{models: testModels})
+
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+
+	if m.modelPickerVisible {
+		t.Error("picker still open after Esc")
+	}
+	if provider.set != "" {
+		t.Errorf("Esc switched the model to %q, want it to change nothing", provider.set)
+	}
+}
+
+// TestModelPickerSwallowsTypedKeys keeps the picker's keyboard to itself: a
+// keystroke that reached the input would open the command menu underneath it.
+func TestModelPickerSwallowsTypedKeys(t *testing.T) {
+	m := update(t, newPickerModel(t, &modelProvider{models: testModels}), modelsMsg{models: testModels})
+
+	m = typeText(t, m, "/")
+
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want keystrokes swallowed while the picker is open", m.input.Value())
+	}
+	if !m.modelPickerVisible {
+		t.Error("typing closed the picker")
+	}
+}
+
+func TestModelPickerFitsTheTerminal(t *testing.T) {
+	const height = 20
+
+	var many []agent.Model
+	for i := range 40 {
+		many = append(many, agent.Model{ID: fmt.Sprintf("model-%d", i), DisplayName: "Model"})
+	}
+	m := update(t, newPickerModel(t, &modelProvider{models: many}), modelsMsg{models: many})
+
+	if got := lipgloss.Height(m.View().Content); got > height {
+		t.Errorf("view is %d rows tall with the picker open, want <= %d", got, height)
+	}
+	if m.viewport.Height() < 1 {
+		t.Errorf("viewport height = %d, want at least one row of transcript left", m.viewport.Height())
+	}
+}
+
+func TestViewShowsSpinnerWhileLoadingModels(t *testing.T) {
+	m := newPickerModel(t, &modelProvider{models: testModels})
+	m.modelsLoading = true
+
+	if view := m.View().Content; !strings.Contains(view, "loading models") {
+		t.Errorf("view does not say the model list is loading:\n%s", view)
+	}
+}
