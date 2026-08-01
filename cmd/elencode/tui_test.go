@@ -47,20 +47,6 @@ func TestUpdateAccumulatesTextDeltas(t *testing.T) {
 	}
 }
 
-func TestUpdateClearsPartialOnMessageEvent(t *testing.T) {
-	m := newTestModel()
-	m = update(t, m, streamEventMsg{agent.TextDeltaEvent{Text: "Hello"}})
-
-	// Once the message is in the transcript, the partial copy must go, or the
-	// same text renders twice.
-	landed := agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{agent.TextBlock{Text: "Hello"}}}
-	m = update(t, m, streamEventMsg{agent.MessageEvent{Message: landed}})
-
-	if m.partial != "" {
-		t.Errorf("partial = %q, want it cleared once the message landed", m.partial)
-	}
-}
-
 func TestUpdateReturnsToIdleWhenStreamCloses(t *testing.T) {
 	m := newTestModel()
 	m.state = uiStateProcessing
@@ -76,101 +62,6 @@ func TestUpdateReturnsToIdleWhenStreamCloses(t *testing.T) {
 	}
 }
 
-func TestUpdateRecordsStreamError(t *testing.T) {
-	m := newTestModel()
-
-	wantErr := errStub{}
-	m = update(t, m, streamEventMsg{agent.ErrorEvent{Err: wantErr}})
-
-	if m.err != wantErr {
-		t.Errorf("err = %v, want %v", m.err, wantErr)
-	}
-}
-
-func TestUpdateShowsErrorInViewport(t *testing.T) {
-	m := newTestModel()
-	// Wide enough that the boxed error is not truncated to the viewport width
-	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
-
-	m = update(t, m, streamEventMsg{agent.ErrorEvent{Err: errStub{}}})
-
-	if view := m.viewport.View(); !strings.Contains(view, "Error: stub failure") {
-		t.Errorf("viewport does not show the labelled error:\n%s", view)
-	}
-}
-
-func TestUpdateKeepsErrorVisibleAfterTurnEnds(t *testing.T) {
-	m := newTestModel()
-	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
-	m = update(t, m, streamEventMsg{agent.ErrorEvent{Err: errStub{}}})
-
-	// The channel closes right after a failure, so clearing the error here
-	// would make it flash and vanish before it could be read.
-	m = update(t, m, streamClosedMsg{})
-
-	if m.err == nil {
-		t.Fatal("err was cleared when the turn ended, want it kept until the next turn")
-	}
-	if view := m.viewport.View(); !strings.Contains(view, "Error: stub failure") {
-		t.Errorf("viewport does not show the labelled error:\n%s", view)
-	}
-}
-
-func TestUpdateKeepsBannerBeforeAnythingIsSaid(t *testing.T) {
-	m := newTestModel()
-
-	// The first WindowSizeMsg arrives at startup and repaints, so an empty
-	// transcript must not blank the screen.
-	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
-
-	if !strings.Contains(m.viewport.View(), banner) {
-		t.Errorf("viewport = %q, want it to still show the banner", m.viewport.View())
-	}
-}
-
-// TestUpdateShowsUserMessageAsSoonAsItIsSent asserts the message is in the
-// viewport the instant Enter is handled, before any Event has been read off
-// the turn's channel: agent.Run appends the user message to the context
-// window synchronously, ahead of the goroutine that talks to the provider.
-func TestUpdateShowsUserMessageAsSoonAsItIsSent(t *testing.T) {
-	m := newModel(agent.New(failingProvider{err: errors.New("boom")}, nil), config.Config{})
-	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
-	m.input.SetValue("hello there")
-
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
-
-	if view := m.viewport.View(); !strings.Contains(view, "hello there") {
-		t.Errorf("viewport does not show the user's message right after Enter:\n%s", view)
-	}
-}
-
-func TestUpdateFitsErrorToNarrowTerminal(t *testing.T) {
-	const width = 40
-
-	m := newTestModel()
-	m = update(t, m, tea.WindowSizeMsg{Width: width, Height: 20})
-	m = update(t, m, streamEventMsg{agent.ErrorEvent{Err: errStub{}}})
-
-	assertFitsWidth(t, m.viewport.View(), width)
-}
-
-func TestUpdateReflowsWhenTerminalShrinks(t *testing.T) {
-	const narrow = 40
-
-	m := newTestModel()
-	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 20})
-	m = update(t, m, streamEventMsg{agent.ErrorEvent{Err: errStub{}}})
-
-	// Content laid out for the old width would be clipped at the new one, so a
-	// resize has to repaint rather than only resize the viewport.
-	m = update(t, m, tea.WindowSizeMsg{Width: narrow, Height: 20})
-
-	assertFitsWidth(t, m.viewport.View(), narrow)
-	if !strings.Contains(m.viewport.View(), "stub failure") {
-		t.Errorf("viewport lost the error after resizing:\n%s", m.viewport.View())
-	}
-}
-
 func TestViewPutsCursorOnTheInputRow(t *testing.T) {
 	const height = 20
 
@@ -181,10 +72,9 @@ func TestViewPutsCursorOnTheInputRow(t *testing.T) {
 	if view.Cursor == nil {
 		t.Fatal("view has no cursor, want one on the input row")
 	}
-	// textinput reports its cursor relative to itself, but View stacks the input
-	// below the viewport, so the row has to be offset or the terminal blinks at
-	// the top of the screen instead.
-	wantY := lipgloss.Height(m.viewport.View())
+	// Nothing is stacked above the input while idle, so the cursor sits on the
+	// first row of the frame.
+	wantY := 0
 	if view.Cursor.Y != wantY {
 		t.Errorf("cursor row = %d, want %d (the input row)", view.Cursor.Y, wantY)
 	}
@@ -206,22 +96,6 @@ func TestViewHidesSpinnerWhenIdle(t *testing.T) {
 
 	if view := m.View().Content; strings.Contains(view, "processing") {
 		t.Errorf("view shows the processing spinner while idle:\n%s", view)
-	}
-}
-
-// TestUpdateKeepsViewportUsableInTinyTerminal covers terminals too short to
-// hold the rows below the viewport: subtracting them leaves nothing, and a
-// viewport sized zero or less has no transcript area at all.
-func TestUpdateKeepsViewportUsableInTinyTerminal(t *testing.T) {
-	for _, height := range []int{1, 2, 3} {
-		t.Run(fmt.Sprintf("height%d", height), func(t *testing.T) {
-			m := newTestModel()
-			m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: height})
-
-			if got := m.viewport.Height(); got < 1 {
-				t.Errorf("viewport height = %d, want at least 1 row of transcript", got)
-			}
-		})
 	}
 }
 
@@ -250,9 +124,9 @@ func TestViewPutsCursorBelowSpinnerWhileProcessing(t *testing.T) {
 	if view.Cursor == nil {
 		t.Fatal("view has no cursor, want one on the input row")
 	}
-	wantY := lipgloss.Height(m.viewport.View()) + lipgloss.Height(m.spinnerLine())
+	wantY := lipgloss.Height(m.spinnerLine())
 	if view.Cursor.Y != wantY {
-		t.Errorf("cursor row = %d, want %d (below viewport and spinner)", view.Cursor.Y, wantY)
+		t.Errorf("cursor row = %d, want %d (below the spinner)", view.Cursor.Y, wantY)
 	}
 }
 
@@ -389,13 +263,10 @@ func TestEnterRunsQuitCommand(t *testing.T) {
 func TestEnterOnUnknownCommandShowsAnError(t *testing.T) {
 	m := typeText(t, newSizedModel(t), "/qut")
 
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if m.err == nil {
-		t.Fatal("Enter on an unknown command recorded no error")
-	}
-	if !strings.Contains(m.viewport.View(), "unknown command: /qut") {
-		t.Errorf("viewport does not name the unknown command:\n%s", m.viewport.View())
+	if got := printed(t, cmd); !strings.Contains(got, "unknown command: /qut") {
+		t.Errorf("printed %q, want it to name the unknown command", got)
 	}
 	if m.input.Value() != "" {
 		t.Errorf("input = %q, want it cleared after a rejected command", m.input.Value())
@@ -429,42 +300,8 @@ func TestEnterStillSendsPlainInputOnly(t *testing.T) {
 
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if m.err != nil {
-		t.Errorf("plain input while processing produced an error: %v", m.err)
-	}
 	if m.input.Value() != "hello" {
 		t.Errorf("input = %q, want it kept while the agent is busy", m.input.Value())
-	}
-}
-
-// TestMenuShrinksTheViewport guards the layout: the menu appears between window
-// size messages, so the viewport has to be re-measured when it opens or the
-// frame grows taller than the terminal.
-func TestMenuShrinksTheViewport(t *testing.T) {
-	const height = 20
-
-	m := newSizedModel(t)
-	before := m.viewport.Height()
-
-	m = typeText(t, m, commandPrefix)
-
-	if got := m.viewport.Height(); got >= before {
-		t.Errorf("viewport height = %d, want less than %d once the menu opened", got, before)
-	}
-	if got := lipgloss.Height(m.View().Content); got > height {
-		t.Errorf("view is %d rows tall, want <= %d", got, height)
-	}
-}
-
-func TestMenuRestoresTheViewportWhenClosed(t *testing.T) {
-	m := newSizedModel(t)
-	before := m.viewport.Height()
-
-	m = typeText(t, m, commandPrefix)
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
-
-	if got := m.viewport.Height(); got != before {
-		t.Errorf("viewport height = %d, want %d restored once the menu closed", got, before)
 	}
 }
 
@@ -475,9 +312,9 @@ func TestViewPutsCursorBelowTheMenu(t *testing.T) {
 	if view.Cursor == nil {
 		t.Fatal("view has no cursor, want one on the input row")
 	}
-	wantY := lipgloss.Height(m.viewport.View()) + lipgloss.Height(m.menuView())
+	wantY := lipgloss.Height(m.menuView())
 	if view.Cursor.Y != wantY {
-		t.Errorf("cursor row = %d, want %d (below viewport and menu)", view.Cursor.Y, wantY)
+		t.Errorf("cursor row = %d, want %d (below the menu)", view.Cursor.Y, wantY)
 	}
 }
 
@@ -524,11 +361,9 @@ func TestProgramFitsErrorToTerminal(t *testing.T) {
 				t.Fatalf("final model is %T, want model", tm.FinalModel(t))
 			}
 
-			view := final.View().Content
-			if !strings.Contains(view, "rate_limit_error") {
-				t.Errorf("view does not show the error:\n%s", view)
-			}
-			assertFitsWidth(t, view, width)
+			// The error is printed into the scrollback, so the frame itself only
+			// has to stay inside the terminal.
+			assertFitsWidth(t, final.View().Content, width)
 		})
 	}
 }
@@ -611,12 +446,12 @@ func TestConfigViewSwallowsOtherKeys(t *testing.T) {
 
 func TestConfigViewHidesTheTranscriptAndInput(t *testing.T) {
 	m := newSizedModel(t)
-	m = update(t, m, streamEventMsg{agent.ErrorEvent{Err: errStub{}}})
+	m = update(t, m, streamEventMsg{agent.TextDeltaEvent{Text: "half a sentence"}})
 	m.configVisible = true
 
 	view := m.View()
-	if strings.Contains(view.Content, "stub failure") {
-		t.Errorf("config view does not replace the transcript:\n%s", view.Content)
+	if strings.Contains(view.Content, "half a sentence") {
+		t.Errorf("config view does not replace the frame:\n%s", view.Content)
 	}
 	if view.Cursor != nil {
 		t.Error("config view has a cursor, want none while the input is hidden")
@@ -896,9 +731,7 @@ func TestEnterSelectsTheHighlightedModel(t *testing.T) {
 	if m.modelPickerVisible {
 		t.Error("picker still open after a choice")
 	}
-	if m.err != nil {
-		t.Errorf("selecting a model reported an error: %v", m.err)
-	}
+
 }
 
 // TestSelectingAModelPersistsIt covers the choice outliving the session: the
@@ -919,22 +752,6 @@ func TestSelectingAModelPersistsIt(t *testing.T) {
 
 // TestSelectingAModelClearsTheTranscript covers what a switch means: the
 // conversation so far belongs to the model that produced it.
-func TestSelectingAModelClearsTheTranscript(t *testing.T) {
-	a := agent.New(&modelProvider{models: testModels}, nil)
-	a.AppendMessage(agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "said earlier"}}))
-	file := path.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(file, []byte(`{}`), 0o600); err != nil {
-		t.Fatalf("writing config: %v", err)
-	}
-	m := update(t, newModel(a, config.Config{Path: file}), tea.WindowSizeMsg{Width: 80, Height: 20})
-	m = update(t, m, modelsMsg{models: testModels})
-
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
-
-	if view := m.viewport.View(); strings.Contains(view, "said earlier") {
-		t.Errorf("transcript survived the model switch:\n%s", view)
-	}
-}
 
 func TestModelArgumentSelectsWithoutOpeningThePicker(t *testing.T) {
 	provider := &modelProvider{models: testModels}
@@ -956,23 +773,20 @@ func TestUnknownModelArgumentIsReported(t *testing.T) {
 	m := typeText(t, newPickerModel(t, provider), "/model model-nine")
 
 	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	m = update(t, m, modelsFrom(t, cmd))
+	_, cmd = updateCmd(t, m, modelsFrom(t, cmd))
 
 	if provider.set != "" {
 		t.Errorf("provider was switched to %q, want no switch for a model that does not exist", provider.set)
 	}
-	if m.err == nil {
-		t.Fatal("an unknown model reported no error")
-	}
-	if !strings.Contains(m.viewport.View(), "model-nine") {
-		t.Errorf("the error does not name the model asked for:\n%s", m.viewport.View())
+	if got := printed(t, cmd); !strings.Contains(got, "model-nine") {
+		t.Errorf("printed %q, want it to name the model asked for", got)
 	}
 }
 
 func TestFailureToListModelsIsReported(t *testing.T) {
 	m := newPickerModel(t, failingProvider{err: errors.New("503 overloaded")})
 
-	m = update(t, m, modelsMsg{err: errors.New("503 overloaded")})
+	m, cmd := updateCmd(t, m, modelsMsg{err: errors.New("503 overloaded")})
 
 	if m.modelsLoading {
 		t.Error("still loading after the request failed")
@@ -980,8 +794,8 @@ func TestFailureToListModelsIsReported(t *testing.T) {
 	if m.modelPickerVisible {
 		t.Error("picker opened with no models to show")
 	}
-	if !strings.Contains(m.viewport.View(), "503 overloaded") {
-		t.Errorf("viewport does not show why the model list failed:\n%s", m.viewport.View())
+	if got := printed(t, cmd); !strings.Contains(got, "503 overloaded") {
+		t.Errorf("printed %q, want it to say why the model list failed", got)
 	}
 }
 
@@ -1026,9 +840,6 @@ func TestModelPickerFitsTheTerminal(t *testing.T) {
 	if got := lipgloss.Height(m.View().Content); got > height {
 		t.Errorf("view is %d rows tall with the picker open, want <= %d", got, height)
 	}
-	if m.viewport.Height() < 1 {
-		t.Errorf("viewport height = %d, want at least one row of transcript left", m.viewport.Height())
-	}
 }
 
 func TestViewShowsSpinnerWhileLoadingModels(t *testing.T) {
@@ -1037,5 +848,173 @@ func TestViewShowsSpinnerWhileLoadingModels(t *testing.T) {
 
 	if view := m.View().Content; !strings.Contains(view, "loading models") {
 		t.Errorf("view does not say the model list is loading:\n%s", view)
+	}
+}
+
+// printed returns the text cmd would insert above the frame. bubbletea's print
+// message type is unexported, so the text is recovered by formatting it — %v
+// renders the single-field struct as "{the text}" — rather than by a type
+// assertion.
+//
+// Only for a command that does nothing but print. Unwrapping a tea.Sequence
+// would mean running the commands behind it, and the one that waits for the
+// next event blocks.
+func printed(t *testing.T, cmd tea.Cmd) string {
+	t.Helper()
+
+	if cmd == nil {
+		t.Fatal("command is nil, want one that prints")
+	}
+	body := fmt.Sprintf("%v", cmd())
+	return strings.TrimSuffix(strings.TrimPrefix(body, "{"), "}")
+}
+
+// wrappingText is long enough to wrap into several transcript rows at the
+// widths these tests use.
+var wrappingText = strings.Repeat("the quick brown fox jumps over the lazy dog ", 5)
+
+func TestFlushStreamPrintsRowsThatHaveSettled(t *testing.T) {
+	m := newSizedModel(t)
+	m.partial = wrappingText
+	if len(m.streamRows()) < 3 {
+		t.Fatalf("test text wraps to %d rows, want at least 3", len(m.streamRows()))
+	}
+
+	got := m.flushStream()
+
+	rows := m.streamRows()
+	// Every row but the last: the last one can still grow, so printing it would
+	// put a half-written line in the scrollback.
+	want := strings.Join(rows[:len(rows)-1], "\n")
+	if got != want {
+		t.Errorf("flushed\n%q\nwant\n%q", got, want)
+	}
+	if strings.Contains(got, rows[len(rows)-1]) {
+		t.Error("flushed the row that is still being written into")
+	}
+}
+
+func TestFlushStreamPrintsEachRowOnce(t *testing.T) {
+	m := newSizedModel(t)
+	m.partial = wrappingText
+	m.flushStream()
+
+	// No new text, so nothing has settled since the last flush
+	if got := m.flushStream(); got != "" {
+		t.Errorf("flushed %q a second time, want nothing", got)
+	}
+}
+
+func TestFlushStreamWaitsForARowToFill(t *testing.T) {
+	m := newSizedModel(t)
+
+	m.partial = "short"
+
+	// One unfinished row is not something to print yet
+	if got := m.flushStream(); got != "" {
+		t.Errorf("flushed %q, want nothing until a row has settled", got)
+	}
+}
+
+func TestEndStreamPrintsWhatIsLeftInTheFrame(t *testing.T) {
+	m := newSizedModel(t)
+	m.partial = wrappingText
+	m.flushStream()
+	tail := m.streamTail()
+
+	got := m.endStream()
+
+	if got != tail {
+		t.Errorf("end of stream printed %q, want the trailing row %q", got, tail)
+	}
+	if m.partial != "" || m.streamed != 0 {
+		t.Errorf("stream not forgotten: partial = %q, streamed = %d", m.partial, m.streamed)
+	}
+}
+
+// TestPrintMessageLeavesOutTextAlreadyStreamed guards against the reply landing
+// on screen twice: it was printed as it streamed, and the message that follows
+// carries the same text.
+func TestPrintMessageLeavesOutTextAlreadyStreamed(t *testing.T) {
+	m := newSizedModel(t)
+	m.partial = "Hello"
+	m.flushStream()
+
+	landed := agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{agent.TextBlock{Text: "Hello"}}}
+	got := m.printMessage(landed)
+
+	if strings.Count(got, "Hello") > 1 {
+		t.Errorf("message printed the streamed text again:\n%s", got)
+	}
+}
+
+// TestPrintMessagePrintsBlocksThatNeverStream covers tool calls: no delta
+// carries them, so the landed message is the only chance to show them.
+func TestPrintMessagePrintsBlocksThatNeverStream(t *testing.T) {
+	m := newSizedModel(t)
+
+	landed := agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{
+		agent.ToolUseBlock{ID: "toolu_1", Name: "read", Input: []byte(`{"path":"a.txt"}`)},
+	}}
+
+	if got := m.printMessage(landed); !strings.Contains(got, "read") {
+		t.Errorf("landed message did not print the tool use:\n%s", got)
+	}
+}
+
+func TestViewShowsTheRowBeingWrittenInto(t *testing.T) {
+	m := newSizedModel(t)
+
+	m = update(t, m, streamEventMsg{agent.TextDeltaEvent{Text: "half a sen"}})
+
+	if view := m.View().Content; !strings.Contains(view, "half a sen") {
+		t.Errorf("frame does not show the text being streamed:\n%s", view)
+	}
+}
+
+// scriptedProvider streams a fixed reply, so a test can drive a whole turn
+// through the real program.
+type scriptedProvider struct{ deltas []string }
+
+func (p scriptedProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
+	events := make(chan agent.Event, len(p.deltas)+1)
+	text := ""
+	for _, delta := range p.deltas {
+		text += delta
+		events <- agent.TextDeltaEvent{Text: delta}
+	}
+	events <- agent.ResponseEvent{Response: agent.Response{
+		Message:    agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{agent.TextBlock{Text: text}}},
+		StopReason: agent.StopReasonEndTurn,
+	}}
+	close(events)
+	return events
+}
+
+func (p scriptedProvider) Models(ctx context.Context) ([]agent.Model, error) { return nil, nil }
+
+func (p scriptedProvider) SetModel(id string) {}
+
+// TestProgramPrintsThePromptAndTheReply drives the whole program, which is the
+// only place the printing is real: Update hands back commands, and it is
+// bubbletea that turns them into lines above the frame.
+func TestProgramPrintsThePromptAndTheReply(t *testing.T) {
+	a := agent.New(scriptedProvider{deltas: []string{"Hel", "lo there, ", "how can I help?"}}, nil)
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}), teatest.WithInitialTermSize(80, 20))
+
+	tm.Type("hi")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return bytes.Contains(out, []byte("how can I help?"))
+	}, teatest.WithDuration(5*time.Second))
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("quitting the program: %v", err)
+	}
+	// The prompt and the reply are printed, so neither is in the final frame
+	final := tm.FinalModel(t).(model)
+	if view := final.View().Content; strings.Contains(view, "how can I help?") {
+		t.Errorf("the reply is still in the frame, want it printed above:\n%s", view)
 	}
 }

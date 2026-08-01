@@ -9,7 +9,6 @@ import (
 	"charm.land/bubbles/v2/cursor"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
-	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/rstarc/elencode/internal/agent"
@@ -40,15 +39,14 @@ type model struct {
 	// Both are handles to this turn specifically, not to the agent.
 	events <-chan agent.Event
 	cancel context.CancelFunc
-	// TUI state
-	partial  string          // assistant text streamed so far, not yet in the transcript
-	viewport viewport.Model  // viewport displaying the transcript
+	// TUI state. The transcript is not held here: it is printed above the frame
+	// as it happens and belongs to the terminal's scrollback from then on.
+	partial  string          // assistant text streamed so far
+	streamed int             // rows of partial already printed; the rest is in the frame
 	input    textinput.Model // user input field
 	spinner  spinner.Model   // shown above input while state is uiStateProcessing
 	width    int             // terminal width, 0 until the first WindowSizeMsg
-	height   int             // terminal height, 0 until the first WindowSizeMsg
 	state    uiState
-	err      error
 	// command menu state. Visibility is derived from the input rather than
 	// stored, so the two cannot disagree; see menuVisible.
 	menuDismissed bool // Esc hides the menu for the rest of this command line
@@ -76,7 +74,6 @@ const quitConfirmWindow = 2 * time.Second
 func (m model) armQuit() (model, tea.Cmd) {
 	m.quitArmed = true
 	m.quitGeneration++
-	m.resize()
 
 	generation := m.quitGeneration
 	return m, tea.Tick(quitConfirmWindow, func(time.Time) tea.Msg {
@@ -122,20 +119,12 @@ func newModel(agent *agent.Agent, cfg config.Config) model {
 	input.Prompt = inputPrompt + " "
 	input.CharLimit = 0
 
-	viewport := viewport.New()
-	viewport.SetContent(banner)
-
-	// Only up down scrolling
-	viewport.KeyMap.Left.SetEnabled(false)
-	viewport.KeyMap.Right.SetEnabled(false)
-
 	return model{
-		agent:    agent,
-		config:   cfg,
-		viewport: viewport,
-		input:    input,
-		spinner:  spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
-		state:    uiStateIdle,
+		agent:   agent,
+		config:  cfg,
+		input:   input,
+		spinner: spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
+		state:   uiStateIdle,
 	}
 }
 
@@ -154,32 +143,84 @@ func (m model) busy() bool {
 	return m.state == uiStateProcessing || m.modelsLoading
 }
 
-// chromeHeight is the number of rows View stacks below the viewport, measured
-// rather than assumed so the two cannot drift apart.
+// printAbove inserts rendered above the frame, where it stays: the terminal
+// owns it from then on, which is what makes scrolling back through a long
+// session the terminal's job rather than this program's.
 //
-// The spinner row counts even while idle. Reserving it keeps the frame the
-// same height when a turn starts: the inline renderer drops the top row of a
-// frame taller than the terminal, and right after Enter that row is the line
-// the user just sent.
-func (m model) chromeHeight() int {
-	height := lipgloss.Height(m.spinnerLine()) + lipgloss.Height(m.input.View())
-	if menu := m.menuView(); menu != "" {
-		height += lipgloss.Height(menu)
+// Ordering is the caller's responsibility. Commands run concurrently, so two
+// prints issued from separate updates can arrive in either order; anything that
+// has to land in sequence must be chained with tea.Sequence.
+func printAbove(rendered string) tea.Cmd {
+	if rendered == "" {
+		return nil
 	}
-	if picker := m.modelPickerView(); picker != "" {
-		height += lipgloss.Height(picker)
-	}
-	if hint := m.quitHint(); hint != "" {
-		height += lipgloss.Height(hint)
-	}
-	return height
+	return tea.Println(rendered)
 }
 
-// resize refits the viewport to whatever chrome currently sits below it. The
-// menu opens and closes between WindowSizeMsgs, so the height it leaves behind
-// has to be recomputed on those keystrokes too, not only on a real resize.
-func (m *model) resize() {
-	m.viewport.SetHeight(max(m.height-m.chromeHeight(), 1))
+// streamRows renders the text streamed so far as transcript rows. Every row but
+// the last is settled: wrapping is greedy, so more text can only extend the
+// last row, never reflow the ones above it.
+func (m model) streamRows() []string {
+	if m.partial == "" {
+		return nil
+	}
+	return strings.Split(agent.RenderStreamingText(m.partial, m.width), "\n")
+}
+
+// streamTail is the row the text is still being written into, the one part of
+// the transcript that lives in the frame rather than in the scrollback.
+func (m model) streamTail() string {
+	rows := m.streamRows()
+	if len(rows) == 0 {
+		return ""
+	}
+	return rows[len(rows)-1]
+}
+
+// flushStream returns the rows that have settled since the last flush, and
+// records them as printed. The trailing row is held back: it can still grow.
+func (m *model) flushStream() string {
+	rows := m.streamRows()
+	if len(rows) <= m.streamed+1 {
+		return ""
+	}
+
+	settled := rows[m.streamed : len(rows)-1]
+	m.streamed = len(rows) - 1
+	return strings.Join(settled, "\n")
+}
+
+// endStream returns whatever of the streamed text has not been printed yet,
+// including the trailing row, and forgets it. Called when the text can no
+// longer grow: the message landed, or the turn ended without it.
+func (m *model) endStream() string {
+	rows := m.streamRows()
+	var rest string
+	if m.streamed < len(rows) {
+		rest = strings.Join(rows[m.streamed:], "\n")
+	}
+	m.partial, m.streamed = "", 0
+	return rest
+}
+
+// printMessage returns what a landed message adds to the transcript. The
+// assistant's text is left out: it was printed as it streamed, so only the
+// trailing row and the blocks that never stream — tool uses — are new here.
+func (m *model) printMessage(msg agent.Message) string {
+	rendered := []string{}
+	if rest := m.endStream(); rest != "" {
+		rendered = append(rendered, rest)
+	}
+
+	for _, block := range msg.Content {
+		if _, isText := block.(agent.TextBlock); isText && msg.Role == agent.RoleAssistant {
+			continue
+		}
+		if row := agent.RenderBlock(block, msg.Role, m.width); row != "" {
+			rendered = append(rendered, row)
+		}
+	}
+	return strings.Join(rendered, "\n")
 }
 
 // streamEventMsg carries one Event from the in-flight turn
@@ -215,7 +256,6 @@ func (m model) forwardToInput(msg tea.Msg) (model, tea.Cmd) {
 	if !strings.HasPrefix(m.input.Value(), commandPrefix) {
 		m.menuDismissed = false
 	}
-	m.resize()
 	return m, cmd
 }
 
@@ -224,13 +264,11 @@ func (m model) forwardToInput(msg tea.Msg) (model, tea.Cmd) {
 func (m model) runCommand() (model, tea.Cmd) {
 	cmd, ok := lookupCommand(m.input.Value())
 	if !ok {
-		m.err = fmt.Errorf("unknown command: %s", m.input.Value())
+		unknown := fmt.Errorf("unknown command: %s", m.input.Value())
 		m.input.Reset()
 		m.menuDismissed = false
 		m.menuIndex = 0
-		m.resize()
-		m.refresh()
-		return m, nil
+		return m, m.reportError(unknown)
 	}
 
 	_, arg := splitCommand(m.input.Value())
@@ -240,7 +278,6 @@ func (m model) runCommand() (model, tea.Cmd) {
 		m.configVisible = true
 		m.input.Reset()
 		m.menuIndex = 0
-		m.resize()
 		return m, nil
 	case "model":
 		return m.loadModels(arg)
@@ -251,12 +288,16 @@ func (m model) runCommand() (model, tea.Cmd) {
 		}
 		return m, tea.Quit
 	default:
-		m.err = fmt.Errorf("command not implemented: %s", cmd.name)
 		m.input.Reset()
-		m.resize()
-		m.refresh()
-		return m, nil
+		return m, m.reportError(fmt.Errorf("command not implemented: %s", cmd.name))
 	}
+}
+
+// reportError prints a failure into the transcript, where it stays: the user
+// keeps whatever scrolled past, rather than watching it vanish on the next
+// repaint.
+func (m model) reportError(err error) tea.Cmd {
+	return printAbove(agent.RenderError(err, m.width))
 }
 
 // modelsMsg carries the result of a /model lookup. choose is the model the user
@@ -271,11 +312,8 @@ type modelsMsg struct {
 // and the UI must stay responsive while it runs.
 func (m model) loadModels(choose string) (model, tea.Cmd) {
 	m.modelsLoading = true
-	m.err = nil
 	m.input.Reset()
 	m.menuIndex = 0
-	m.resize()
-	m.refresh()
 
 	// Captured rather than read off m inside the closure: the command runs later,
 	// against whatever model value the loop happens to hold.
@@ -289,14 +327,11 @@ func (m model) loadModels(choose string) (model, tea.Cmd) {
 
 // showModels acts on a fetched model list: it either selects the model the user
 // named or opens the picker.
-func (m model) showModels(msg modelsMsg) model {
+func (m model) showModels(msg modelsMsg) (model, tea.Cmd) {
 	m.modelsLoading = false
 
 	if msg.err != nil {
-		m.err = fmt.Errorf("listing models: %w", msg.err)
-		m.resize()
-		m.refresh()
-		return m
+		return m, m.reportError(fmt.Errorf("listing models: %w", msg.err))
 	}
 
 	if msg.choose != "" {
@@ -307,10 +342,7 @@ func (m model) showModels(msg modelsMsg) model {
 		}
 		// The list was just fetched, so an unknown id is the user's typo rather
 		// than a stale cache
-		m.err = fmt.Errorf("unknown model: %s", msg.choose)
-		m.resize()
-		m.refresh()
-		return m
+		return m, m.reportError(fmt.Errorf("unknown model: %s", msg.choose))
 	}
 
 	m.models = msg.models
@@ -322,16 +354,17 @@ func (m model) showModels(msg modelsMsg) model {
 			m.modelIndex = i
 		}
 	}
-	m.resize()
-	return m
+	return m, nil
 }
 
 // selectModel switches to id, clearing the conversation the previous model
 // produced and remembering the choice for the next session.
-func (m model) selectModel(id string) model {
+func (m model) selectModel(id string) (model, tea.Cmd) {
 	// The turn in flight was started on the old model and is about to lose the
 	// context window it belongs to, so it is abandoned rather than left running.
+	var interrupted string
 	if m.state == uiStateProcessing {
+		interrupted = m.endStream()
 		m = m.endTurn()
 	}
 
@@ -342,12 +375,13 @@ func (m model) selectModel(id string) model {
 	m.modelIndex = 0
 
 	// Reported but not fatal: the model is switched for this session either way
+	var failed tea.Cmd
 	if err := m.config.Save(); err != nil {
-		m.err = fmt.Errorf("saving the model to %s: %w", m.config.Path, err)
+		failed = m.reportError(fmt.Errorf("saving the model to %s: %w", m.config.Path, err))
 	}
-	m.resize()
-	m.refresh()
-	return m
+
+	// Sequenced, not batched: these have to reach the scrollback in this order
+	return m, tea.Sequence(printAbove(interrupted), failed)
 }
 
 // updateModelPicker drives the picker, which owns the keyboard while it is
@@ -358,7 +392,6 @@ func (m model) updateModelPicker(msg tea.KeyPressMsg) (model, tea.Cmd) {
 		m.modelPickerVisible = false
 		m.models = nil
 		m.modelIndex = 0
-		m.resize()
 	case "up", "down":
 		delta := 1
 		if msg.String() == "up" {
@@ -367,7 +400,7 @@ func (m model) updateModelPicker(msg tea.KeyPressMsg) (model, tea.Cmd) {
 		m.modelIndex = moveHighlight(m.modelIndex, delta, len(m.models))
 	case "enter":
 		if len(m.models) > 0 {
-			m = m.selectModel(m.models[m.modelIndex].ID)
+			return m.selectModel(m.models[m.modelIndex].ID)
 		}
 	}
 	return m, nil
@@ -379,10 +412,15 @@ func (m model) startTurn(userInput string) (model, tea.Cmd) {
 	m.cancel = cancel
 	m.events = m.agent.Run(ctx, userInput)
 	m.partial = ""
+	m.streamed = 0
 	m.state = uiStateProcessing
-	m.err = nil
-	m.refresh()
-	return m, tea.Batch(waitForEvent(m.events), m.spinner.Tick)
+
+	// The prompt is printed here rather than when the agent echoes it back,
+	// because it never comes back: Run appends it to the context window without
+	// announcing it. Sequenced ahead of the turn so it cannot land after the
+	// reply it asked for.
+	prompt := agent.RenderMessage(agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: userInput}}), m.width)
+	return m, tea.Sequence(printAbove(prompt), tea.Batch(waitForEvent(m.events), m.spinner.Tick))
 }
 
 // endTurn releases the finished turn's resources and returns to idle
@@ -392,31 +430,15 @@ func (m model) endTurn() model {
 		m.cancel = nil
 	}
 	m.events = nil
-	m.partial = ""
 	m.state = uiStateIdle
-	m.refresh()
 	return m
-}
-
-// refresh repaints the viewport from the transcript plus any in-flight text
-func (m *model) refresh() {
-	content := agent.RenderTranscript(m.agent, m.width)
-	if m.partial != "" {
-		content = content + agent.RenderStreamingText(m.partial, m.width) + "\n"
-	}
-	if m.err != nil {
-		content = content + agent.RenderError(m.err, m.width) + "\n"
-	}
-	if content == "" {
-		content = banner
-	}
-	m.viewport.SetContent(content)
-	m.viewport.GotoBottom()
 }
 
 // Init implements the bubbletea Model interface
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	// The banner is printed rather than drawn, so it scrolls away with the rest
+	// of the session instead of sitting above every frame.
+	return tea.Batch(textinput.Blink, printAbove(banner))
 }
 
 // Update implements the bubbletea Model interface
@@ -424,21 +446,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
-		m.height = msg.Height
-		m.viewport.SetWidth(msg.Width)
 		// textinput draws the prompt before, and a cursor cell after, the width
 		// it is given, so passing the terminal width makes the input row wider
 		// than the terminal. JoinVertical then pads every other row out to
 		// match, pushing the whole view past the right edge.
 		m.input.SetWidth(max(msg.Width-lipgloss.Width(m.input.Prompt)-1, 1))
-		// Measured after SetWidth above, since the input's height depends on
-		// the width it was given. A terminal too short to hold even one row of
-		// transcript overflows rather than leaving the viewport empty.
-		m.resize()
-		// Blocks are laid out for a fixed width, so content rendered for the
-		// old size would be clipped at the new one until something else
-		// happened to repaint it.
-		m.refresh()
+		// Only the frame follows the new width. What is already printed keeps
+		// the width it was printed at, as the terminal owns those lines now.
 		return m, nil
 	case tea.KeyPressMsg:
 		// The config view owns the whole frame, so it takes the keyboard with it:
@@ -454,7 +468,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// by typing does not leave a live quit waiting one keystroke away.
 		if m.quitArmed && msg.String() != "ctrl+c" {
 			m.quitArmed = false
-			m.resize()
 		}
 		// The picker takes every key but ctrl+c, which keeps meaning "quit"
 		// wherever the user is.
@@ -487,7 +500,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m.forwardToInput(msg)
 			}
 			m.menuDismissed = true
-			m.resize()
 			return m, nil
 		case "up", "down":
 			if !m.menuVisible() {
@@ -507,7 +519,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.input.SetValue(commandPrefix + matches[m.menuIndex].name)
 				m.input.CursorEnd()
 				m.menuIndex = 0
-				m.resize()
 			}
 			return m, nil
 		case "enter":
@@ -524,38 +535,41 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		default:
 			// Send other keypresses to text input model
-			// TODO: Forward to viewport as well
 			return m.forwardToInput(msg)
 		}
 	case streamEventMsg:
+		var print tea.Cmd
 		switch event := msg.event.(type) {
 		case agent.TextDeltaEvent:
 			m.partial = m.partial + event.Text
+			print = printAbove(m.flushStream())
 		case agent.MessageEvent:
-			// The message is already in the transcript, so drop the partial
-			// copy we were painting to avoid rendering it twice
-			m.partial = ""
+			print = printAbove(m.printMessage(event.Message))
 		case agent.ErrorEvent:
-			m.err = event.Err
+			print = m.reportError(event.Err)
 		}
-		m.refresh()
-		// Wait for the next event. The turn ends when the channel closes, not
-		// here: a MessageEvent may be followed by tool results and more inference.
-		return m, waitForEvent(m.events)
+		// Sequenced, not batched: batched commands run concurrently, so the next
+		// event could be printed before this one. Waiting for the next event is
+		// chained behind the print for the same reason. The turn ends when the
+		// channel closes, not here: a MessageEvent may be followed by tool
+		// results and another round of inference.
+		return m, tea.Sequence(print, waitForEvent(m.events))
 	case modelsMsg:
-		return m.showModels(msg), nil
+		return m.showModels(msg)
 
 	case quitDisarmMsg:
 		// Ignore a message from an earlier arming: the user has since disarmed and
 		// armed again, and this one would cancel a confirmation they just asked for.
 		if msg.generation == m.quitGeneration {
 			m.quitArmed = false
-			m.resize()
 		}
 		return m, nil
 
 	case streamClosedMsg:
-		return m.endTurn(), nil
+		// A turn cut short leaves its last row in the frame, where nothing will
+		// print it once the frame stops showing it.
+		rest := m.endStream()
+		return m.endTurn(), printAbove(rest)
 
 	case cursor.BlinkMsg:
 		// Forward to textinput
@@ -587,10 +601,14 @@ func (m model) View() tea.View {
 		return view
 	}
 
-	viewportView := m.viewport.View()
 	inputView := m.input.View()
 
-	rows := []string{viewportView}
+	var rows []string
+	// The only part of the transcript still in the frame: the row being written
+	// into. Everything settled has already been printed above.
+	if tail := m.streamTail(); tail != "" {
+		rows = append(rows, tail)
+	}
 	if m.busy() {
 		rows = append(rows, m.spinnerLine())
 	}

@@ -68,7 +68,7 @@ func renderBoxedBlock(content string, contentStyle lipgloss.Style, firstMarker s
 	return strings.Join(lines, "\n")
 }
 
-func renderBlock(block Block, role Role, width int) string {
+func RenderBlock(block Block, role Role, width int) string {
 	switch block := block.(type) {
 	case TextBlock:
 		if role == RoleUser {
@@ -85,7 +85,7 @@ func renderBlock(block Block, role Role, width int) string {
 
 // RenderStreamingText renders in-progress assistant text
 func RenderStreamingText(text string, width int) string {
-	return renderBlock(TextBlock{Text: text}, RoleAssistant, width)
+	return RenderBlock(TextBlock{Text: text}, RoleAssistant, width)
 }
 
 // RenderError renders a failed turn. It is marked like a block so it reads as
