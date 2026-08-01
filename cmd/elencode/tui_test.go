@@ -357,20 +357,20 @@ func TestArrowKeysDoNotReachTheInputWhileTheMenuIsOpen(t *testing.T) {
 	if m.input.Value() != commandPrefix {
 		t.Errorf("input = %q, want %q: arrows must drive the menu, not the input", m.input.Value(), commandPrefix)
 	}
-	if m.menu.Index() != 0 {
-		t.Errorf("menu index = %d, want 0 with a single match", m.menu.Index())
+	if m.menuIndex != 0 {
+		t.Errorf("menuIndex = %d, want 0 with a single match", m.menuIndex)
 	}
 }
 
 func TestTypingResetsTheHighlight(t *testing.T) {
 	m := typeText(t, newSizedModel(t), commandPrefix)
-	m.menu.Select(1) // as if the user had arrowed down a longer match set
+	m.menuIndex = 2 // as if the user had arrowed down a longer match set
 
 	m = typeText(t, m, "q")
 
 	// The match set just changed, so the old index may point at another command
-	if m.menu.Index() != 0 {
-		t.Errorf("menu index = %d, want it reset to 0 when the matches change", m.menu.Index())
+	if m.menuIndex != 0 {
+		t.Errorf("menuIndex = %d, want it reset to 0 when the matches change", m.menuIndex)
 	}
 }
 

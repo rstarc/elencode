@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"charm.land/bubbles/v2/cursor"
-	"charm.land/bubbles/v2/list"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
@@ -52,8 +51,8 @@ type model struct {
 	err      error
 	// command menu state. Visibility is derived from the input rather than
 	// stored, so the two cannot disagree; see menuVisible.
-	menuDismissed bool       // Esc hides the menu for the rest of this command line
-	menu          list.Model // command rows; filtered from the prompt, not its own input
+	menuDismissed bool // Esc hides the menu for the rest of this command line
+	menuIndex     int  // highlighted row within the current match set
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
 	// quit confirmation. quitGeneration counts armings so a disarm message left
@@ -98,16 +97,7 @@ func (m model) menuView() string {
 	if !m.menuVisible() {
 		return ""
 	}
-	return m.menu.View()
-}
-
-// syncMenu re-filters the menu from the prompt and sizes it to the rows that
-// survived, so it grows and shrinks with the query instead of holding a fixed
-// block of blank lines.
-func (m *model) syncMenu() {
-	m.menu.SetFilterText(menuQuery(m.input.Value()))
-	m.menu.SetWidth(m.width)
-	m.menu.SetHeight(max(len(m.menu.VisibleItems()), 1))
+	return renderMenu(matchCommands(m.input.Value()), m.menuIndex, m.width)
 }
 
 func newModel(agent *agent.Agent, cfg config.Config) model {
@@ -129,7 +119,6 @@ func newModel(agent *agent.Agent, cfg config.Config) model {
 	return model{
 		agent:    agent,
 		config:   cfg,
-		menu:     newCommandMenu(),
 		viewport: viewport,
 		input:    input,
 		spinner:  spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
@@ -194,10 +183,9 @@ func (m model) forwardToInput(msg tea.Msg) (model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 
-	// Re-filter for the edit just made. SetFilterText resets the selection to the
-	// top, so the highlight cannot be left pointing at a command that no longer
-	// matches.
-	m.syncMenu()
+	// The match set may have changed under the highlight, so it would otherwise
+	// point at a different command than the one the user was looking at.
+	m.menuIndex = 0
 	// Esc dismisses the menu for one command line only; leaving the line clears it.
 	if !strings.HasPrefix(m.input.Value(), commandPrefix) {
 		m.menuDismissed = false
@@ -214,6 +202,7 @@ func (m model) runCommand() (model, tea.Cmd) {
 		m.err = fmt.Errorf("unknown command: %s", m.input.Value())
 		m.input.Reset()
 		m.menuDismissed = false
+		m.menuIndex = 0
 		m.resize()
 		m.refresh()
 		return m, nil
@@ -223,6 +212,7 @@ func (m model) runCommand() (model, tea.Cmd) {
 	case "config":
 		m.configVisible = true
 		m.input.Reset()
+		m.menuIndex = 0
 		m.resize()
 		return m, nil
 	case "quit":
@@ -293,7 +283,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 		m.height = msg.Height
 		m.viewport.SetWidth(msg.Width)
-		m.menu.SetWidth(msg.Width)
 		// textinput draws the prompt before, and a cursor cell after, the width
 		// it is given, so passing the terminal width makes the input row wider
 		// than the terminal. JoinVertical then pads every other row out to
@@ -356,20 +345,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if !m.menuVisible() {
 				return m.forwardToInput(msg)
 			}
+			delta := 1
 			if msg.String() == "up" {
-				m.menu.CursorUp()
-			} else {
-				m.menu.CursorDown()
+				delta = -1
 			}
+			m.menuIndex = moveHighlight(m.menuIndex, delta, len(matchCommands(m.input.Value())))
 			return m, nil
 		case "tab":
 			if !m.menuVisible() {
 				return m.forwardToInput(msg)
 			}
-			if selected, ok := m.menu.SelectedItem().(command); ok {
-				m.input.SetValue(commandPrefix + selected.name)
+			if matches := matchCommands(m.input.Value()); len(matches) > 0 {
+				m.input.SetValue(commandPrefix + matches[m.menuIndex].name)
 				m.input.CursorEnd()
-				m.syncMenu()
+				m.menuIndex = 0
 				m.resize()
 			}
 			return m, nil
