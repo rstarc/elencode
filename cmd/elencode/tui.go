@@ -203,7 +203,11 @@ func (m model) View() tea.View {
 	viewportView := m.viewport.View()
 	inputView := m.input.View()
 
+	// fix position of textinput cursor
 	cursor := m.input.Cursor()
+	if cursor != nil {
+		cursor.Y += lipgloss.Height(viewportView)
+	}
 	// assemble view
 	view := tea.NewView(lipgloss.JoinVertical(lipgloss.Top, viewportView, inputView))
 	view.AltScreen = false

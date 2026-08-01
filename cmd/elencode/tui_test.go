@@ -151,6 +151,25 @@ func TestUpdateReflowsWhenTerminalShrinks(t *testing.T) {
 	}
 }
 
+func TestViewPutsCursorOnTheInputRow(t *testing.T) {
+	const height = 20
+
+	m := newTestModel()
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: height})
+
+	view := m.View()
+	if view.Cursor == nil {
+		t.Fatal("view has no cursor, want one on the input row")
+	}
+	// textinput reports its cursor relative to itself, but View stacks the input
+	// below the viewport, so the row has to be offset or the terminal blinks at
+	// the top of the screen instead.
+	wantY := lipgloss.Height(m.viewport.View())
+	if view.Cursor.Y != wantY {
+		t.Errorf("cursor row = %d, want %d (the input row)", view.Cursor.Y, wantY)
+	}
+}
+
 // failingProvider fails every round of inference, so a turn driven through the
 // real program reaches the error path.
 type failingProvider struct{ err error }
