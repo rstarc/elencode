@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
+	"github.com/rstarc/elencode/internal/config"
 )
 
 // commandPrefix opens the command menu when the input starts with it
@@ -16,8 +17,39 @@ type command struct {
 }
 
 var commands = []command{
+	{"config", "show the current configuration"},
 	{"quit", "exit elencode"},
 }
+
+// renderConfig draws the read-only configuration view. The API key is printed
+// through Secret.String, so the value cannot reach the screen.
+func renderConfig(cfg config.Config, width int) string {
+	source := "from config file"
+	if cfg.APIKeyFromEnv {
+		source = "from " + config.ANTHROPIC_API_KEY_ENV_VAR_NAME
+	}
+
+	title := lipgloss.NewStyle().Foreground(menuNameColor).Render("configuration")
+	rows := []string{
+		menuRow(menuMarker, title, width),
+		menuRow(menuMarker, "", width),
+		configRow("anthropic_api_key", cfg.AnthropicAPIKey.String()+"  ("+source+")", width),
+		configRow("config file", cfg.Path, width),
+		menuRow(menuMarker, "", width),
+		menuRow(menuMarker, lipgloss.NewStyle().Foreground(menuDescriptionColor).Render("esc to close"), width),
+	}
+	return strings.Join(rows, "\n")
+}
+
+// configRow renders one name/value pair, with the name padded so the values line up
+func configRow(name, value string, width int) string {
+	label := lipgloss.NewStyle().Foreground(menuDescriptionColor).Width(configLabelWidth).Render(name)
+	return menuRow(menuMarker, label+value, width)
+}
+
+// configLabelWidth is the column the values start in, wide enough for the
+// longest label the view currently has.
+const configLabelWidth = 20
 
 // menuMarkerSelected marks the highlighted row; menuMarker continues the left
 // border down the rest, matching how transcript blocks are drawn.

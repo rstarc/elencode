@@ -13,12 +13,13 @@ import (
 	"charm.land/lipgloss/v2"
 	teatest "github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/config"
 )
 
 // newTestModel builds a model backed by an agent that is never Run, so it needs
 // no provider: only the transcript is read during rendering.
 func newTestModel() model {
-	return newModel(agent.New(nil, nil))
+	return newModel(agent.New(nil, nil), config.Config{})
 }
 
 // update applies msg and asserts the result is still our model type
@@ -130,7 +131,7 @@ func TestUpdateKeepsBannerBeforeAnythingIsSaid(t *testing.T) {
 // the turn's channel: agent.Run appends the user message to the context
 // window synchronously, ahead of the goroutine that talks to the provider.
 func TestUpdateShowsUserMessageAsSoonAsItIsSent(t *testing.T) {
-	m := newModel(agent.New(failingProvider{err: errors.New("boom")}, nil))
+	m := newModel(agent.New(failingProvider{err: errors.New("boom")}, nil), config.Config{})
 	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	m.input.SetValue("hello there")
 
@@ -500,7 +501,7 @@ func TestProgramFitsErrorToTerminal(t *testing.T) {
 	for _, width := range []int{20, 30, 40, 80, 120} {
 		t.Run(fmt.Sprintf("width%d", width), func(t *testing.T) {
 			a := agent.New(failingProvider{err: errors.New("429 rate_limit_error: too many requests, slow down")}, nil)
-			tm := teatest.NewTestModel(t, newModel(a), teatest.WithInitialTermSize(width, 20))
+			tm := teatest.NewTestModel(t, newModel(a, config.Config{}), teatest.WithInitialTermSize(width, 20))
 
 			tm.Type("hi")
 			tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -526,12 +527,102 @@ func TestProgramFitsErrorToTerminal(t *testing.T) {
 	}
 }
 
+func TestConfigCommandOpensTheView(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/config")
+
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if !m.configVisible {
+		t.Fatal("/config did not open the config view")
+	}
+	if view := m.View().Content; !strings.Contains(view, "configuration") {
+		t.Errorf("view does not show the configuration:\n%s", view)
+	}
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want it cleared when the view opened", m.input.Value())
+	}
+}
+
+func TestConfigViewShowsLoadedConfigWithoutTheKey(t *testing.T) {
+	const key = "sk-ant-do-not-print-me"
+
+	m := newModel(agent.New(nil, nil), config.Config{
+		AnthropicAPIKey: config.Secret(key),
+		Path:            "/tmp/elencode/config.json",
+		APIKeyFromEnv:   true,
+	})
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
+	m.configVisible = true
+
+	view := m.View().Content
+	if strings.Contains(view, key) {
+		t.Error("config view shows the raw API key")
+	}
+	if !strings.Contains(view, "/tmp/elencode/config.json") {
+		t.Errorf("config view does not show the config path:\n%s", view)
+	}
+}
+
+func TestEscClosesTheConfigView(t *testing.T) {
+	m := newSizedModel(t)
+	m.configVisible = true
+
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+
+	if m.configVisible {
+		t.Error("config view still open after Esc")
+	}
+}
+
+func TestCtrlCClosesTheConfigViewWithoutQuitting(t *testing.T) {
+	m := newSizedModel(t)
+	m.configVisible = true
+
+	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+
+	if m.configVisible {
+		t.Error("config view still open after ctrl+c")
+	}
+	if quits(cmd) {
+		t.Error("ctrl+c quit the program, want it to only close the config view")
+	}
+}
+
+func TestConfigViewSwallowsOtherKeys(t *testing.T) {
+	m := newSizedModel(t)
+	m.configVisible = true
+
+	// The input is not on screen, so a forwarded keystroke would be typed blind
+	m = typeText(t, m, "hello")
+
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want keystrokes swallowed while the config view is open", m.input.Value())
+	}
+	if !m.configVisible {
+		t.Error("typing closed the config view")
+	}
+}
+
+func TestConfigViewHidesTheTranscriptAndInput(t *testing.T) {
+	m := newSizedModel(t)
+	m = update(t, m, streamEventMsg{agent.ErrorEvent{Err: errStub{}}})
+	m.configVisible = true
+
+	view := m.View()
+	if strings.Contains(view.Content, "stub failure") {
+		t.Errorf("config view does not replace the transcript:\n%s", view.Content)
+	}
+	if view.Cursor != nil {
+		t.Error("config view has a cursor, want none while the input is hidden")
+	}
+}
+
 // TestProgramQuitsOnQuitCommand drives the whole program rather than calling
 // Update, so it covers the command actually ending the event loop: Update
 // returning tea.Quit is not by itself proof the program exits.
 func TestProgramQuitsOnQuitCommand(t *testing.T) {
 	a := agent.New(failingProvider{err: errors.New("never asked")}, nil)
-	tm := teatest.NewTestModel(t, newModel(a), teatest.WithInitialTermSize(80, 20))
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}), teatest.WithInitialTermSize(80, 20))
 
 	tm.Type("/")
 	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {

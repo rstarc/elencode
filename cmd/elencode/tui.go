@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/config"
 )
 
 // banner is shown until there is a transcript to show instead
@@ -32,7 +33,8 @@ const (
 
 type model struct {
 	// agent state
-	agent *agent.Agent
+	agent  *agent.Agent
+	config config.Config // shown by /config, never otherwise read here
 	// in-flight turn, valid only while state is uiStateProcessing.
 	// Both are handles to this turn specifically, not to the agent.
 	events <-chan agent.Event
@@ -50,6 +52,8 @@ type model struct {
 	// stored, so the two cannot disagree; see menuVisible.
 	menuDismissed bool // Esc hides the menu for the rest of this command line
 	menuIndex     int  // highlighted row within the current match set
+	// configVisible replaces the whole frame with the read-only config view
+	configVisible bool
 }
 
 // menuVisible reports whether the command menu is showing
@@ -65,7 +69,7 @@ func (m model) menuView() string {
 	return renderMenu(matchCommands(m.input.Value()), m.menuIndex, m.width)
 }
 
-func newModel(agent *agent.Agent) model {
+func newModel(agent *agent.Agent, cfg config.Config) model {
 
 	input := textinput.New()
 	input.Placeholder = "start typing..."
@@ -83,6 +87,7 @@ func newModel(agent *agent.Agent) model {
 
 	return model{
 		agent:    agent,
+		config:   cfg,
 		viewport: viewport,
 		input:    input,
 		spinner:  spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
@@ -170,6 +175,12 @@ func (m model) runCommand() (model, tea.Cmd) {
 	}
 
 	switch cmd.name {
+	case "config":
+		m.configVisible = true
+		m.input.Reset()
+		m.menuIndex = 0
+		m.resize()
+		return m, nil
 	case "quit":
 		// Abandon any in-flight turn, as ctrl+c does, so its goroutine unblocks
 		if m.cancel != nil {
@@ -253,6 +264,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.refresh()
 		return m, nil
 	case tea.KeyPressMsg:
+		// The config view owns the whole frame, so it takes the keyboard with it:
+		// the input is off screen and would otherwise be typed into blind.
+		if m.configVisible {
+			switch msg.String() {
+			case "esc", "ctrl+c":
+				m.configVisible = false
+			}
+			return m, nil
+		}
 		// handle user input
 		switch msg.String() {
 		case "ctrl+c":
@@ -347,6 +367,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View implements the bubbletea Model interface
 func (m model) View() tea.View {
+	// A modal view: it replaces the frame rather than adding a row to it, so
+	// there is no input on screen and no cursor to place.
+	if m.configVisible {
+		view := tea.NewView(renderConfig(m.config, m.width))
+		view.AltScreen = false
+		return view
+	}
+
 	viewportView := m.viewport.View()
 	inputView := m.input.View()
 

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	"github.com/rstarc/elencode/internal/config"
 )
 
 // names reduces a match set to command names, so tests can compare them without
@@ -23,11 +24,13 @@ func TestMatchCommands(t *testing.T) {
 		input string
 		want  []string
 	}{
-		{"slash alone lists everything", "/", []string{"quit"}},
+		{"slash alone lists everything", "/", []string{"config", "quit"}},
 		{"exact name", "/quit", []string{"quit"}},
 		{"prefix", "/qu", []string{"quit"}},
 		{"subsequence", "/qt", []string{"quit"}},
 		{"case insensitive", "/QUIT", []string{"quit"}},
+		{"narrows to one command", "/co", []string{"config"}},
+		{"a shared letter matches both", "/i", []string{"config", "quit"}},
 		{"no match", "/zzz", nil},
 		{"out of order is not a subsequence", "/tq", nil},
 		{"missing slash", "quit", nil},
@@ -98,6 +101,57 @@ func TestRenderMenuFitsNarrowTerminal(t *testing.T) {
 		if got := lipgloss.Width(line); got > width {
 			t.Errorf("row %d is %d columns wide, want <= %d:\n%s", i, got, width, line)
 		}
+	}
+}
+
+func TestRenderConfigMasksTheAPIKey(t *testing.T) {
+	const key = "sk-ant-do-not-print-me"
+	cfg := config.Config{AnthropicAPIKey: config.Secret(key), Path: "/tmp/elencode/config.json"}
+
+	view := renderConfig(cfg, 80)
+
+	if strings.Contains(view, key) {
+		t.Error("config view contains the raw API key")
+	}
+	if !strings.Contains(view, cfg.AnthropicAPIKey.String()) {
+		t.Errorf("config view does not show the mask:\n%s", view)
+	}
+}
+
+func TestRenderConfigShowsThePath(t *testing.T) {
+	const path = "/home/someone/.config/elencode/config.json"
+
+	view := renderConfig(config.Config{Path: path}, 120)
+
+	if !strings.Contains(view, path) {
+		t.Errorf("config view does not show the config file path:\n%s", view)
+	}
+}
+
+func TestRenderConfigNamesTheSource(t *testing.T) {
+	tests := []struct {
+		name      string
+		fromEnv   bool
+		wantMatch string
+	}{
+		{"environment", true, config.ANTHROPIC_API_KEY_ENV_VAR_NAME},
+		{"config file", false, "config file"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := config.Config{AnthropicAPIKey: "x", APIKeyFromEnv: test.fromEnv, Path: "/tmp/c.json"}
+
+			if view := renderConfig(cfg, 80); !strings.Contains(view, test.wantMatch) {
+				t.Errorf("config view does not name %q as the source:\n%s", test.wantMatch, view)
+			}
+		})
+	}
+}
+
+func TestRenderConfigSaysHowToClose(t *testing.T) {
+	if view := renderConfig(config.Config{}, 80); !strings.Contains(view, "esc") {
+		t.Errorf("config view does not say how to close it:\n%s", view)
 	}
 }
 

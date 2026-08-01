@@ -33,7 +33,7 @@ func main() {
 	}
 	agentConfig := agent.New(provider, tools)
 
-	tui := tea.NewProgram(newModel(agentConfig))
+	tui := tea.NewProgram(newModel(agentConfig, cfg))
 	if _, err := tui.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
 		os.Exit(1)
