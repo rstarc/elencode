@@ -4,61 +4,66 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/bubbles/v2/list"
 	"charm.land/lipgloss/v2"
 	"github.com/rstarc/elencode/internal/config"
 )
 
-// names reduces a match set to command names, so tests can compare them without
-// restating descriptions that are free to change.
-func names(matches []command) []string {
-	got := make([]string, len(matches))
-	for i, c := range matches {
-		got[i] = c.name
+// visibleNames reduces the menu's surviving rows to command names
+func visibleNames(menu list.Model) []string {
+	got := make([]string, 0, len(menu.VisibleItems()))
+	for _, item := range menu.VisibleItems() {
+		if c, ok := item.(command); ok {
+			got = append(got, c.name)
+		}
 	}
 	return got
 }
 
-func TestMatchCommands(t *testing.T) {
+func TestMenuFiltersOnTheTypedQuery(t *testing.T) {
 	tests := []struct {
 		name  string
-		input string
+		query string
 		want  []string
 	}{
-		{"slash alone lists everything", "/", []string{"config", "quit"}},
-		{"exact name", "/quit", []string{"quit"}},
-		{"prefix", "/qu", []string{"quit"}},
-		{"subsequence", "/qt", []string{"quit"}},
-		{"case insensitive", "/QUIT", []string{"quit"}},
-		{"narrows to one command", "/co", []string{"config"}},
-		{"a shared letter matches both", "/i", []string{"config", "quit"}},
-		{"no match", "/zzz", nil},
-		{"out of order is not a subsequence", "/tq", nil},
-		{"missing slash", "quit", nil},
-		{"empty", "", nil},
+		{"empty query lists everything", "", []string{"config", "quit"}},
+		{"exact name", "quit", []string{"quit"}},
+		{"prefix", "qu", []string{"quit"}},
+		{"narrows to one command", "co", []string{"config"}},
+		{"no match", "zzz", nil},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got := names(matchCommands(test.input))
-			if strings.Join(got, ",") != strings.Join(test.want, ",") {
-				t.Errorf("matchCommands(%q) = %v, want %v", test.input, got, test.want)
+			menu := newCommandMenu()
+			menu.SetFilterText(test.query)
+
+			if got := visibleNames(menu); strings.Join(got, ",") != strings.Join(test.want, ",") {
+				t.Errorf("query %q leaves %v, want %v", test.query, got, test.want)
 			}
 		})
 	}
 }
 
-// menuFixture is a stand-in registry, so the menu tests keep working as
-// commands are added or renamed.
-var menuFixture = []command{
-	{"alpha", "the first one"},
-	{"beta", "the second one"},
-	{"gamma", "the third one"},
+func TestMenuDrawsOneRowPerCommand(t *testing.T) {
+	// list's own delegate reserves a blank line between items and a second line
+	// per item for a description, which would make the menu tower over the input
+	menu := newCommandMenu()
+	menu.SetWidth(80)
+
+	lines := strings.Split(strings.TrimRight(menu.View(), "\n"), "\n")
+
+	if len(lines) != len(commands) {
+		t.Errorf("menu is %d rows for %d commands, want one row each:\n%q", len(lines), len(commands), menu.View())
+	}
 }
 
-func TestRenderMenuShowsEveryMatch(t *testing.T) {
-	view := renderMenu(menuFixture, 0, 80)
+func TestMenuShowsNamesAndDescriptions(t *testing.T) {
+	menu := newCommandMenu()
+	menu.SetWidth(80)
 
-	for _, c := range menuFixture {
+	view := menu.View()
+	for _, c := range commands {
 		if !strings.Contains(view, commandPrefix+c.name) {
 			t.Errorf("menu is missing %q:\n%s", c.name, view)
 		}
@@ -68,18 +73,60 @@ func TestRenderMenuShowsEveryMatch(t *testing.T) {
 	}
 }
 
-func TestRenderMenuMarksTheHighlightedRow(t *testing.T) {
-	const highlighted = 1
+func TestMenuMarksTheSelectedRow(t *testing.T) {
+	menu := newCommandMenu()
+	menu.SetWidth(80)
+	menu.Select(1)
 
-	lines := strings.Split(renderMenu(menuFixture, highlighted, 80), "\n")
-	if len(lines) != len(menuFixture) {
-		t.Fatalf("menu has %d rows, want %d:\n%s", len(lines), len(menuFixture), strings.Join(lines, "\n"))
-	}
-
+	lines := strings.Split(strings.TrimRight(menu.View(), "\n"), "\n")
 	for i, line := range lines {
 		marked := strings.Contains(line, menuMarkerSelected)
-		if want := i == highlighted; marked != want {
-			t.Errorf("row %d marked = %v, want %v:\n%s", i, marked, want, line)
+		if want := i == 1; marked != want {
+			t.Errorf("row %d marked = %v, want %v:\n%q", i, marked, want, line)
+		}
+	}
+}
+
+func TestMenuColorsOnlyTheSelectedRow(t *testing.T) {
+	menu := newCommandMenu()
+	menu.SetWidth(80)
+	menu.Select(1)
+
+	lines := strings.Split(strings.TrimRight(menu.View(), "\n"), "\n")
+	for i, line := range lines {
+		colored := strings.Contains(line, stylePrefix(menuStyles(true).name))
+		if want := i == 1; colored != want {
+			t.Errorf("row %d carries the highlight color = %v, want %v:\n%q", i, colored, want, line)
+		}
+	}
+}
+
+func TestMenuReportsAnEmptyMatchSet(t *testing.T) {
+	// Silence would be ambiguous: the user cannot tell a live menu with no
+	// matches from a menu that never opened. list phrases this line as
+	// "No <plural>.", so the wording comes from SetStatusBarItemName.
+	menu := newCommandMenu()
+	menu.SetWidth(80)
+	menu.SetFilterText("zzz")
+
+	view := menu.View()
+	if !strings.Contains(view, "matching command") {
+		t.Errorf("menu does not report an empty match set:\n%s", view)
+	}
+	if strings.Contains(view, "No items") {
+		t.Errorf("menu shows list's default empty text:\n%s", view)
+	}
+}
+
+func TestMenuFitsNarrowTerminal(t *testing.T) {
+	const width = 30
+
+	menu := newCommandMenu()
+	menu.SetWidth(width)
+
+	for i, line := range strings.Split(strings.TrimRight(menu.View(), "\n"), "\n") {
+		if got := lipgloss.Width(line); got > width {
+			t.Errorf("row %d is %d columns wide, want <= %d:\n%s", i, got, width, line)
 		}
 	}
 }
@@ -105,21 +152,6 @@ func TestHighlightedRowDiffersInBothColumns(t *testing.T) {
 	}
 }
 
-// TestRenderMenuColorsOnlyTheHighlightedRow checks the styles are actually
-// wired into the output, not merely defined.
-func TestRenderMenuColorsOnlyTheHighlightedRow(t *testing.T) {
-	const highlighted = 1
-
-	lines := strings.Split(renderMenu(menuFixture, highlighted, 80), "\n")
-
-	for i, line := range lines {
-		colored := strings.Contains(line, stylePrefix(menuStyles(true).name))
-		if want := i == highlighted; colored != want {
-			t.Errorf("row %d carries the highlight color = %v, want %v:\n%q", i, colored, want, line)
-		}
-	}
-}
-
 // stylePrefix returns the escape sequence a style emits before its content, so
 // a test can look for that exact styling in a rendered row. Taken from the
 // style itself rather than rebuilt from its foreground, since attributes like
@@ -127,26 +159,6 @@ func TestRenderMenuColorsOnlyTheHighlightedRow(t *testing.T) {
 func stylePrefix(s lipgloss.Style) string {
 	prefix, _, _ := strings.Cut(s.Render("x"), "x")
 	return prefix
-}
-
-func TestRenderMenuReportsAnEmptyMatchSet(t *testing.T) {
-	// Silence would be ambiguous: the user cannot tell a live menu with no
-	// matches from a menu that never opened.
-	if view := renderMenu(nil, 0, 80); !strings.Contains(view, "no matching command") {
-		t.Errorf("menu does not report an empty match set:\n%s", view)
-	}
-}
-
-func TestRenderMenuFitsNarrowTerminal(t *testing.T) {
-	const width = 30
-
-	view := renderMenu(menuFixture, 0, width)
-
-	for i, line := range strings.Split(view, "\n") {
-		if got := lipgloss.Width(line); got > width {
-			t.Errorf("row %d is %d columns wide, want <= %d:\n%s", i, got, width, line)
-		}
-	}
 }
 
 func TestRenderConfigMasksTheAPIKey(t *testing.T) {
@@ -197,28 +209,6 @@ func TestRenderConfigNamesTheSource(t *testing.T) {
 func TestRenderConfigSaysHowToClose(t *testing.T) {
 	if view := renderConfig(config.Config{}, 80); !strings.Contains(view, "esc") {
 		t.Errorf("config view does not say how to close it:\n%s", view)
-	}
-}
-
-func TestMoveHighlight(t *testing.T) {
-	tests := []struct {
-		name              string
-		index, delta, len int
-		want              int
-	}{
-		{"down", 0, 1, 3, 1},
-		{"up", 2, -1, 3, 1},
-		{"clamps at the last row", 2, 1, 3, 2},
-		{"clamps at the first row", 0, -1, 3, 0},
-		{"empty match set", 0, 1, 0, 0},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if got := moveHighlight(test.index, test.delta, test.len); got != test.want {
-				t.Errorf("moveHighlight(%d, %d, %d) = %d, want %d", test.index, test.delta, test.len, got, test.want)
-			}
-		})
 	}
 }
 
