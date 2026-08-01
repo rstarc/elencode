@@ -170,6 +170,40 @@ func TestViewPutsCursorOnTheInputRow(t *testing.T) {
 	}
 }
 
+func TestViewShowsSpinnerWhileProcessing(t *testing.T) {
+	m := newTestModel()
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
+	m.state = uiStateProcessing
+
+	if view := m.View().Content; !strings.Contains(view, "processing") {
+		t.Errorf("view does not show the processing spinner:\n%s", view)
+	}
+}
+
+func TestViewHidesSpinnerWhenIdle(t *testing.T) {
+	m := newTestModel()
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
+
+	if view := m.View().Content; strings.Contains(view, "processing") {
+		t.Errorf("view shows the processing spinner while idle:\n%s", view)
+	}
+}
+
+func TestViewPutsCursorBelowSpinnerWhileProcessing(t *testing.T) {
+	m := newTestModel()
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
+	m.state = uiStateProcessing
+
+	view := m.View()
+	if view.Cursor == nil {
+		t.Fatal("view has no cursor, want one on the input row")
+	}
+	wantY := lipgloss.Height(m.viewport.View()) + lipgloss.Height(m.spinnerLine())
+	if view.Cursor.Y != wantY {
+		t.Errorf("cursor row = %d, want %d (below viewport and spinner)", view.Cursor.Y, wantY)
+	}
+}
+
 // failingProvider fails every round of inference, so a turn driven through the
 // real program reaches the error path.
 type failingProvider struct{ err error }

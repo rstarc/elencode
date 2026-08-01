@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"charm.land/bubbles/v2/cursor"
+	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
@@ -32,6 +33,7 @@ type model struct {
 	partial  string          // assistant text streamed so far, not yet in the transcript
 	viewport viewport.Model  // viewport displaying the transcript
 	input    textinput.Model // user input field
+	spinner  spinner.Model   // shown above input while state is uiStateProcessing
 	width    int             // terminal width, 0 until the first WindowSizeMsg
 	state    uiState
 	err      error
@@ -57,8 +59,15 @@ func newModel(agent *agent.Agent) model {
 		agent:    agent,
 		viewport: viewport,
 		input:    input,
+		spinner:  spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
 		state:    uiStateIdle,
 	}
+}
+
+// spinnerLine renders the "processing..." indicator shown above the input
+// while a turn is in flight.
+func (m model) spinnerLine() string {
+	return "processing" + m.spinner.View()
 }
 
 // streamEventMsg carries one Event from the in-flight turn
@@ -90,7 +99,7 @@ func (m model) startTurn(userInput string) (model, tea.Cmd) {
 	m.state = uiStateProcessing
 	m.err = nil
 	m.refresh()
-	return m, waitForEvent(m.events)
+	return m, tea.Batch(waitForEvent(m.events), m.spinner.Tick)
 }
 
 // endTurn releases the finished turn's resources and returns to idle
@@ -191,6 +200,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Forward to textinput
 		m.input, _ = m.input.Update(msg)
 		return m, nil
+
+	case spinner.TickMsg:
+		// Once idle, stop re-issuing ticks so the spinner doesn't keep
+		// animating in the background between turns.
+		if m.state != uiStateProcessing {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
 	default:
 	}
 
@@ -199,17 +218,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // View implements the bubbletea Model interface
 func (m model) View() tea.View {
-	// TODO: Add throbber/spinner during processing state
 	viewportView := m.viewport.View()
 	inputView := m.input.View()
+
+	rows := []string{viewportView}
+	if m.state == uiStateProcessing {
+		rows = append(rows, m.spinnerLine())
+	}
+	rows = append(rows, inputView)
 
 	// fix position of textinput cursor
 	cursor := m.input.Cursor()
 	if cursor != nil {
-		cursor.Y += lipgloss.Height(viewportView)
+		for _, row := range rows[:len(rows)-1] {
+			cursor.Y += lipgloss.Height(row)
+		}
 	}
 	// assemble view
-	view := tea.NewView(lipgloss.JoinVertical(lipgloss.Top, viewportView, inputView))
+	view := tea.NewView(lipgloss.JoinVertical(lipgloss.Top, rows...))
 	view.AltScreen = false
 	view.Cursor = cursor
 	return view
