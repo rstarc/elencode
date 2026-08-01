@@ -3,6 +3,8 @@ package agent
 import (
 	"charm.land/lipgloss/v2"
 	"encoding/json"
+	"image/color"
+	"strings"
 )
 
 // Block is a part of a message
@@ -20,31 +22,52 @@ const (
 	minBlockWidth = 20
 )
 
-var textBlockStyle = lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderForeground(lipgloss.BrightBlack).Padding(1, 1)
+// markerFirst marks the first line of a block, so its start is easy to spot
+// when scanning down the transcript. markerRest continues the left border on
+// every following line without repeating the marker.
+const (
+	markerFirst = "*"
+	markerRest  = "│"
+)
 
-var toolUseStyle = textBlockStyle.BorderForeground(lipgloss.BrightBlue)
+var textBlockColor = lipgloss.BrightBlack
+var toolUseColor = lipgloss.BrightBlue
+var errorColor = lipgloss.Red
 
-var errorStyle = textBlockStyle.BorderForeground(lipgloss.Red)
-
-// blockWidth fits a block to the space available, which lipgloss measures
-// including the border and padding. available is 0 before the first
-// WindowSizeMsg arrives.
+// blockWidth fits a block to the space available, which includes the marker
+// column. available is 0 before the first WindowSizeMsg arrives.
 func blockWidth(available int) int {
 	return min(max(available, minBlockWidth), maxBlockWidth)
 }
 
+// renderBoxedBlock prefixes content, wrapped to width, with a colored marker
+// column: an asterisk on the first line, a continuing border rune on the
+// rest. No vertical padding, so blocks stay dense in the transcript.
+func renderBoxedBlock(content string, markerColor color.Color, width int) string {
+	innerWidth := max(blockWidth(width)-2, 1) // marker + one space
+	wrapped := lipgloss.NewStyle().Width(innerWidth).Render(content)
+	marker := lipgloss.NewStyle().Foreground(markerColor)
+
+	lines := strings.Split(wrapped, "\n")
+	for i, line := range lines {
+		m := markerRest
+		if i == 0 {
+			m = markerFirst
+		}
+		lines[i] = marker.Render(m) + " " + line
+	}
+	return strings.Join(lines, "\n")
+}
+
 func renderBlock(block Block, width int) string {
-	render := ""
 	switch block := block.(type) {
 	case TextBlock:
-		render = render + block.Text
-		render = textBlockStyle.Width(blockWidth(width)).Render(render)
+		return renderBoxedBlock(block.Text, textBlockColor, width)
 	case ToolUseBlock:
-		render = render + block.Name + string(block.Input)
-		render = toolUseStyle.Width(blockWidth(width)).Render(render)
+		return renderBoxedBlock(block.Name+string(block.Input), toolUseColor, width)
 	default:
+		return ""
 	}
-	return render
 }
 
 // RenderStreamingText renders in-progress assistant text
@@ -52,11 +75,11 @@ func RenderStreamingText(text string, width int) string {
 	return renderBlock(TextBlock{Text: text}, width)
 }
 
-// RenderError renders a failed turn. It is boxed like a block so it reads as
+// RenderError renders a failed turn. It is marked like a block so it reads as
 // part of the transcript, but red and labelled so it is not mistaken for
 // something the assistant said.
 func RenderError(err error, width int) string {
-	return errorStyle.Width(blockWidth(width)).Render("Error: " + err.Error())
+	return renderBoxedBlock("Error: "+err.Error(), errorColor, width)
 }
 
 type TextBlock struct{ Text string }

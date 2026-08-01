@@ -1,5 +1,7 @@
 package agent
 
+import "strings"
+
 type Role string
 
 const (
@@ -22,24 +24,37 @@ func NewUserMessage(content []Block) Message {
 	}
 }
 
+// renderMessage renders msg's blocks, dropping any that render empty (such
+// as a ToolResultBlock, whose raw output is not shown) so they don't leave a
+// blank line behind.
 func renderMessage(msg Message, width int) string {
-	render := ""
+	var blocks []string
 	for _, block := range msg.Content {
-		render = render + renderBlock(block, width) + "\n"
+		if rendered := renderBlock(block, width); rendered != "" {
+			blocks = append(blocks, rendered)
+		}
 	}
-	return render
+	return strings.Join(blocks, "\n")
 }
 
 // RenderTranscript returns a rendered string that contains the entire context
-// window, laid out for a terminal width columns wide.
+// window, laid out for a terminal width columns wide. Messages are separated
+// by a single newline, not a blank line, to keep the transcript dense. A
+// message that renders empty (e.g. one made only of tool results) is
+// dropped entirely rather than leaving a gap.
 // Uses a Mutex to guard the contextWindow
 func RenderTranscript(agent *Agent, width int) string {
 	agent.mu.Lock()
 	defer agent.mu.Unlock()
 
-	result := ""
+	var messages []string
 	for _, msg := range agent.contextWindow {
-		result = result + renderMessage(msg, width) + "\n"
+		if rendered := renderMessage(msg, width); rendered != "" {
+			messages = append(messages, rendered)
+		}
 	}
-	return result
+	if len(messages) == 0 {
+		return ""
+	}
+	return strings.Join(messages, "\n") + "\n"
 }
