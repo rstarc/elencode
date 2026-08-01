@@ -15,8 +15,8 @@ import (
 	"github.com/rstarc/elencode/internal/config"
 )
 
-// banner is shown until there is a transcript to show instead
-const banner = "== elencode =="
+// banner titles the session, printed once the terminal width is known
+const banner = "elencode"
 
 // inputPrompt mirrors agent.UserPromptMarker, which marks user messages in
 // the transcript, so the two stay visibly the same character. Declared at
@@ -53,6 +53,7 @@ type model struct {
 	menuIndex     int  // highlighted row within the current match set
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
+	headerPrinted bool // the session title has been printed
 	// model picker state, driven by /model
 	modelsLoading      bool          // the model list is being fetched
 	modelPickerVisible bool          // the picker has the keyboard
@@ -441,9 +442,7 @@ func (m model) endTurn() model {
 
 // Init implements the bubbletea Model interface
 func (m model) Init() tea.Cmd {
-	// The banner is printed rather than drawn, so it scrolls away with the rest
-	// of the session instead of sitting above every frame.
-	return tea.Batch(textinput.Blink, printAbove(banner))
+	return textinput.Blink
 }
 
 // Update implements the bubbletea Model interface
@@ -458,6 +457,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(max(msg.Width-lipgloss.Width(m.input.Prompt)-1, 1))
 		// Only the frame follows the new width. What is already printed keeps
 		// the width it was printed at, as the terminal owns those lines now.
+
+		// The header is printed rather than drawn, so it scrolls away with the
+		// rest of the session instead of sitting above every frame. It waits
+		// for this message because it spans the terminal, and until now there
+		// was no width to span. A resize is not a new session.
+		if !m.headerPrinted {
+			m.headerPrinted = true
+			return m, printAbove(agent.RenderHeader(banner, m.width))
+		}
 		return m, nil
 	case tea.KeyPressMsg:
 		// The config view owns the whole frame, so it takes the keyboard with it:

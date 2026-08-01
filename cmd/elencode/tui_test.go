@@ -1036,3 +1036,30 @@ func TestSelectingAModelSaysSo(t *testing.T) {
 		t.Errorf("printed %q, want it to say the context was cleared", got)
 	}
 }
+
+// TestHeaderSpansTheTerminal covers why the header cannot be printed from Init:
+// the terminal width is not known until the first WindowSizeMsg arrives.
+func TestHeaderSpansTheTerminal(t *testing.T) {
+	const width = 72
+
+	_, cmd := updateCmd(t, newTestModel(), tea.WindowSizeMsg{Width: width, Height: 20})
+
+	got := printed(t, cmd)
+	if lipgloss.Width(got) != width {
+		t.Errorf("header is %d columns wide, want the full %d:\n%s", lipgloss.Width(got), width, got)
+	}
+	if !strings.Contains(got, banner) {
+		t.Errorf("header does not carry the title %q:\n%s", banner, got)
+	}
+}
+
+func TestHeaderIsPrintedOnce(t *testing.T) {
+	m := newSizedModel(t)
+
+	// A resize is not a new session, so it must not print a second header
+	_, cmd := updateCmd(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+
+	if cmd != nil {
+		t.Errorf("resizing printed %q, want the header printed only at startup", printed(t, cmd))
+	}
+}

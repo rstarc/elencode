@@ -100,26 +100,38 @@ func RenderError(err error, width int) string {
 // transcript, with none of the marker column a message block has, so it reads
 // as a break in the conversation instead of a turn in it.
 func RenderNotice(text string, width int) string {
-	style := lipgloss.NewStyle().Foreground(noticeColor)
+	return renderRule(text, width, lipgloss.NewStyle().Foreground(noticeColor))
+}
 
-	total := blockWidth(width)
-	label := " " + text + " "
+// RenderHeader renders the title the session opens with, as the same rule a
+// notice is drawn with but colored to read as a title rather than an event.
+func RenderHeader(text string, width int) string {
+	return renderRule(text, width, lipgloss.NewStyle().Foreground(headerColor).Bold(true))
+}
 
-	fill := total - lipgloss.Width(label)
+// renderRule centers label in a line of rule characters. Unlike a message
+// block it is not capped at maxBlockWidth: a rule that stopped short of the
+// edge would read as a box around nothing rather than as a divider.
+func renderRule(label string, width int, style lipgloss.Style) string {
+	total := max(width, minBlockWidth)
+	padded := " " + label + " "
+
+	fill := total - lipgloss.Width(padded)
 	if fill < 2 {
-		// No room for a rule on both sides; the text alone still reads as a
-		// notice, since nothing else in the transcript is unmarked.
-		return style.MaxWidth(total).Render(label)
+		// No room for a rule on both sides. The label alone still reads as a
+		// break, since nothing else in the transcript is unmarked.
+		return style.MaxWidth(total).Render(padded)
 	}
 
 	left := fill / 2
-	return style.Render(strings.Repeat(noticeRule, left) + label + strings.Repeat(noticeRule, fill-left))
+	return style.Render(strings.Repeat(rule, left) + padded + strings.Repeat(rule, fill-left))
 }
 
-// noticeRule is the character the notice line is drawn with
-const noticeRule = "─"
+// rule is the character a divider is drawn with
+const rule = "─"
 
 var noticeColor = lipgloss.BrightBlack
+var headerColor = lipgloss.BrightBlue
 
 type TextBlock struct{ Text string }
 

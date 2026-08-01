@@ -129,3 +129,29 @@ func TestRenderNoticeFitsNarrowTerminal(t *testing.T) {
 		}
 	}
 }
+
+// TestRenderNoticeSpansTheTerminal covers the point of drawing a notice as a
+// rule: it separates what is above it from what is below, which it can only do
+// by reaching both edges. Unlike a message block it is not capped at
+// maxBlockWidth.
+func TestRenderNoticeSpansTheTerminal(t *testing.T) {
+	for _, width := range []int{40, 80, 120, 200} {
+		if got := lipgloss.Width(RenderNotice("switched to some-model", width)); got != width {
+			t.Errorf("notice at width %d is %d columns wide, want the full %d", width, got, width)
+		}
+	}
+}
+
+func TestRenderHeaderSpansTheTerminal(t *testing.T) {
+	for _, width := range []int{40, 120, 200} {
+		if got := lipgloss.Width(RenderHeader("elencode", width)); got != width {
+			t.Errorf("header at width %d is %d columns wide, want the full %d", width, got, width)
+		}
+	}
+}
+
+func TestRenderHeaderCarriesTheTitle(t *testing.T) {
+	if got := stripANSI(RenderHeader("elencode", 80)); !strings.Contains(got, "elencode") {
+		t.Errorf("header = %q, want it to carry the title", got)
+	}
+}
