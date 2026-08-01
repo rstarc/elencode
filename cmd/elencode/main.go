@@ -16,7 +16,7 @@ func main() {
 	// Load config
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Println(err)
+		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
 		os.Exit(1)
 	}
 
@@ -35,7 +35,8 @@ func main() {
 
 	tui := tea.NewProgram(newModel(agentConfig))
 	if _, err := tui.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to start TUI: %v\n", err)
+		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
+		os.Exit(1)
 	}
 
 }

@@ -13,6 +13,8 @@ var textBlockStyle = lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).Bo
 
 var toolUseStyle = textBlockStyle.BorderForeground(lipgloss.BrightBlue)
 
+var errorStyle = textBlockStyle.BorderForeground(lipgloss.Red)
+
 func renderBlock(block Block) string {
 	render := ""
 	switch block := block.(type) {
@@ -30,6 +32,13 @@ func renderBlock(block Block) string {
 // RenderStreamingText renders in-progress assistant text
 func RenderStreamingText(text string) string {
 	return renderBlock(TextBlock{Text: text})
+}
+
+// RenderError renders a failed turn. It is boxed like a block so it reads as
+// part of the transcript, but red and labelled so it is not mistaken for
+// something the assistant said.
+func RenderError(err error) string {
+	return errorStyle.Render("Error: " + err.Error())
 }
 
 type TextBlock struct{ Text string }

@@ -109,7 +109,7 @@ func (m *model) refresh() {
 		content = content + agent.RenderStreamingText(m.partial) + "\n"
 	}
 	if m.err != nil {
-		content = content + m.err.Error() + "\n"
+		content = content + agent.RenderError(m.err) + "\n"
 	}
 	m.viewport.SetContent(content)
 	m.viewport.GotoBottom()

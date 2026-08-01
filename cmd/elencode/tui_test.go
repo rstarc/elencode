@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
@@ -73,6 +74,35 @@ func TestUpdateRecordsStreamError(t *testing.T) {
 
 	if m.err != wantErr {
 		t.Errorf("err = %v, want %v", m.err, wantErr)
+	}
+}
+
+func TestUpdateShowsErrorInViewport(t *testing.T) {
+	m := newTestModel()
+	// Wide enough that the boxed error is not truncated to the viewport width
+	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+
+	m = update(t, m, streamEventMsg{agent.ErrorEvent{Err: errStub{}}})
+
+	if view := m.viewport.View(); !strings.Contains(view, "Error: stub failure") {
+		t.Errorf("viewport does not show the labelled error:\n%s", view)
+	}
+}
+
+func TestUpdateKeepsErrorVisibleAfterTurnEnds(t *testing.T) {
+	m := newTestModel()
+	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = update(t, m, streamEventMsg{agent.ErrorEvent{Err: errStub{}}})
+
+	// The channel closes right after a failure, so clearing the error here
+	// would make it flash and vanish before it could be read.
+	m = update(t, m, streamClosedMsg{})
+
+	if m.err == nil {
+		t.Fatal("err was cleared when the turn ended, want it kept until the next turn")
+	}
+	if view := m.viewport.View(); !strings.Contains(view, "Error: stub failure") {
+		t.Errorf("viewport does not show the labelled error:\n%s", view)
 	}
 }
 
