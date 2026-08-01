@@ -617,6 +617,110 @@ func TestConfigViewHidesTheTranscriptAndInput(t *testing.T) {
 	}
 }
 
+// ctrlC is the key press the quit tests send
+var ctrlC = tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+
+func TestFirstCtrlCArmsRatherThanQuitting(t *testing.T) {
+	m := newSizedModel(t)
+
+	m, cmd := updateCmd(t, m, ctrlC)
+
+	if quits(cmd) {
+		t.Error("the first ctrl+c quit, want it to arm and wait for a second press")
+	}
+	if !m.quitArmed {
+		t.Error("the first ctrl+c did not arm quit")
+	}
+	if view := m.View().Content; !strings.Contains(view, "press ctrl+c again to exit") {
+		t.Errorf("view does not tell the user how to exit:\n%s", view)
+	}
+}
+
+func TestSecondCtrlCQuits(t *testing.T) {
+	m := newSizedModel(t)
+
+	m = update(t, m, ctrlC)
+	_, cmd := updateCmd(t, m, ctrlC)
+
+	if !quits(cmd) {
+		t.Error("the second ctrl+c did not quit")
+	}
+}
+
+func TestAnyOtherKeyDisarmsQuit(t *testing.T) {
+	m := newSizedModel(t)
+	m = update(t, m, ctrlC)
+
+	m = typeText(t, m, "a")
+
+	if m.quitArmed {
+		t.Error("quit still armed after another keystroke")
+	}
+	if view := m.View().Content; strings.Contains(view, "press ctrl+c again to exit") {
+		t.Errorf("the exit hint survived a disarming keystroke:\n%s", view)
+	}
+	// The keystroke that disarms is still the user's input, not swallowed
+	if m.input.Value() != "a" {
+		t.Errorf("input = %q, want the disarming keystroke to still be typed", m.input.Value())
+	}
+}
+
+func TestQuitDisarmsOnTimeout(t *testing.T) {
+	m := newSizedModel(t)
+	m = update(t, m, ctrlC)
+
+	m = update(t, m, quitDisarmMsg{generation: m.quitGeneration})
+
+	if m.quitArmed {
+		t.Error("quit still armed after its disarm message")
+	}
+}
+
+// TestStaleDisarmDoesNotDisarmAReArmedQuit covers the sequence the generation
+// counter exists for: arm, disarm by typing, arm again, and only then does the
+// first press's timer fire. Without the counter that stale message disarms a
+// quit the user just armed, and their second ctrl+c would silently do nothing.
+func TestStaleDisarmDoesNotDisarmAReArmedQuit(t *testing.T) {
+	m := newSizedModel(t)
+
+	m = update(t, m, ctrlC)
+	stale := m.quitGeneration
+	m = typeText(t, m, "a")
+	m = update(t, m, ctrlC)
+
+	m = update(t, m, quitDisarmMsg{generation: stale})
+
+	if !m.quitArmed {
+		t.Fatal("a stale disarm message disarmed a freshly armed quit")
+	}
+	_, cmd := updateCmd(t, m, ctrlC)
+	if !quits(cmd) {
+		t.Error("ctrl+c after the stale disarm did not quit")
+	}
+}
+
+// TestCtrlCDuringATurnCancelsWithoutArming keeps ctrl+c meaning "interrupt"
+// while the agent is working: arming there would make an interrupt look like a
+// half-pressed quit.
+func TestCtrlCDuringATurnCancelsWithoutArming(t *testing.T) {
+	m := newModel(agent.New(failingProvider{err: errors.New("boom")}, nil), config.Config{})
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
+	m.input.SetValue("hello")
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.state != uiStateProcessing {
+		t.Fatalf("state = %v, want a turn in flight before ctrl+c", m.state)
+	}
+
+	m, cmd := updateCmd(t, m, ctrlC)
+
+	if quits(cmd) {
+		t.Error("ctrl+c during a turn quit, want it to cancel the turn")
+	}
+	if m.quitArmed {
+		t.Error("ctrl+c during a turn armed quit, want it to only interrupt")
+	}
+}
+
 // TestProgramQuitsOnQuitCommand drives the whole program rather than calling
 // Update, so it covers the command actually ending the event loop: Update
 // returning tea.Quit is not by itself proof the program exits.
@@ -633,6 +737,21 @@ func TestProgramQuitsOnQuitCommand(t *testing.T) {
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	// Fails the test by timing out if the program is still running
+	tm.WaitFinished(t, teatest.WithFinalTimeout(3*time.Second))
+}
+
+// TestProgramQuitsOnSecondCtrlC drives the whole program: the first press must
+// not end the event loop and the second must.
+func TestProgramQuitsOnSecondCtrlC(t *testing.T) {
+	a := agent.New(failingProvider{err: errors.New("never asked")}, nil)
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}), teatest.WithInitialTermSize(80, 20))
+
+	tm.Send(ctrlC)
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return bytes.Contains(out, []byte("press ctrl+c again to exit"))
+	})
+
+	tm.Send(ctrlC)
 	tm.WaitFinished(t, teatest.WithFinalTimeout(3*time.Second))
 }
 

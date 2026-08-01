@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/cursor"
 	"charm.land/bubbles/v2/spinner"
@@ -54,6 +55,36 @@ type model struct {
 	menuIndex     int  // highlighted row within the current match set
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
+	// quit confirmation. quitGeneration counts armings so a disarm message left
+	// over from an earlier one cannot disarm the current one.
+	quitArmed      bool
+	quitGeneration int
+}
+
+// quitDisarmMsg withdraws the exit confirmation armed by generation
+type quitDisarmMsg struct{ generation int }
+
+// quitConfirmWindow is how long the exit confirmation stays armed
+const quitConfirmWindow = 2 * time.Second
+
+// armQuit asks for a second ctrl+c and schedules the confirmation to lapse
+func (m model) armQuit() (model, tea.Cmd) {
+	m.quitArmed = true
+	m.quitGeneration++
+	m.resize()
+
+	generation := m.quitGeneration
+	return m, tea.Tick(quitConfirmWindow, func(time.Time) tea.Msg {
+		return quitDisarmMsg{generation: generation}
+	})
+}
+
+// quitHint tells the user how to finish exiting, or "" when nothing is pending
+func (m model) quitHint() string {
+	if !m.quitArmed {
+		return ""
+	}
+	return lipgloss.NewStyle().Foreground(menuDescriptionColor).Render("press ctrl+c again to exit")
 }
 
 // menuVisible reports whether the command menu is showing
@@ -112,6 +143,9 @@ func (m model) chromeHeight() int {
 	height := lipgloss.Height(m.spinnerLine()) + lipgloss.Height(m.input.View())
 	if menu := m.menuView(); menu != "" {
 		height += lipgloss.Height(menu)
+	}
+	if hint := m.quitHint(); hint != "" {
+		height += lipgloss.Height(hint)
 	}
 	return height
 }
@@ -273,15 +307,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// Any other key withdraws a pending exit confirmation, so ctrl+c followed
+		// by typing does not leave a live quit waiting one keystroke away.
+		if m.quitArmed && msg.String() != "ctrl+c" {
+			m.quitArmed = false
+			m.resize()
+		}
 		// handle user input
 		switch msg.String() {
 		case "ctrl+c":
-			// Abandon any in-flight turn so its goroutine unblocks instead of
-			// waiting on a channel nobody will read again
-			if m.cancel != nil {
-				m.cancel()
+			// Confirmed: the user pressed it twice. Abandon any in-flight turn so
+			// its goroutine unblocks instead of waiting on a channel nobody will
+			// read again.
+			if m.quitArmed {
+				if m.cancel != nil {
+					m.cancel()
+				}
+				return m, tea.Quit
 			}
-			return m, tea.Quit
+			// While the agent is working, ctrl+c interrupts rather than starting
+			// to quit: arming here would make an interrupt look half-committed.
+			if m.state == uiStateProcessing {
+				if m.cancel != nil {
+					m.cancel()
+				}
+				return m, nil
+			}
+			return m.armQuit()
 		case "esc":
 			if !m.menuVisible() {
 				return m.forwardToInput(msg)
@@ -342,6 +394,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Wait for the next event. The turn ends when the channel closes, not
 		// here: a MessageEvent may be followed by tool results and more inference.
 		return m, waitForEvent(m.events)
+	case quitDisarmMsg:
+		// Ignore a message from an earlier arming: the user has since disarmed and
+		// armed again, and this one would cancel a confirmation they just asked for.
+		if msg.generation == m.quitGeneration {
+			m.quitArmed = false
+			m.resize()
+		}
+		return m, nil
+
 	case streamClosedMsg:
 		return m.endTurn(), nil
 
@@ -381,6 +442,9 @@ func (m model) View() tea.View {
 	rows := []string{viewportView}
 	if m.state == uiStateProcessing {
 		rows = append(rows, m.spinnerLine())
+	}
+	if hint := m.quitHint(); hint != "" {
+		rows = append(rows, hint)
 	}
 	if menu := m.menuView(); menu != "" {
 		rows = append(rows, menu)
