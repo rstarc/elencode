@@ -22,23 +22,24 @@ func NewUserMessage(content []Block) Message {
 	}
 }
 
-func renderMessage(msg Message) string {
+func renderMessage(msg Message, width int) string {
 	render := ""
 	for _, block := range msg.Content {
-		render = render + renderBlock(block) + "\n"
+		render = render + renderBlock(block, width) + "\n"
 	}
 	return render
 }
 
-// RenderTranscript returns a rendered string that contains the entire context window.
+// RenderTranscript returns a rendered string that contains the entire context
+// window, laid out for a terminal width columns wide.
 // Uses a Mutex to guard the contextWindow
-func RenderTranscript(agent *Agent) string {
+func RenderTranscript(agent *Agent, width int) string {
 	agent.mu.Lock()
 	defer agent.mu.Unlock()
 
 	result := ""
 	for _, msg := range agent.contextWindow {
-		result = result + renderMessage(msg) + "\n"
+		result = result + renderMessage(msg, width) + "\n"
 	}
 	return result
 }

@@ -9,36 +9,54 @@ import (
 // By definining it as an interface with an unexported function, we emulate a sum type in Go
 type Block interface{ block() }
 
-var textBlockStyle = lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderForeground(lipgloss.BrightBlack).Padding(1, 1).Width(90)
+const (
+	// maxBlockWidth caps how wide a block grows on a large terminal, since long
+	// lines are hard to read.
+	maxBlockWidth = 90
+	// minBlockWidth is the narrowest box worth drawing. Below roughly five
+	// columns lipgloss ignores the requested width and renders at the content's
+	// natural width, which is exactly the clipping we are avoiding, so anything
+	// narrower than this is clamped up and allowed to overflow instead.
+	minBlockWidth = 20
+)
+
+var textBlockStyle = lipgloss.NewStyle().BorderStyle(lipgloss.NormalBorder()).BorderForeground(lipgloss.BrightBlack).Padding(1, 1)
 
 var toolUseStyle = textBlockStyle.BorderForeground(lipgloss.BrightBlue)
 
 var errorStyle = textBlockStyle.BorderForeground(lipgloss.Red)
 
-func renderBlock(block Block) string {
+// blockWidth fits a block to the space available, which lipgloss measures
+// including the border and padding. available is 0 before the first
+// WindowSizeMsg arrives.
+func blockWidth(available int) int {
+	return min(max(available, minBlockWidth), maxBlockWidth)
+}
+
+func renderBlock(block Block, width int) string {
 	render := ""
 	switch block := block.(type) {
 	case TextBlock:
 		render = render + block.Text
-		render = textBlockStyle.Render(render)
+		render = textBlockStyle.Width(blockWidth(width)).Render(render)
 	case ToolUseBlock:
 		render = render + block.Name + string(block.Input)
-		render = toolUseStyle.Render(render)
+		render = toolUseStyle.Width(blockWidth(width)).Render(render)
 	default:
 	}
 	return render
 }
 
 // RenderStreamingText renders in-progress assistant text
-func RenderStreamingText(text string) string {
-	return renderBlock(TextBlock{Text: text})
+func RenderStreamingText(text string, width int) string {
+	return renderBlock(TextBlock{Text: text}, width)
 }
 
 // RenderError renders a failed turn. It is boxed like a block so it reads as
 // part of the transcript, but red and labelled so it is not mistaken for
 // something the assistant said.
-func RenderError(err error) string {
-	return errorStyle.Render("Error: " + err.Error())
+func RenderError(err error, width int) string {
+	return errorStyle.Width(blockWidth(width)).Render("Error: " + err.Error())
 }
 
 type TextBlock struct{ Text string }

@@ -11,6 +11,9 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 )
 
+// banner is shown until there is a transcript to show instead
+const banner = "== elencode =="
+
 type uiState int
 
 const (
@@ -29,6 +32,7 @@ type model struct {
 	partial  string          // assistant text streamed so far, not yet in the transcript
 	viewport viewport.Model  // viewport displaying the transcript
 	input    textinput.Model // user input field
+	width    int             // terminal width, 0 until the first WindowSizeMsg
 	state    uiState
 	err      error
 }
@@ -43,7 +47,7 @@ func newModel(agent *agent.Agent) model {
 	input.CharLimit = 0
 
 	viewport := viewport.New()
-	viewport.SetContent("== elencode ==")
+	viewport.SetContent(banner)
 
 	// Only up down scrolling
 	viewport.KeyMap.Left.SetEnabled(false)
@@ -104,12 +108,15 @@ func (m model) endTurn() model {
 
 // refresh repaints the viewport from the transcript plus any in-flight text
 func (m *model) refresh() {
-	content := agent.RenderTranscript(m.agent)
+	content := agent.RenderTranscript(m.agent, m.width)
 	if m.partial != "" {
-		content = content + agent.RenderStreamingText(m.partial) + "\n"
+		content = content + agent.RenderStreamingText(m.partial, m.width) + "\n"
 	}
 	if m.err != nil {
-		content = content + agent.RenderError(m.err) + "\n"
+		content = content + agent.RenderError(m.err, m.width) + "\n"
+	}
+	if content == "" {
+		content = banner
 	}
 	m.viewport.SetContent(content)
 	m.viewport.GotoBottom()
@@ -124,12 +131,19 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		// TODO: Resize window
+		m.width = msg.Width
 		m.viewport.SetWidth(msg.Width)
-		m.input.SetWidth(msg.Width)
+		// textinput draws the prompt before, and a cursor cell after, the width
+		// it is given, so passing the terminal width makes the input row wider
+		// than the terminal. JoinVertical then pads every other row out to
+		// match, pushing the whole view past the right edge.
+		m.input.SetWidth(max(msg.Width-lipgloss.Width(m.input.Prompt)-1, 1))
 		// TODO: correctly compute height of text input
 		m.viewport.SetHeight(msg.Height - 1)
-		m.viewport.GotoBottom()
+		// Blocks are laid out for a fixed width, so content rendered for the
+		// old size would be clipped at the new one until something else
+		// happened to repaint it.
+		m.refresh()
 		return m, nil
 	case tea.KeyPressMsg:
 		// handle user input

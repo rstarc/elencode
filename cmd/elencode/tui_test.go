@@ -1,10 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	teatest "github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/rstarc/elencode/internal/agent"
 )
 
@@ -103,6 +109,104 @@ func TestUpdateKeepsErrorVisibleAfterTurnEnds(t *testing.T) {
 	}
 	if view := m.viewport.View(); !strings.Contains(view, "Error: stub failure") {
 		t.Errorf("viewport does not show the labelled error:\n%s", view)
+	}
+}
+
+func TestUpdateKeepsBannerBeforeAnythingIsSaid(t *testing.T) {
+	m := newTestModel()
+
+	// The first WindowSizeMsg arrives at startup and repaints, so an empty
+	// transcript must not blank the screen.
+	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
+
+	if !strings.Contains(m.viewport.View(), banner) {
+		t.Errorf("viewport = %q, want it to still show the banner", m.viewport.View())
+	}
+}
+
+func TestUpdateFitsErrorToNarrowTerminal(t *testing.T) {
+	const width = 40
+
+	m := newTestModel()
+	m = update(t, m, tea.WindowSizeMsg{Width: width, Height: 20})
+	m = update(t, m, streamEventMsg{agent.ErrorEvent{Err: errStub{}}})
+
+	assertFitsWidth(t, m.viewport.View(), width)
+}
+
+func TestUpdateReflowsWhenTerminalShrinks(t *testing.T) {
+	const narrow = 40
+
+	m := newTestModel()
+	m = update(t, m, tea.WindowSizeMsg{Width: 120, Height: 20})
+	m = update(t, m, streamEventMsg{agent.ErrorEvent{Err: errStub{}}})
+
+	// Content laid out for the old width would be clipped at the new one, so a
+	// resize has to repaint rather than only resize the viewport.
+	m = update(t, m, tea.WindowSizeMsg{Width: narrow, Height: 20})
+
+	assertFitsWidth(t, m.viewport.View(), narrow)
+	if !strings.Contains(m.viewport.View(), "stub failure") {
+		t.Errorf("viewport lost the error after resizing:\n%s", m.viewport.View())
+	}
+}
+
+// failingProvider fails every round of inference, so a turn driven through the
+// real program reaches the error path.
+type failingProvider struct{ err error }
+
+func (p failingProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
+	events := make(chan agent.Event, 1)
+	events <- agent.ErrorEvent{Err: p.err}
+	close(events)
+	return events
+}
+
+// TestProgramFitsErrorToTerminal drives the whole program — real event loop,
+// real terminal size, real keystrokes — rather than calling Update directly, so
+// it also covers View assembling the viewport and input together. That seam is
+// what made the input row overflow the terminal and drag every other row with
+// it, which testing Update alone did not reach.
+func TestProgramFitsErrorToTerminal(t *testing.T) {
+	// 20 is the narrowest box worth drawing; below that the width is clamped up
+	// and overflow is accepted, so it is not a case this can assert on.
+	for _, width := range []int{20, 30, 40, 80, 120} {
+		t.Run(fmt.Sprintf("width%d", width), func(t *testing.T) {
+			a := agent.New(failingProvider{err: errors.New("429 rate_limit_error: too many requests, slow down")}, nil)
+			tm := teatest.NewTestModel(t, newModel(a), teatest.WithInitialTermSize(width, 20))
+
+			tm.Type("hi")
+			tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+			teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+				return bytes.Contains(out, []byte("Error:"))
+			})
+
+			if err := tm.Quit(); err != nil {
+				t.Fatalf("quitting the program: %v", err)
+			}
+			final, ok := tm.FinalModel(t).(model)
+			if !ok {
+				t.Fatalf("final model is %T, want model", tm.FinalModel(t))
+			}
+
+			view := final.View().Content
+			if !strings.Contains(view, "rate_limit_error") {
+				t.Errorf("view does not show the error:\n%s", view)
+			}
+			assertFitsWidth(t, view, width)
+		})
+	}
+}
+
+// assertFitsWidth fails if any line would be clipped by a terminal this wide
+func assertFitsWidth(t *testing.T, view string, width int) {
+	t.Helper()
+
+	for i, line := range strings.Split(view, "\n") {
+		if got := lipgloss.Width(line); got > width {
+			t.Errorf("line %d is %d columns wide, want <= %d:\n%s", i, got, width, line)
+		}
 	}
 }
 
