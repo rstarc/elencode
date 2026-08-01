@@ -2,7 +2,7 @@ package anthropic
 
 import (
 	"context"
-	"log"
+	"fmt"
 
 	"github.com/rstarc/elencode/internal/agent"
 
@@ -34,9 +34,17 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 	go func() {
 		defer close(events)
 
+		// Built before the request so a conversion failure surfaces as an
+		// ErrorEvent instead of being discovered halfway through a stream.
+		messages, err := toMessages(req.Messages)
+		if err != nil {
+			emit(ctx, events, agent.ErrorEvent{Err: err})
+			return
+		}
+
 		stream := c.client.Messages.NewStreaming(ctx, sdk.MessageNewParams{
 			MaxTokens: req.MaxTokens,
-			Messages:  toMessages(req.Messages),
+			Messages:  messages,
 			Model:     c.model,
 			Tools:     toolParams(req.Tools),
 		})
@@ -48,10 +56,7 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 			event := stream.Current()
 
 			if err := message.Accumulate(event); err != nil {
-				select {
-				case events <- agent.ErrorEvent{Err: err}:
-				case <-ctx.Done():
-				}
+				emit(ctx, events, agent.ErrorEvent{Err: err})
 				return
 			}
 
@@ -59,9 +64,7 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 			// (tool inputs, usage, stop reason) is recovered from message.
 			if delta, ok := event.AsAny().(sdk.ContentBlockDeltaEvent); ok {
 				if text, ok := delta.Delta.AsAny().(sdk.TextDelta); ok {
-					select {
-					case events <- agent.TextDeltaEvent{Text: text.Text}:
-					case <-ctx.Done():
+					if !emit(ctx, events, agent.TextDeltaEvent{Text: text.Text}) {
 						return
 					}
 				}
@@ -69,23 +72,40 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 		}
 
 		if err := stream.Err(); err != nil {
-			select {
-			case events <- agent.ErrorEvent{Err: err}:
-			case <-ctx.Done():
-			}
+			emit(ctx, events, agent.ErrorEvent{Err: err})
 			return
 		}
 
-		select {
-		case events <- agent.ResponseEvent{Response: agent.Response{
-			Message:    agent.Message{Role: agent.RoleAssistant, Content: toBlocks(&message)},
-			StopReason: toStopReason(message.StopReason),
-		}}:
-		case <-ctx.Done():
+		blocks, err := toBlocks(&message)
+		if err != nil {
+			emit(ctx, events, agent.ErrorEvent{Err: err})
+			return
 		}
+
+		stopReason, err := toStopReason(message.StopReason)
+		if err != nil {
+			emit(ctx, events, agent.ErrorEvent{Err: err})
+			return
+		}
+
+		emit(ctx, events, agent.ResponseEvent{Response: agent.Response{
+			Message:    agent.Message{Role: agent.RoleAssistant, Content: blocks},
+			StopReason: stopReason,
+		}})
 	}()
 
 	return events
+}
+
+// emit sends ev unless the consumer has abandoned the turn. It reports whether
+// the send happened, so a caller with more to produce can stop early.
+func emit(ctx context.Context, events chan<- agent.Event, ev agent.Event) bool {
+	select {
+	case events <- ev:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 func toolParam(t agent.Tool) *sdk.ToolParam {
@@ -114,8 +134,7 @@ func toolParams(t []agent.Tool) []sdk.ToolUnionParam {
 	return tools
 }
 
-func toMessages(msgs []agent.Message) []sdk.MessageParam {
-	// TODO
+func toMessages(msgs []agent.Message) ([]sdk.MessageParam, error) {
 	messageParam := make([]sdk.MessageParam, 0, len(msgs))
 	for _, msg := range msgs {
 
@@ -129,18 +148,24 @@ func toMessages(msgs []agent.Message) []sdk.MessageParam {
 			case agent.ToolResultBlock:
 				blocks = append(blocks, sdk.NewToolResultBlock(block.ToolUseID, block.Content, block.IsError))
 			default:
-				log.Panicf("Unknown block variant %T present", block)
+				return nil, fmt.Errorf("cannot send block of type %T to the API", block)
 			}
 		}
 
-		messageParam = append(messageParam, sdk.MessageParam{Role: toSdkRole(msg.Role), Content: blocks})
+		role, err := toSdkRole(msg.Role)
+		if err != nil {
+			return nil, err
+		}
+		messageParam = append(messageParam, sdk.MessageParam{Role: role, Content: blocks})
 
 	}
-	return messageParam
+	return messageParam, nil
 }
 
-// toBlocks converts an Anthropic SDK Message's Content to a slice of agent.Block structs
-func toBlocks(msg *sdk.Message) []agent.Block {
+// toBlocks converts an Anthropic SDK Message's Content to a slice of agent.Block
+// structs. Variants we do not handle yet are an error rather than a panic: the
+// API may start returning one at any time, and the caller can render an error.
+func toBlocks(msg *sdk.Message) ([]agent.Block, error) {
 	blocks := make([]agent.Block, 0, len(msg.Content))
 
 	for _, block := range msg.Content {
@@ -160,45 +185,43 @@ func toBlocks(msg *sdk.Message) []agent.Block {
 		// case sdk.ToolSearchToolResultBlock:
 		// case sdk.ContainerUploadBlock:
 		default:
-			log.Panicf("Unknown block variant %T present", variant)
+			// Type, not %T: an unrecognised type string makes AsAny return nil,
+			// which would otherwise report a useless "<nil>".
+			return nil, fmt.Errorf("unsupported content block type %q in response", block.Type)
 		}
 	}
 
-	return blocks
+	return blocks, nil
 }
 
-func toStopReason(sdkReason sdk.StopReason) agent.StopReason {
-	var reason agent.StopReason
+func toStopReason(sdkReason sdk.StopReason) (agent.StopReason, error) {
 	switch sdkReason {
 	case sdk.StopReasonEndTurn:
-		reason = agent.StopReasonEndTurn
+		return agent.StopReasonEndTurn, nil
 	case sdk.StopReasonMaxTokens:
-		reason = agent.StopReasonMaxTokens
+		return agent.StopReasonMaxTokens, nil
 	case sdk.StopReasonStopSequence:
-		reason = agent.StopReasonStopSequence
+		return agent.StopReasonStopSequence, nil
 	case sdk.StopReasonToolUse:
-		reason = agent.StopReasonToolUse
+		return agent.StopReasonToolUse, nil
 	case sdk.StopReasonPauseTurn:
-		reason = agent.StopReasonPauseTurn
+		return agent.StopReasonPauseTurn, nil
 	case sdk.StopReasonRefusal:
-		reason = agent.StopReasonRefusal
+		return agent.StopReasonRefusal, nil
 	default:
-		log.Panicf("Received unknown stop reason %q from Anthropic SDK!", sdkReason)
+		return "", fmt.Errorf("unknown stop reason %q in response", sdkReason)
 	}
-	return reason
 }
 
-func toSdkRole(agentRole agent.Role) sdk.MessageParamRole {
-	var role sdk.MessageParamRole
+func toSdkRole(agentRole agent.Role) (sdk.MessageParamRole, error) {
 	switch agentRole {
 	case agent.RoleAssistant:
-		role = sdk.MessageParamRoleAssistant
+		return sdk.MessageParamRoleAssistant, nil
 	case agent.RoleUser:
-		role = sdk.MessageParamRoleUser
+		return sdk.MessageParamRoleUser, nil
 	case agent.RoleSystem:
-		role = sdk.MessageParamRoleSystem
+		return sdk.MessageParamRoleSystem, nil
 	default:
-		log.Panicf("Received unknown role %q", role)
+		return "", fmt.Errorf("unknown message role %q", agentRole)
 	}
-	return role
 }
