@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"charm.land/bubbles/v2/cursor"
 	"charm.land/bubbles/v2/spinner"
@@ -41,8 +43,26 @@ type model struct {
 	input    textinput.Model // user input field
 	spinner  spinner.Model   // shown above input while state is uiStateProcessing
 	width    int             // terminal width, 0 until the first WindowSizeMsg
+	height   int             // terminal height, 0 until the first WindowSizeMsg
 	state    uiState
 	err      error
+	// command menu state. Visibility is derived from the input rather than
+	// stored, so the two cannot disagree; see menuVisible.
+	menuDismissed bool // Esc hides the menu for the rest of this command line
+	menuIndex     int  // highlighted row within the current match set
+}
+
+// menuVisible reports whether the command menu is showing
+func (m model) menuVisible() bool {
+	return !m.menuDismissed && strings.HasPrefix(m.input.Value(), commandPrefix)
+}
+
+// menuView renders the command menu, or "" while it is hidden
+func (m model) menuView() string {
+	if !m.menuVisible() {
+		return ""
+	}
+	return renderMenu(matchCommands(m.input.Value()), m.menuIndex, m.width)
 }
 
 func newModel(agent *agent.Agent) model {
@@ -84,7 +104,18 @@ func (m model) spinnerLine() string {
 // frame taller than the terminal, and right after Enter that row is the line
 // the user just sent.
 func (m model) chromeHeight() int {
-	return lipgloss.Height(m.spinnerLine()) + lipgloss.Height(m.input.View())
+	height := lipgloss.Height(m.spinnerLine()) + lipgloss.Height(m.input.View())
+	if menu := m.menuView(); menu != "" {
+		height += lipgloss.Height(menu)
+	}
+	return height
+}
+
+// resize refits the viewport to whatever chrome currently sits below it. The
+// menu opens and closes between WindowSizeMsgs, so the height it leaves behind
+// has to be recomputed on those keystrokes too, not only on a real resize.
+func (m *model) resize() {
+	m.viewport.SetHeight(max(m.height-m.chromeHeight(), 1))
 }
 
 // streamEventMsg carries one Event from the in-flight turn
@@ -104,6 +135,53 @@ func waitForEvent(events <-chan agent.Event) tea.Cmd {
 			return streamClosedMsg{}
 		}
 		return streamEventMsg{event}
+	}
+}
+
+// forwardToInput hands a keypress to the text input and settles the menu around
+// the edit it made.
+func (m model) forwardToInput(msg tea.Msg) (model, tea.Cmd) {
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+
+	// The match set may have changed under the highlight, so it would otherwise
+	// point at a different command than the one the user was looking at.
+	m.menuIndex = 0
+	// Esc dismisses the menu for one command line only; leaving the line clears it.
+	if !strings.HasPrefix(m.input.Value(), commandPrefix) {
+		m.menuDismissed = false
+	}
+	m.resize()
+	return m, cmd
+}
+
+// runCommand handles Enter on a command line: it runs the command the input
+// names exactly, or reports that there is no such command.
+func (m model) runCommand() (model, tea.Cmd) {
+	cmd, ok := lookupCommand(m.input.Value())
+	if !ok {
+		m.err = fmt.Errorf("unknown command: %s", m.input.Value())
+		m.input.Reset()
+		m.menuDismissed = false
+		m.menuIndex = 0
+		m.resize()
+		m.refresh()
+		return m, nil
+	}
+
+	switch cmd.name {
+	case "quit":
+		// Abandon any in-flight turn, as ctrl+c does, so its goroutine unblocks
+		if m.cancel != nil {
+			m.cancel()
+		}
+		return m, tea.Quit
+	default:
+		m.err = fmt.Errorf("command not implemented: %s", cmd.name)
+		m.input.Reset()
+		m.resize()
+		m.refresh()
+		return m, nil
 	}
 }
 
@@ -158,6 +236,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
+		m.height = msg.Height
 		m.viewport.SetWidth(msg.Width)
 		// textinput draws the prompt before, and a cursor cell after, the width
 		// it is given, so passing the terminal width makes the input row wider
@@ -167,7 +246,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Measured after SetWidth above, since the input's height depends on
 		// the width it was given. A terminal too short to hold even one row of
 		// transcript overflows rather than leaving the viewport empty.
-		m.viewport.SetHeight(max(msg.Height-m.chromeHeight(), 1))
+		m.resize()
 		// Blocks are laid out for a fixed width, so content rendered for the
 		// old size would be clipped at the new one until something else
 		// happened to repaint it.
@@ -183,7 +262,40 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.cancel()
 			}
 			return m, tea.Quit
+		case "esc":
+			if !m.menuVisible() {
+				return m.forwardToInput(msg)
+			}
+			m.menuDismissed = true
+			m.resize()
+			return m, nil
+		case "up", "down":
+			if !m.menuVisible() {
+				return m.forwardToInput(msg)
+			}
+			delta := 1
+			if msg.String() == "up" {
+				delta = -1
+			}
+			m.menuIndex = moveHighlight(m.menuIndex, delta, len(matchCommands(m.input.Value())))
+			return m, nil
+		case "tab":
+			if !m.menuVisible() {
+				return m.forwardToInput(msg)
+			}
+			if matches := matchCommands(m.input.Value()); len(matches) > 0 {
+				m.input.SetValue(commandPrefix + matches[m.menuIndex].name)
+				m.input.CursorEnd()
+				m.menuIndex = 0
+				m.resize()
+			}
+			return m, nil
 		case "enter":
+			// A command line never reaches the agent, in either UI state: /quit
+			// is an escape hatch, so it must work while a turn is in flight.
+			if strings.HasPrefix(m.input.Value(), commandPrefix) {
+				return m.runCommand()
+			}
 			// only actually do anything if we are not currently waiting and there is actual input
 			if m.state == uiStateIdle && m.input.Value() != "" {
 				userInput := m.input.Value()
@@ -193,9 +305,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		default:
 			// Send other keypresses to text input model
 			// TODO: Forward to viewport as well
-			var cmd tea.Cmd
-			m.input, cmd = m.input.Update(msg)
-			return m, cmd
+			return m.forwardToInput(msg)
 		}
 	case streamEventMsg:
 		switch event := msg.event.(type) {
@@ -243,6 +353,9 @@ func (m model) View() tea.View {
 	rows := []string{viewportView}
 	if m.state == uiStateProcessing {
 		rows = append(rows, m.spinnerLine())
+	}
+	if menu := m.menuView(); menu != "" {
+		rows = append(rows, menu)
 	}
 	rows = append(rows, inputView)
 

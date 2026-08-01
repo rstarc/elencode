@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -252,6 +253,231 @@ func TestViewPutsCursorBelowSpinnerWhileProcessing(t *testing.T) {
 	}
 }
 
+// typeText sends one key press per rune, so the model sees the same message
+// stream a real keyboard produces rather than a value set behind its back.
+func typeText(t *testing.T, m model, text string) model {
+	t.Helper()
+
+	for _, r := range text {
+		m = update(t, m, tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	return m
+}
+
+// updateCmd applies msg and returns the resulting model and command
+func updateCmd(t *testing.T, m model, msg tea.Msg) (model, tea.Cmd) {
+	t.Helper()
+
+	next, cmd := m.Update(msg)
+	got, ok := next.(model)
+	if !ok {
+		t.Fatalf("Update returned %T, want model", next)
+	}
+	return got, cmd
+}
+
+// quits reports whether cmd would end the program
+func quits(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	_, ok := cmd().(tea.QuitMsg)
+	return ok
+}
+
+func newSizedModel(t *testing.T) model {
+	t.Helper()
+	return update(t, newTestModel(), tea.WindowSizeMsg{Width: 80, Height: 20})
+}
+
+func TestSlashOpensTheCommandMenu(t *testing.T) {
+	m := typeText(t, newSizedModel(t), commandPrefix)
+
+	if view := m.View().Content; !strings.Contains(view, "/quit") {
+		t.Errorf("view does not show the command menu:\n%s", view)
+	}
+}
+
+func TestPlainTextDoesNotOpenTheCommandMenu(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "hello")
+
+	if view := m.View().Content; strings.Contains(view, "/quit") {
+		t.Errorf("view shows the command menu for non-command input:\n%s", view)
+	}
+}
+
+func TestEscDismissesTheMenuForTheRestOfTheLine(t *testing.T) {
+	m := typeText(t, newSizedModel(t), commandPrefix)
+
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if m.menuVisible() {
+		t.Error("menu still visible after Esc")
+	}
+
+	// Typing on must not revive it, or Esc only hides the menu for one keystroke
+	m = typeText(t, m, "q")
+	if m.menuVisible() {
+		t.Errorf("menu came back after typing, input = %q", m.input.Value())
+	}
+	if m.input.Value() != "/q" {
+		t.Errorf("input = %q, want %q: Esc must not swallow later keystrokes", m.input.Value(), "/q")
+	}
+}
+
+func TestMenuReopensOnANewCommandLine(t *testing.T) {
+	m := typeText(t, newSizedModel(t), commandPrefix)
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+
+	// Backspacing away the slash ends the dismissed line; the next one starts fresh
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+	m = typeText(t, m, commandPrefix)
+
+	if !m.menuVisible() {
+		t.Error("menu stayed dismissed on a new command line")
+	}
+}
+
+func TestTabCompletesTheHighlightedCommand(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/qu")
+
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+
+	if m.input.Value() != "/quit" {
+		t.Errorf("input = %q, want %q", m.input.Value(), "/quit")
+	}
+}
+
+func TestArrowKeysDoNotReachTheInputWhileTheMenuIsOpen(t *testing.T) {
+	m := typeText(t, newSizedModel(t), commandPrefix)
+
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+
+	if m.input.Value() != commandPrefix {
+		t.Errorf("input = %q, want %q: arrows must drive the menu, not the input", m.input.Value(), commandPrefix)
+	}
+	if m.menuIndex != 0 {
+		t.Errorf("menuIndex = %d, want 0 with a single match", m.menuIndex)
+	}
+}
+
+func TestTypingResetsTheHighlight(t *testing.T) {
+	m := typeText(t, newSizedModel(t), commandPrefix)
+	m.menuIndex = 2 // as if the user had arrowed down a longer match set
+
+	m = typeText(t, m, "q")
+
+	// The match set just changed, so the old index may point at another command
+	if m.menuIndex != 0 {
+		t.Errorf("menuIndex = %d, want it reset to 0 when the matches change", m.menuIndex)
+	}
+}
+
+func TestEnterRunsQuitCommand(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/quit")
+
+	_, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if !quits(cmd) {
+		t.Error("Enter on /quit did not quit the program")
+	}
+}
+
+func TestEnterOnUnknownCommandShowsAnError(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/qut")
+
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if m.err == nil {
+		t.Fatal("Enter on an unknown command recorded no error")
+	}
+	if !strings.Contains(m.viewport.View(), "unknown command: /qut") {
+		t.Errorf("viewport does not name the unknown command:\n%s", m.viewport.View())
+	}
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want it cleared after a rejected command", m.input.Value())
+	}
+	if m.state != uiStateIdle {
+		t.Error("an unknown command started a turn, want it never to reach the agent")
+	}
+}
+
+// TestQuitCommandWorksWhileProcessing covers the point of /quit: getting out
+// without waiting for the model to finish answering.
+func TestQuitCommandWorksWhileProcessing(t *testing.T) {
+	m := newSizedModel(t)
+	m.state = uiStateProcessing
+	m = typeText(t, m, "/quit")
+
+	if !m.menuVisible() {
+		t.Error("menu does not open while a turn is in flight")
+	}
+
+	_, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if !quits(cmd) {
+		t.Error("Enter on /quit did not quit while processing")
+	}
+}
+
+func TestEnterStillSendsPlainInputOnly(t *testing.T) {
+	m := newSizedModel(t)
+	m.state = uiStateProcessing
+	m = typeText(t, m, "hello")
+
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if m.err != nil {
+		t.Errorf("plain input while processing produced an error: %v", m.err)
+	}
+	if m.input.Value() != "hello" {
+		t.Errorf("input = %q, want it kept while the agent is busy", m.input.Value())
+	}
+}
+
+// TestMenuShrinksTheViewport guards the layout: the menu appears between window
+// size messages, so the viewport has to be re-measured when it opens or the
+// frame grows taller than the terminal.
+func TestMenuShrinksTheViewport(t *testing.T) {
+	const height = 20
+
+	m := newSizedModel(t)
+	before := m.viewport.Height()
+
+	m = typeText(t, m, commandPrefix)
+
+	if got := m.viewport.Height(); got >= before {
+		t.Errorf("viewport height = %d, want less than %d once the menu opened", got, before)
+	}
+	if got := lipgloss.Height(m.View().Content); got > height {
+		t.Errorf("view is %d rows tall, want <= %d", got, height)
+	}
+}
+
+func TestMenuRestoresTheViewportWhenClosed(t *testing.T) {
+	m := newSizedModel(t)
+	before := m.viewport.Height()
+
+	m = typeText(t, m, commandPrefix)
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
+
+	if got := m.viewport.Height(); got != before {
+		t.Errorf("viewport height = %d, want %d restored once the menu closed", got, before)
+	}
+}
+
+func TestViewPutsCursorBelowTheMenu(t *testing.T) {
+	m := typeText(t, newSizedModel(t), commandPrefix)
+
+	view := m.View()
+	if view.Cursor == nil {
+		t.Fatal("view has no cursor, want one on the input row")
+	}
+	wantY := lipgloss.Height(m.viewport.View()) + lipgloss.Height(m.menuView())
+	if view.Cursor.Y != wantY {
+		t.Errorf("cursor row = %d, want %d (below viewport and menu)", view.Cursor.Y, wantY)
+	}
+}
+
 // failingProvider fails every round of inference, so a turn driven through the
 // real program reaches the error path.
 type failingProvider struct{ err error }
@@ -298,6 +524,25 @@ func TestProgramFitsErrorToTerminal(t *testing.T) {
 			assertFitsWidth(t, view, width)
 		})
 	}
+}
+
+// TestProgramQuitsOnQuitCommand drives the whole program rather than calling
+// Update, so it covers the command actually ending the event loop: Update
+// returning tea.Quit is not by itself proof the program exits.
+func TestProgramQuitsOnQuitCommand(t *testing.T) {
+	a := agent.New(failingProvider{err: errors.New("never asked")}, nil)
+	tm := teatest.NewTestModel(t, newModel(a), teatest.WithInitialTermSize(80, 20))
+
+	tm.Type("/")
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return bytes.Contains(out, []byte("exit elencode"))
+	})
+
+	tm.Type("quit")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	// Fails the test by timing out if the program is still running
+	tm.WaitFinished(t, teatest.WithFinalTimeout(3*time.Second))
 }
 
 // assertFitsWidth fails if any line would be clipped by a terminal this wide
