@@ -70,6 +70,40 @@ func (p *blockingProvider) Stream(ctx context.Context, req Request) <-chan Event
 	return events
 }
 
+// switchProvider blocks the first stream and answers later streams immediately,
+// so a model switch can be placed between an old and a new turn deterministically.
+type switchProvider struct {
+	started  chan struct{}
+	release  chan struct{}
+	calls    int
+	response Response
+}
+
+func (p *switchProvider) Models(ctx context.Context) ([]Model, error) { return nil, nil }
+
+func (p *switchProvider) SetModel(model Model) {}
+
+func (p *switchProvider) Stream(ctx context.Context, req Request) <-chan Event {
+	call := p.calls
+	p.calls++
+	events := make(chan Event, 1)
+	if call == 0 {
+		go func() {
+			close(p.started)
+			select {
+			case <-p.release:
+				events <- ResponseEvent{Response: p.response}
+			case <-ctx.Done():
+			}
+			close(events)
+		}()
+		return events
+	}
+	events <- ResponseEvent{Response: p.response}
+	close(events)
+	return events
+}
+
 // collect drains events until the channel closes, failing if the turn hangs
 func collect(t *testing.T, events <-chan Event) []Event {
 	t.Helper()
@@ -353,6 +387,47 @@ func TestSetModelClearsTheContextWindow(t *testing.T) {
 	}
 	if provider.model.ID != "b" {
 		t.Errorf("provider model = %q, want %q", provider.model.ID, "b")
+	}
+}
+
+func TestOldTurnCannotAppendAfterModelSwitch(t *testing.T) {
+	provider := &switchProvider{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		response: Response{Message: assistantMessage(TextBlock{Text: "old"}), StopReason: StopReasonEndTurn},
+	}
+	a := New(provider, nil)
+
+	events := a.Run(context.Background(), "old prompt")
+	<-provider.started
+	a.SetModel(Model{ID: "b"})
+	close(provider.release)
+	collect(t, events)
+
+	if len(a.contextWindow) != 0 {
+		t.Errorf("context window = %#v, want stale response discarded after model switch", a.contextWindow)
+	}
+}
+
+func TestOldTurnCannotRollbackNewTurnAfterModelSwitch(t *testing.T) {
+	provider := &switchProvider{
+		started:  make(chan struct{}),
+		release:  make(chan struct{}),
+		response: Response{Message: assistantMessage(TextBlock{Text: "new"}), StopReason: StopReasonEndTurn},
+	}
+	a := New(provider, nil)
+
+	oldContext, cancelOld := context.WithCancel(context.Background())
+	oldEvents := a.Run(oldContext, "old prompt")
+	<-provider.started
+	a.SetModel(Model{ID: "b"})
+
+	collect(t, a.Run(context.Background(), "new prompt"))
+	cancelOld()
+	collect(t, oldEvents)
+
+	if len(a.contextWindow) != 2 {
+		t.Errorf("context window = %#v, want the completed new turn to survive stale rollback", a.contextWindow)
 	}
 }
 

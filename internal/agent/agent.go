@@ -35,12 +35,18 @@ type InputSchema struct {
 }
 
 type Agent struct {
-	toolsMap      map[string]Tool
-	tools         []Tool
-	mu            sync.Mutex
-	contextWindow []Message
-	maxTokens     int64
-	provider      Provider
+	toolsMap          map[string]Tool
+	tools             []Tool
+	mu                sync.Mutex
+	contextWindow     []Message
+	contextGeneration int
+	maxTokens         int64
+	provider          Provider
+}
+
+type turnMark struct {
+	index      int
+	generation int
 }
 
 func (a *Agent) useTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
@@ -80,7 +86,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) <-chan Event {
 				return
 			}
 
-			a.AppendMessage(response.Message)
+			if !a.appendMessage(mark.generation, response.Message) {
+				return
+			}
 			if !send(ctx, events, MessageEvent{Message: response.Message}) {
 				a.rollback(mark)
 				return
@@ -92,7 +100,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) <-chan Event {
 
 			results := a.runTools(ctx, response)
 			toolMessage := NewUserMessage(results)
-			a.AppendMessage(toolMessage)
+			if !a.appendMessage(mark.generation, toolMessage) {
+				return
+			}
 			if !send(ctx, events, MessageEvent{Message: toolMessage}) {
 				a.rollback(mark)
 				return
@@ -170,11 +180,12 @@ func (a *Agent) Models(ctx context.Context) ([]Model, error) {
 // SetModel switches models and drops the conversation so far, which was
 // produced by the previous model and does not carry over.
 func (a *Agent) SetModel(model Model) {
-	a.provider.SetModel(model)
-
 	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.contextGeneration++
 	a.contextWindow = []Message{}
+	a.mu.Unlock()
+
+	a.provider.SetModel(model)
 }
 
 func (a *Agent) AppendMessage(msg Message) {
@@ -183,15 +194,25 @@ func (a *Agent) AppendMessage(msg Message) {
 	a.contextWindow = append(a.contextWindow, msg)
 }
 
-// beginTurn appends the turn's opening message and returns a mark: the length
-// of the context window before it. Appending and reading the length happen
-// under one lock, so the mark can never point past a message another turn added.
-func (a *Agent) beginTurn(msg Message) int {
+// beginTurn appends the turn's opening message and returns its context mark.
+// Appending and reading the length happen under one lock, so the mark can never
+// point past a message another turn added.
+func (a *Agent) beginTurn(msg Message) turnMark {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	mark := len(a.contextWindow)
+	mark := turnMark{index: len(a.contextWindow), generation: a.contextGeneration}
 	a.contextWindow = append(a.contextWindow, msg)
 	return mark
+}
+
+func (a *Agent) appendMessage(generation int, msg Message) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if generation != a.contextGeneration {
+		return false
+	}
+	a.contextWindow = append(a.contextWindow, msg)
+	return true
 }
 
 // rollback discards everything a failed turn added, back to mark.
@@ -201,12 +222,15 @@ func (a *Agent) beginTurn(msg Message) int {
 // messages in a row, and a tool_use block with no matching tool_result is
 // unsendable outright. Either way every later turn fails too, so a failed turn
 // undoes itself rather than poisoning the conversation.
-// A mark past the end of the window is not a bug: SetModel clears the window
-// while a turn is still running, and there is then nothing left to undo.
-func (a *Agent) rollback(mark int) {
+// A stale mark is ignored: SetModel clears the window while a turn is still
+// running, and its later cleanup must not affect the new model's context.
+func (a *Agent) rollback(mark turnMark) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.contextWindow = a.contextWindow[:min(mark, len(a.contextWindow))]
+	if mark.generation != a.contextGeneration {
+		return
+	}
+	a.contextWindow = a.contextWindow[:min(mark.index, len(a.contextWindow))]
 }
 
 // New returns a pointer because Agent holds a Mutex and must not be copied
