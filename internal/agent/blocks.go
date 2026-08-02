@@ -30,6 +30,10 @@ const (
 const UserPromptMarker = ">"
 
 var textBlockColor = lipgloss.BrightBlack
+
+// thinkingColor is the dim gray the UI uses everywhere for text that is there
+// to be glanced at rather than read: menu descriptions, key hints.
+var thinkingColor = lipgloss.BrightBlack
 var toolUseColor = lipgloss.BrightBlue
 var errorColor = lipgloss.Red
 
@@ -71,6 +75,11 @@ func RenderBlock(block Block, role Role, width int) string {
 			return renderBoxedBlock(block.Text, style, UserPromptMarker, userBackground, width)
 		}
 		return renderBoxedBlock(block.Text, lipgloss.NewStyle(), markerFirst, textBlockColor, width)
+	case ThinkingBlock:
+		// The same block the assistant's answer gets, dimmed and in italics:
+		// reasoning is part of the transcript but is not the answer.
+		style := lipgloss.NewStyle().Italic(true).Foreground(thinkingColor)
+		return renderBoxedBlock(block.Thinking, style, markerFirst, textBlockColor, width)
 	case ToolUseBlock:
 		return renderBoxedBlock(block.Name+string(block.Input), lipgloss.NewStyle(), markerFirst, toolUseColor, width)
 	default:
@@ -131,6 +140,16 @@ var headerColor = lipgloss.BrightBlue
 type TextBlock struct{ Text string }
 
 func (b TextBlock) block() {}
+
+// ThinkingBlock is the model's reasoning. Signature is opaque and is carried
+// only so the block can be sent back unaltered: the API rejects reasoning it
+// cannot verify it produced.
+type ThinkingBlock struct {
+	Thinking  string
+	Signature string
+}
+
+func (b ThinkingBlock) block() {}
 
 type ToolUseBlock struct {
 	ID    string // opaque, provider specific. never change this

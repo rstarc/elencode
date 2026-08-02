@@ -206,7 +206,13 @@ func (m *model) endStream() string {
 
 // printMessage returns what a landed message adds to the transcript. The
 // assistant's text is left out: it was printed as it streamed, so only the
-// trailing row and the blocks that never stream — tool uses — are new here.
+// trailing row and the blocks that never stream — tool uses, thinking — are
+// new here.
+//
+// Nothing requests thinking yet. Whatever turns it on has to stream it too:
+// reasoning comes before the answer in the message, but the answer is printed
+// as it streams, so a thinking block printed here lands after the answer it
+// led to.
 func (m *model) printMessage(msg agent.Message) string {
 	rendered := []string{}
 	if rest := m.endStream(); rest != "" {

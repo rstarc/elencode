@@ -2,11 +2,11 @@ package anthropic
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
-	"encoding/json"
 	"strings"
 	"testing"
 
@@ -35,14 +35,14 @@ func decodeMessage(t *testing.T, body string) *sdk.Message {
 
 func TestToBlocksRejectsUnhandledVariant(t *testing.T) {
 	// A real block type the API can return today and toBlocks does not convert
-	msg := decodeMessage(t, `{"content":[{"type":"thinking","thinking":"hmm","signature":"sig"}]}`)
+	msg := decodeMessage(t, `{"content":[{"type":"redacted_thinking","data":"encrypted"}]}`)
 
 	_, err := toBlocks(msg)
 
 	if err == nil {
 		t.Fatal("err = nil, want an error for an unhandled block variant")
 	}
-	if !strings.Contains(err.Error(), "thinking") {
+	if !strings.Contains(err.Error(), "redacted_thinking") {
 		t.Errorf("err = %q, want it to name the offending block type", err)
 	}
 }
@@ -184,5 +184,44 @@ func TestModelsListsWhatTheAPIReturns(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Models() = %v, want %v", got, want)
+	}
+}
+
+func TestToBlocksConvertsThinking(t *testing.T) {
+	msg := decodeMessage(t, `{"content":[{"type":"thinking","thinking":"let me check the file","signature":"sig-abc"}]}`)
+
+	blocks, err := toBlocks(msg)
+	if err != nil {
+		t.Fatalf("toBlocks: %v", err)
+	}
+
+	want := agent.ThinkingBlock{Thinking: "let me check the file", Signature: "sig-abc"}
+	if len(blocks) != 1 || blocks[0] != want {
+		t.Errorf("blocks = %#v, want %#v", blocks, want)
+	}
+}
+
+// TestToMessagesSendsThinkingBack matters for the next turn: reasoning left in
+// the context window has to go back with its signature, or the API rejects the
+// request rather than ignoring the block.
+func TestToMessagesSendsThinkingBack(t *testing.T) {
+	msgs := []agent.Message{{Role: agent.RoleAssistant, Content: []agent.Block{
+		agent.ThinkingBlock{Thinking: "let me check the file", Signature: "sig-abc"},
+	}}}
+
+	got, err := toMessages(msgs)
+	if err != nil {
+		t.Fatalf("toMessages: %v", err)
+	}
+
+	if len(got) != 1 || len(got[0].Content) != 1 {
+		t.Fatalf("converted to %#v, want one block", got)
+	}
+	thinking := got[0].Content[0].OfThinking
+	if thinking == nil {
+		t.Fatalf("block = %#v, want a thinking block", got[0].Content[0])
+	}
+	if thinking.Thinking != "let me check the file" || thinking.Signature != "sig-abc" {
+		t.Errorf("thinking block = %#v, want the text and signature carried through", thinking)
 	}
 }

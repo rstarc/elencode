@@ -157,3 +157,29 @@ func TestRenderHeaderCarriesTheTitle(t *testing.T) {
 		t.Errorf("header = %q, want it to carry the title", got)
 	}
 }
+
+// TestRenderThinkingIsLaidOutLikeAssistantText pins the "same block, different
+// styling" part: strip the styling and a thinking block is indistinguishable
+// from what the assistant says, marker column and wrapping included.
+func TestRenderThinkingIsLaidOutLikeAssistantText(t *testing.T) {
+	const same = "a sentence long enough to wrap onto a second row when the terminal is narrow"
+
+	thinking := RenderBlock(ThinkingBlock{Thinking: same}, RoleAssistant, 40)
+	text := RenderBlock(TextBlock{Text: same}, RoleAssistant, 40)
+
+	if stripANSI(thinking) != stripANSI(text) {
+		t.Errorf("thinking is laid out differently from assistant text:\n%q\n%q", stripANSI(thinking), stripANSI(text))
+	}
+	if thinking == text {
+		t.Error("thinking is styled the same as assistant text, want it set apart")
+	}
+}
+
+func TestRenderThinkingIsItalic(t *testing.T) {
+	got := RenderBlock(ThinkingBlock{Thinking: "wondering"}, RoleAssistant, 80)
+
+	want, _, _ := strings.Cut(lipgloss.NewStyle().Italic(true).Foreground(thinkingColor).Render("x"), "x")
+	if !strings.Contains(got, want) {
+		t.Errorf("thinking is not rendered italic and dim: %q, want the styling %q", got, want)
+	}
+}
