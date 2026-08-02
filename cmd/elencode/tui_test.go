@@ -1063,3 +1063,56 @@ func TestHeaderIsPrintedOnce(t *testing.T) {
 		t.Errorf("resizing printed %q, want the header printed only at startup", printed(t, cmd))
 	}
 }
+
+func TestThinkingStreamsIntoTheFrame(t *testing.T) {
+	m := newSizedModel(t)
+
+	m = update(t, m, streamEventMsg{agent.ThinkingDeltaEvent{Text: "let me check"}})
+
+	// Compared against the rendered thinking block rather than the bare text, so
+	// this also catches reasoning painted as though it were the answer.
+	rows := strings.Split(agent.RenderBlock(agent.ThinkingBlock{Thinking: "let me check"}, agent.RoleAssistant, 80), "\n")
+	want := rows[len(rows)-1]
+	if view := m.View().Content; !strings.Contains(view, want) {
+		t.Errorf("frame does not show the reasoning being streamed:\n%s\nwant a row %q", view, want)
+	}
+}
+
+// TestAnswerAfterThinkingFinishesTheThinkingBlock covers the switch from
+// reasoning to answer: they are separate blocks, so the reasoning has to be
+// printed in full before the answer starts being written.
+func TestAnswerAfterThinkingFinishesTheThinkingBlock(t *testing.T) {
+	m := newSizedModel(t)
+	m.streamDelta("let me check the file", true)
+
+	settled := m.streamDelta("It is in internal/agent.", false)
+
+	if !strings.Contains(settled, "let me check the file") {
+		t.Errorf("settled rows = %q, want the reasoning printed once the answer started", settled)
+	}
+	// The frame has moved on to the answer
+	view := m.View().Content
+	if strings.Contains(view, "let me check the file") {
+		t.Errorf("frame still shows the reasoning after the answer started:\n%s", view)
+	}
+	if !strings.Contains(view, "It is in internal/agent.") {
+		t.Errorf("frame does not show the answer:\n%s", view)
+	}
+}
+
+// TestPrintMessageLeavesOutThinkingAlreadyStreamed is the thinking twin of the
+// text case: reasoning reaches the scrollback as it streams, so the landed
+// message must not repeat it.
+func TestPrintMessageLeavesOutThinkingAlreadyStreamed(t *testing.T) {
+	m := newSizedModel(t)
+	m = update(t, m, streamEventMsg{agent.ThinkingDeltaEvent{Text: "let me check"}})
+
+	landed := agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{
+		agent.ThinkingBlock{Thinking: "let me check", Signature: "sig"},
+	}}
+	got := m.printMessage(landed)
+
+	if strings.Count(got, "let me check") > 1 {
+		t.Errorf("the landed message printed the reasoning again:\n%s", got)
+	}
+}

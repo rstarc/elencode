@@ -258,3 +258,96 @@ func TestToMessagesSendsRedactedThinkingBack(t *testing.T) {
 		t.Errorf("data = %q, want it carried through unaltered", redacted.Data)
 	}
 }
+
+// accumulate replays a streamed response the way Stream does, so a test can
+// assert on what the SDK assembles rather than on a hand-built Message. The
+// union accessors read each block's raw JSON, which Accumulate only rewrites
+// when the block stops, so a test that skips those events proves nothing.
+func accumulate(t *testing.T, events ...string) *sdk.Message {
+	t.Helper()
+
+	msg := &sdk.Message{}
+	for _, body := range events {
+		event := sdk.MessageStreamEventUnion{}
+		if err := json.Unmarshal([]byte(body), &event); err != nil {
+			t.Fatalf("building stream event %s: %v", body, err)
+		}
+		if err := msg.Accumulate(event); err != nil {
+			t.Fatalf("accumulating %s: %v", body, err)
+		}
+	}
+	return msg
+}
+
+// TestToBlocksKeepsStreamedThinking covers thinking arriving the way it really
+// does — one delta at a time — rather than whole in a single event.
+func TestToBlocksKeepsStreamedThinking(t *testing.T) {
+	msg := accumulate(t,
+		`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-x","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Let me "}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"check the file."}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"sig-abc"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"It is in internal/agent."}}`,
+		`{"type":"content_block_stop","index":1}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":10}}`,
+		`{"type":"message_stop"}`,
+	)
+
+	blocks, err := toBlocks(msg)
+	if err != nil {
+		t.Fatalf("toBlocks: %v", err)
+	}
+
+	if len(blocks) != 2 {
+		t.Fatalf("blocks = %#v, want the thinking and the answer", blocks)
+	}
+	want := agent.ThinkingBlock{Thinking: "Let me check the file.", Signature: "sig-abc"}
+	if blocks[0] != want {
+		t.Errorf("blocks[0] = %#v, want %#v", blocks[0], want)
+	}
+	if got, want := blocks[1], (agent.TextBlock{Text: "It is in internal/agent."}); got != want {
+		t.Errorf("blocks[1] = %#v, want %#v", got, want)
+	}
+}
+
+func TestDeltaEventCarriesEachStreamedKind(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want agent.Event
+	}{
+		{"text", `{"type":"text_delta","text":"hello"}`, agent.TextDeltaEvent{Text: "hello"}},
+		{"thinking", `{"type":"thinking_delta","thinking":"hmm"}`, agent.ThinkingDeltaEvent{Text: "hmm"}},
+		// Nothing to paint live: the signature is not shown, and a tool's input
+		// is only worth rendering once it parses.
+		{"signature", `{"type":"signature_delta","signature":"sig"}`, nil},
+		{"tool input", `{"type":"input_json_delta","partial_json":"{\"a\":"}`, nil},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			delta := sdk.ContentBlockDeltaEvent{}
+			if err := json.Unmarshal([]byte(`{"type":"content_block_delta","index":0,"delta":`+test.body+`}`), &delta); err != nil {
+				t.Fatalf("building delta: %v", err)
+			}
+
+			got, ok := deltaEvent(delta)
+
+			if test.want == nil {
+				if ok {
+					t.Errorf("delta produced %#v, want nothing to paint", got)
+				}
+				return
+			}
+			if !ok {
+				t.Fatalf("delta produced nothing, want %#v", test.want)
+			}
+			if got != test.want {
+				t.Errorf("delta produced %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}

@@ -41,12 +41,13 @@ type model struct {
 	cancel context.CancelFunc
 	// TUI state. The transcript is not held here: it is printed above the frame
 	// as it happens and belongs to the terminal's scrollback from then on.
-	partial  string          // assistant text streamed so far
-	streamed int             // rows of partial already printed; the rest is in the frame
-	input    textinput.Model // user input field
-	spinner  spinner.Model   // shown above input while state is uiStateProcessing
-	width    int             // terminal width, 0 until the first WindowSizeMsg
-	state    uiState
+	partial         string          // the block being streamed, as text
+	partialThinking bool            // whether that block is reasoning rather than the answer
+	streamed        int             // rows of partial already printed; the rest is in the frame
+	input           textinput.Model // user input field
+	spinner         spinner.Model   // shown above input while state is uiStateProcessing
+	width           int             // terminal width, 0 until the first WindowSizeMsg
+	state           uiState
 	// command menu state. Visibility is derived from the input rather than
 	// stored, so the two cannot disagree; see menuVisible.
 	menuDismissed bool // Esc hides the menu for the rest of this command line
@@ -158,14 +159,45 @@ func printAbove(rendered string) tea.Cmd {
 	return tea.Println(rendered)
 }
 
-// streamRows renders the text streamed so far as transcript rows. Every row but
-// the last is settled: wrapping is greedy, so more text can only extend the
-// last row, never reflow the ones above it.
+// streamRows renders what has been streamed so far as transcript rows. Every
+// row but the last is settled: wrapping is greedy, so more text can only extend
+// the last row, never reflow the ones above it.
 func (m model) streamRows() []string {
 	if m.partial == "" {
 		return nil
 	}
-	return strings.Split(agent.RenderStreamingText(m.partial, m.width), "\n")
+
+	var block agent.Block = agent.TextBlock{Text: m.partial}
+	if m.partialThinking {
+		block = agent.ThinkingBlock{Thinking: m.partial}
+	}
+	return strings.Split(agent.RenderBlock(block, agent.RoleAssistant, m.width), "\n")
+}
+
+// streamDelta adds a fragment to the block being streamed and returns whatever
+// that settles. Reasoning and the answer are separate blocks, so a fragment of
+// one ends the other: the model reasons first and answers after.
+func (m *model) streamDelta(text string, thinking bool) string {
+	var finished string
+	if m.partial != "" && m.partialThinking != thinking {
+		finished = m.endStream()
+	}
+
+	m.partialThinking = thinking
+	m.partial += text
+	return joinRows(finished, m.flushStream())
+}
+
+// joinRows joins rendered rows, dropping the empty ones so nothing contributes
+// a blank line to the transcript.
+func joinRows(rows ...string) string {
+	var present []string
+	for _, row := range rows {
+		if row != "" {
+			present = append(present, row)
+		}
+	}
+	return strings.Join(present, "\n")
 }
 
 // streamTail is the row the text is still being written into, the one part of
@@ -200,19 +232,25 @@ func (m *model) endStream() string {
 	if m.streamed < len(rows) {
 		rest = strings.Join(rows[m.streamed:], "\n")
 	}
-	m.partial, m.streamed = "", 0
+	m.partial, m.streamed, m.partialThinking = "", 0, false
 	return rest
 }
 
-// printMessage returns what a landed message adds to the transcript. The
-// assistant's text is left out: it was printed as it streamed, so only the
-// trailing row and the blocks that never stream — tool uses, thinking — are
-// new here.
-//
-// Nothing requests thinking yet. Whatever turns it on has to stream it too:
-// reasoning comes before the answer in the message, but the answer is printed
-// as it streams, so a thinking block printed here lands after the answer it
-// led to.
+// streams reports whether a block reaches the screen as it is generated. Those
+// are already printed by the time the message lands, so printing the message
+// would show them twice.
+func streams(block agent.Block) bool {
+	switch block.(type) {
+	case agent.TextBlock, agent.ThinkingBlock:
+		return true
+	default:
+		return false
+	}
+}
+
+// printMessage returns what a landed message adds to the transcript: the row
+// still being written into, and the blocks that never stream — tool uses, and
+// reasoning the API only ever returns encrypted.
 func (m *model) printMessage(msg agent.Message) string {
 	rendered := []string{}
 	if rest := m.endStream(); rest != "" {
@@ -220,14 +258,14 @@ func (m *model) printMessage(msg agent.Message) string {
 	}
 
 	for _, block := range msg.Content {
-		if _, isText := block.(agent.TextBlock); isText && msg.Role == agent.RoleAssistant {
+		if msg.Role == agent.RoleAssistant && streams(block) {
 			continue
 		}
 		if row := agent.RenderBlock(block, msg.Role, m.width); row != "" {
 			rendered = append(rendered, row)
 		}
 	}
-	return strings.Join(rendered, "\n")
+	return joinRows(rendered...)
 }
 
 // streamEventMsg carries one Event from the in-flight turn
@@ -560,8 +598,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var print tea.Cmd
 		switch event := msg.event.(type) {
 		case agent.TextDeltaEvent:
-			m.partial = m.partial + event.Text
-			print = printAbove(m.flushStream())
+			print = printAbove(m.streamDelta(event.Text, false))
+		case agent.ThinkingDeltaEvent:
+			print = printAbove(m.streamDelta(event.Text, true))
 		case agent.MessageEvent:
 			print = printAbove(m.printMessage(event.Message))
 		case agent.ErrorEvent:

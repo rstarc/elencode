@@ -29,6 +29,13 @@ type TextDeltaEvent struct{ Text string }
 
 func (e TextDeltaEvent) event() {}
 
+// ThinkingDeltaEvent carries a fragment of the model's reasoning as it is
+// generated. Separate from TextDeltaEvent because the two are rendered
+// differently and can follow one another within a single turn.
+type ThinkingDeltaEvent struct{ Text string }
+
+func (e ThinkingDeltaEvent) event() {}
+
 // ResponseEvent carries the assembled Response. Final event of a successful
 // Provider.Stream. Consumed by Agent.Run, which turns it into a MessageEvent;
 // it does not reach Run's caller.

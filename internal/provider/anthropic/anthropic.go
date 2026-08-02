@@ -109,8 +109,8 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 			// Emit only what the UI needs to paint live. Everything else
 			// (tool inputs, usage, stop reason) is recovered from message.
 			if delta, ok := event.AsAny().(sdk.ContentBlockDeltaEvent); ok {
-				if text, ok := delta.Delta.AsAny().(sdk.TextDelta); ok {
-					if !emit(ctx, events, agent.TextDeltaEvent{Text: text.Text}) {
+				if live, ok := deltaEvent(delta); ok {
+					if !emit(ctx, events, live) {
 						return
 					}
 				}
@@ -141,6 +141,20 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 	}()
 
 	return events
+}
+
+// deltaEvent converts a streamed delta into the Event the UI paints from, and
+// reports whether there is anything to paint: a signature says nothing to the
+// reader, and a tool's input is only worth showing once it has parsed.
+func deltaEvent(delta sdk.ContentBlockDeltaEvent) (agent.Event, bool) {
+	switch variant := delta.Delta.AsAny().(type) {
+	case sdk.TextDelta:
+		return agent.TextDeltaEvent{Text: variant.Text}, true
+	case sdk.ThinkingDelta:
+		return agent.ThinkingDeltaEvent{Text: variant.Thinking}, true
+	default:
+		return nil, false
+	}
 }
 
 // emit sends ev unless the consumer has abandoned the turn. It reports whether
