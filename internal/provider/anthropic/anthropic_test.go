@@ -35,14 +35,14 @@ func decodeMessage(t *testing.T, body string) *sdk.Message {
 
 func TestToBlocksRejectsUnhandledVariant(t *testing.T) {
 	// A real block type the API can return today and toBlocks does not convert
-	msg := decodeMessage(t, `{"content":[{"type":"redacted_thinking","data":"encrypted"}]}`)
+	msg := decodeMessage(t, `{"content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"web_search","input":{}}]}`)
 
 	_, err := toBlocks(msg)
 
 	if err == nil {
 		t.Fatal("err = nil, want an error for an unhandled block variant")
 	}
-	if !strings.Contains(err.Error(), "redacted_thinking") {
+	if !strings.Contains(err.Error(), "server_tool_use") {
 		t.Errorf("err = %q, want it to name the offending block type", err)
 	}
 }
@@ -223,5 +223,38 @@ func TestToMessagesSendsThinkingBack(t *testing.T) {
 	}
 	if thinking.Thinking != "let me check the file" || thinking.Signature != "sig-abc" {
 		t.Errorf("thinking block = %#v, want the text and signature carried through", thinking)
+	}
+}
+
+func TestToBlocksConvertsRedactedThinking(t *testing.T) {
+	msg := decodeMessage(t, `{"content":[{"type":"redacted_thinking","data":"encrypted-payload"}]}`)
+
+	blocks, err := toBlocks(msg)
+	if err != nil {
+		t.Fatalf("toBlocks: %v", err)
+	}
+
+	want := agent.RedactedThinkingBlock{Data: "encrypted-payload"}
+	if len(blocks) != 1 || blocks[0] != want {
+		t.Errorf("blocks = %#v, want %#v", blocks, want)
+	}
+}
+
+func TestToMessagesSendsRedactedThinkingBack(t *testing.T) {
+	msgs := []agent.Message{{Role: agent.RoleAssistant, Content: []agent.Block{
+		agent.RedactedThinkingBlock{Data: "encrypted-payload"},
+	}}}
+
+	got, err := toMessages(msgs)
+	if err != nil {
+		t.Fatalf("toMessages: %v", err)
+	}
+
+	redacted := got[0].Content[0].OfRedactedThinking
+	if redacted == nil {
+		t.Fatalf("block = %#v, want a redacted thinking block", got[0].Content[0])
+	}
+	if redacted.Data != "encrypted-payload" {
+		t.Errorf("data = %q, want it carried through unaltered", redacted.Data)
 	}
 }

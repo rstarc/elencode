@@ -191,6 +191,8 @@ func toMessages(msgs []agent.Message) ([]sdk.MessageParam, error) {
 				blocks = append(blocks, sdk.NewTextBlock(block.Text))
 			case agent.ThinkingBlock:
 				blocks = append(blocks, sdk.NewThinkingBlock(block.Signature, block.Thinking))
+			case agent.RedactedThinkingBlock:
+				blocks = append(blocks, sdk.NewRedactedThinkingBlock(block.Data))
 			case agent.ToolUseBlock:
 				blocks = append(blocks, sdk.NewToolUseBlock(block.ID, block.Input, block.Name))
 			case agent.ToolResultBlock:
@@ -222,7 +224,8 @@ func toBlocks(msg *sdk.Message) ([]agent.Block, error) {
 			blocks = append(blocks, agent.TextBlock{Text: variant.Text})
 		case sdk.ThinkingBlock:
 			blocks = append(blocks, agent.ThinkingBlock{Thinking: variant.Thinking, Signature: variant.Signature})
-		// case sdk.RedactedThinkingBlock:
+		case sdk.RedactedThinkingBlock:
+			blocks = append(blocks, agent.RedactedThinkingBlock{Data: variant.Data})
 		case sdk.ToolUseBlock:
 			blocks = append(blocks, agent.ToolUseBlock{ID: variant.ID, Name: variant.Name, Input: variant.Input})
 		// case sdk.ServerToolUseBlock:

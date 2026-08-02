@@ -31,6 +31,18 @@ const UserPromptMarker = ">"
 
 var textBlockColor = lipgloss.BrightBlack
 
+// thinkingStyle is how reasoning is set apart from the answer it led to
+func thinkingStyle() lipgloss.Style {
+	return lipgloss.NewStyle().Italic(true).Foreground(thinkingColor)
+}
+
+// The titles naming a block are the API's own type names, so what is on screen
+// can be matched against the documentation without a glossary.
+const (
+	thinkingTitle         = "thinking"
+	redactedThinkingTitle = "redacted_thinking"
+)
+
 // thinkingColor is the dim gray the UI uses everywhere for text that is there
 // to be glanced at rather than read: menu descriptions, key hints.
 var thinkingColor = lipgloss.BrightBlack
@@ -52,11 +64,26 @@ func blockWidth(available int) int {
 // column: firstMarker on the first line, a continuing border rune on the
 // rest. No vertical padding, so blocks stay dense in the transcript.
 func renderBoxedBlock(content string, contentStyle lipgloss.Style, firstMarker string, markerColor color.Color, width int) string {
+	return renderTitledBlock("", content, contentStyle, firstMarker, markerColor, width)
+}
+
+// renderTitledBlock is renderBoxedBlock with a title on a line of its own above
+// the content, set against the right edge so it labels the block without
+// competing with the text for the start of the line.
+func renderTitledBlock(title, content string, contentStyle lipgloss.Style, firstMarker string, markerColor color.Color, width int) string {
 	innerWidth := max(blockWidth(width)-2, 1) // marker + one space
-	wrapped := contentStyle.Width(innerWidth).Render(content)
 	marker := lipgloss.NewStyle().Foreground(markerColor)
 
-	lines := strings.Split(wrapped, "\n")
+	var lines []string
+	if title != "" {
+		lines = append(lines, contentStyle.Width(innerWidth).Align(lipgloss.Right).Render(title))
+	}
+	// An untitled block still renders empty content, as one empty line: it is
+	// the caller's to drop. A titled one has its title to show instead.
+	if content != "" || title == "" {
+		lines = append(lines, strings.Split(contentStyle.Width(innerWidth).Render(content), "\n")...)
+	}
+
 	for i, line := range lines {
 		m := markerRest
 		if i == 0 {
@@ -78,8 +105,11 @@ func RenderBlock(block Block, role Role, width int) string {
 	case ThinkingBlock:
 		// The same block the assistant's answer gets, dimmed and in italics:
 		// reasoning is part of the transcript but is not the answer.
-		style := lipgloss.NewStyle().Italic(true).Foreground(thinkingColor)
-		return renderBoxedBlock(block.Thinking, style, markerFirst, textBlockColor, width)
+		return renderTitledBlock(thinkingTitle, block.Thinking, thinkingStyle(), markerFirst, textBlockColor, width)
+	case RedactedThinkingBlock:
+		// Nothing to show but the fact that it happened: the reasoning is
+		// encrypted, and only the API can read it back.
+		return renderTitledBlock(redactedThinkingTitle, "", thinkingStyle(), markerFirst, textBlockColor, width)
 	case ToolUseBlock:
 		return renderBoxedBlock(block.Name+string(block.Input), lipgloss.NewStyle(), markerFirst, toolUseColor, width)
 	default:
@@ -150,6 +180,12 @@ type ThinkingBlock struct {
 }
 
 func (b ThinkingBlock) block() {}
+
+// RedactedThinkingBlock is reasoning the API encrypted rather than returned.
+// Data is opaque and carried only so the block can be sent back.
+type RedactedThinkingBlock struct{ Data string }
+
+func (b RedactedThinkingBlock) block() {}
 
 type ToolUseBlock struct {
 	ID    string // opaque, provider specific. never change this

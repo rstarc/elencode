@@ -2,6 +2,7 @@ package agent
 
 import (
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
@@ -159,20 +160,34 @@ func TestRenderHeaderCarriesTheTitle(t *testing.T) {
 }
 
 // TestRenderThinkingIsLaidOutLikeAssistantText pins the "same block, different
-// styling" part: strip the styling and a thinking block is indistinguishable
-// from what the assistant says, marker column and wrapping included.
+// styling" part: below its title, a thinking block is wrapped into the same
+// marker column as what the assistant says, and differs only in styling.
 func TestRenderThinkingIsLaidOutLikeAssistantText(t *testing.T) {
 	const same = "a sentence long enough to wrap onto a second row when the terminal is narrow"
 
 	thinking := RenderBlock(ThinkingBlock{Thinking: same}, RoleAssistant, 40)
 	text := RenderBlock(TextBlock{Text: same}, RoleAssistant, 40)
 
-	if stripANSI(thinking) != stripANSI(text) {
-		t.Errorf("thinking is laid out differently from assistant text:\n%q\n%q", stripANSI(thinking), stripANSI(text))
+	// The title takes the first line, so the content starts one line lower
+	if got, want := unmarked(thinking)[1:], unmarked(text); !slices.Equal(got, want) {
+		t.Errorf("thinking is wrapped differently from assistant text:\n%q\n%q", got, want)
 	}
 	if thinking == text {
 		t.Error("thinking is styled the same as assistant text, want it set apart")
 	}
+}
+
+// unmarked returns a block's lines with the marker column and styling removed,
+// leaving what the text was wrapped to.
+func unmarked(rendered string) []string {
+	var lines []string
+	for _, line := range strings.Split(stripANSI(rendered), "\n") {
+		// The marker is one rune and a space, so the content starts after the
+		// first space. Cutting avoids counting bytes in a multi-byte marker.
+		_, content, _ := strings.Cut(line, " ")
+		lines = append(lines, strings.TrimRight(content, " "))
+	}
+	return lines
 }
 
 func TestRenderThinkingIsItalic(t *testing.T) {
@@ -182,4 +197,67 @@ func TestRenderThinkingIsItalic(t *testing.T) {
 	if !strings.Contains(got, want) {
 		t.Errorf("thinking is not rendered italic and dim: %q, want the styling %q", got, want)
 	}
+}
+
+func TestRenderThinkingIsTitled(t *testing.T) {
+	const width = 80
+
+	lines := strings.Split(stripANSI(RenderBlock(ThinkingBlock{Thinking: "wondering"}, RoleAssistant, width)), "\n")
+
+	if len(lines) != 2 {
+		t.Fatalf("thinking rendered %d lines, want a title line and a line of content:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	// Right aligned: the title ends at the right edge, so the line fills the width
+	if !strings.HasSuffix(lines[0], thinkingTitle) {
+		t.Errorf("first line = %q, want it to end with the title %q", lines[0], thinkingTitle)
+	}
+	if got := lipgloss.Width(lines[0]); got != width {
+		t.Errorf("title line is %d columns wide, want %d so the title sits at the right edge", got, width)
+	}
+	if !strings.Contains(lines[1], "wondering") {
+		t.Errorf("second line = %q, want the reasoning below the title", lines[1])
+	}
+}
+
+// TestRenderRedactedThinkingIsAPlaceholder covers a block with nothing to show:
+// the reasoning is encrypted, so the title is the whole of it.
+func TestRenderRedactedThinkingIsAPlaceholder(t *testing.T) {
+	const width = 80
+
+	got := RenderBlock(RedactedThinkingBlock{Data: "encrypted-payload"}, RoleAssistant, width)
+
+	lines := strings.Split(stripANSI(got), "\n")
+	if len(lines) != 1 {
+		t.Fatalf("redacted thinking rendered %d lines, want just the title:\n%s", len(lines), got)
+	}
+	if !strings.HasSuffix(lines[0], redactedThinkingTitle) {
+		t.Errorf("line = %q, want it to end with %q", lines[0], redactedThinkingTitle)
+	}
+	if strings.Contains(got, "encrypted-payload") {
+		t.Errorf("the encrypted payload is on screen, want only the placeholder:\n%s", got)
+	}
+}
+
+func TestRedactedThinkingIsStyledLikeThinking(t *testing.T) {
+	redacted := RenderBlock(RedactedThinkingBlock{Data: "x"}, RoleAssistant, 80)
+	thinking := RenderBlock(ThinkingBlock{Thinking: ""}, RoleAssistant, 80)
+
+	// Same styling, differing only in which title they carry
+	if styleOf(t, redacted) != styleOf(t, thinking) {
+		t.Errorf("redacted thinking is styled differently:\n%q\n%q", redacted, thinking)
+	}
+}
+
+// styleOf returns the escape sequences a rendered block opens with, so two
+// blocks can be compared on styling rather than on content.
+func styleOf(t *testing.T, rendered string) string {
+	t.Helper()
+
+	var escapes []string
+	for _, part := range strings.Split(rendered, "\x1b") {
+		if i := strings.Index(part, "m"); i >= 0 && strings.HasPrefix(part, "[") {
+			escapes = append(escapes, part[:i+1])
+		}
+	}
+	return strings.Join(escapes, ",")
 }
