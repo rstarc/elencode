@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	teatest "github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/config"
@@ -981,7 +982,7 @@ func TestViewShowsTheRowBeingWrittenInto(t *testing.T) {
 
 	m = update(t, m, streamEventMsg{agent.TextDeltaEvent{Text: "half a sen"}})
 
-	if view := m.View().Content; !strings.Contains(view, "half a sen") {
+	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "half a sen") {
 		t.Errorf("frame does not show the text being streamed:\n%s", view)
 	}
 }
@@ -1020,7 +1021,7 @@ func TestProgramPrintsThePromptAndTheReply(t *testing.T) {
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
-		return bytes.Contains(out, []byte("how can I help?"))
+		return bytes.Contains([]byte(ansi.Strip(string(out))), []byte("how can I help?"))
 	}, teatest.WithDuration(5*time.Second))
 
 	if err := tm.Quit(); err != nil {
@@ -1109,7 +1110,7 @@ func TestAnswerAfterThinkingFinishesTheThinkingBlock(t *testing.T) {
 	if strings.Contains(view, "let me check the file") {
 		t.Errorf("frame still shows the reasoning after the answer started:\n%s", view)
 	}
-	if !strings.Contains(view, "It is in internal/agent.") {
+	if !strings.Contains(ansi.Strip(view), "It is in internal/agent.") {
 		t.Errorf("frame does not show the answer:\n%s", view)
 	}
 }

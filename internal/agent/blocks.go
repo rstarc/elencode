@@ -1,10 +1,14 @@
 package agent
 
 import (
-	"charm.land/lipgloss/v2"
+	"bytes"
 	"encoding/json"
 	"image/color"
 	"strings"
+
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/glamour"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Block is a part of a message
@@ -101,7 +105,7 @@ func RenderBlock(block Block, role Role, width int) string {
 			style := lipgloss.NewStyle().Background(userBackground).Foreground(userForeground)
 			return renderBoxedBlock(block.Text, style, UserPromptMarker, userBackground, width)
 		}
-		return renderBoxedBlock(block.Text, lipgloss.NewStyle(), markerFirst, textBlockColor, width)
+		return renderBoxedBlock(renderMarkdown(block.Text, width), lipgloss.NewStyle(), markerFirst, textBlockColor, width)
 	case ThinkingBlock:
 		// The same block the assistant's answer gets, dimmed and in italics:
 		// reasoning is part of the transcript but is not the answer.
@@ -111,10 +115,125 @@ func RenderBlock(block Block, role Role, width int) string {
 		// encrypted, and only the API can read it back.
 		return renderTitledBlock(redactedThinkingTitle, "", thinkingStyle(), markerFirst, textBlockColor, width)
 	case ToolUseBlock:
-		return renderBoxedBlock(block.Name+string(block.Input), lipgloss.NewStyle(), markerFirst, toolUseColor, width)
+		style := lipgloss.NewStyle().Foreground(textBlockColor)
+		name := style.Bold(true).Render(block.Name)
+		arguments := style.Render(formatToolArguments(block.Input))
+		return renderBoxedBlock(name+arguments, lipgloss.NewStyle(), markerFirst, toolUseColor, width)
 	default:
 		return ""
 	}
+}
+
+func renderMarkdown(text string, width int) string {
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStandardStyle("dark"),
+		// Glamour's dark style reserves two columns of document margin on
+		// either side. Those margins are removed below before the block adds
+		// its own marker column.
+		glamour.WithWordWrap(max(blockWidth(width)+1, 1)),
+	)
+	if err != nil {
+		return text
+	}
+
+	rendered, err := renderer.Render(text)
+	if err != nil {
+		return text
+	}
+	rendered = strings.ReplaceAll(rendered, "\x1b[38;5;203", markdownCodeColorPrefix())
+	lines := strings.Split(rendered, "\n")
+	for len(lines) > 0 && strings.TrimSpace(ansi.Strip(lines[0])) == "" {
+		lines = lines[1:]
+	}
+	for len(lines) > 0 && strings.TrimSpace(ansi.Strip(lines[len(lines)-1])) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	for i, line := range lines {
+		lines[i] = trimMarkdownMargin(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func markdownCodeColorPrefix() string {
+	prefix, _, _ := strings.Cut(lipgloss.NewStyle().Foreground(headerColor).Render("x"), "x")
+	return strings.TrimSuffix(prefix, "m")
+}
+
+func trimMarkdownMargin(line string) string {
+	var result strings.Builder
+	trimmed := 0
+	atStart := true
+	for i := 0; i < len(line); {
+		if line[i] == '\x1b' {
+			start := i
+			i++
+			if i < len(line) && line[i] == '[' {
+				i++
+				for i < len(line) && (line[i] < '@' || line[i] > '~') {
+					i++
+				}
+				if i < len(line) {
+					i++
+				}
+			}
+			result.WriteString(line[start:i])
+			continue
+		}
+		if atStart && line[i] == ' ' && trimmed < 2 {
+			trimmed++
+			i++
+			continue
+		}
+		atStart = false
+		result.WriteString(line[i:])
+		break
+	}
+	return result.String()
+}
+
+// formatToolArguments makes the first argument compact and positional, while
+// naming the rest so optional arguments remain understandable in the transcript.
+func formatToolArguments(input json.RawMessage) string {
+	decoder := json.NewDecoder(bytes.NewReader(input))
+	if token, err := decoder.Token(); err != nil || token != json.Delim('{') {
+		return "(" + strings.TrimSpace(string(input)) + ")"
+	}
+
+	var arguments []string
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return "(" + strings.TrimSpace(string(input)) + ")"
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return "(" + strings.TrimSpace(string(input)) + ")"
+		}
+		keyName, ok := key.(string)
+		if !ok {
+			return "(" + strings.TrimSpace(string(input)) + ")"
+		}
+		formatted := formatToolArgument(value)
+		if len(arguments) > 0 {
+			formatted = keyName + "=" + formatted
+		}
+		arguments = append(arguments, formatted)
+	}
+
+	return "(" + strings.Join(arguments, ",") + ")"
+}
+
+func formatToolArgument(value json.RawMessage) string {
+	var text string
+	if len(value) > 0 && value[0] == '"' && json.Unmarshal(value, &text) == nil {
+		return text
+	}
+
+	var compact bytes.Buffer
+	if json.Compact(&compact, value) == nil {
+		return compact.String()
+	}
+	return strings.TrimSpace(string(value))
 }
 
 // RenderStreamingText renders in-progress assistant text

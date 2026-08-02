@@ -2,7 +2,6 @@ package agent
 
 import (
 	"errors"
-	"slices"
 	"strings"
 	"testing"
 
@@ -103,6 +102,42 @@ func TestRenderStaysReadableWhenWidthIsUnusable(t *testing.T) {
 	}
 }
 
+func TestRenderToolUseFormatsArguments(t *testing.T) {
+	got := RenderBlock(ToolUseBlock{
+		Name:  "read",
+		Input: []byte(`{"path":"README.md","offset":10}`),
+	}, RoleAssistant, 80)
+
+	plain := stripANSI(got)
+	if !strings.Contains(plain, "read(README.md,offset=10)") {
+		t.Errorf("tool use = %q, want formatted arguments", got)
+	}
+}
+
+func TestRenderToolUseBoldsName(t *testing.T) {
+	got := RenderBlock(ToolUseBlock{
+		Name:  "read",
+		Input: []byte(`{"path":"README.md"}`),
+	}, RoleAssistant, 80)
+
+	bold := lipgloss.NewStyle().Foreground(textBlockColor).Bold(true).Render("read")
+	if !strings.Contains(got, bold) {
+		t.Errorf("tool use = %q, want the tool name bold", got)
+	}
+}
+
+func TestRenderToolUseUsesBrightBlackText(t *testing.T) {
+	got := RenderBlock(ToolUseBlock{
+		Name:  "read",
+		Input: []byte(`{"path":"README.md"}`),
+	}, RoleAssistant, 80)
+
+	brightBlack, _, _ := strings.Cut(lipgloss.NewStyle().Foreground(textBlockColor).Render("x"), "x")
+	if !strings.Contains(got, brightBlack+"(README.md)") {
+		t.Errorf("tool use = %q, want BrightBlack text", got)
+	}
+}
+
 // TestRenderNoticeReadsAsNeitherSide covers what a notice is for: it reports
 // something the program did, so it must not look like a message from the user
 // or the assistant.
@@ -160,20 +195,54 @@ func TestRenderHeaderCarriesTheTitle(t *testing.T) {
 }
 
 // TestRenderThinkingIsLaidOutLikeAssistantText pins the "same block, different
-// styling" part: below its title, a thinking block is wrapped into the same
-// marker column as what the assistant says, and differs only in styling.
+// styling" part: both blocks wrap in the marker column, while assistant text
+// is additionally formatted as Markdown.
 func TestRenderThinkingIsLaidOutLikeAssistantText(t *testing.T) {
 	const same = "a sentence long enough to wrap onto a second row when the terminal is narrow"
 
 	thinking := RenderBlock(ThinkingBlock{Thinking: same}, RoleAssistant, 40)
 	text := RenderBlock(TextBlock{Text: same}, RoleAssistant, 40)
 
-	// The title takes the first line, so the content starts one line lower
-	if got, want := unmarked(thinking)[1:], unmarked(text); !slices.Equal(got, want) {
-		t.Errorf("thinking is wrapped differently from assistant text:\n%q\n%q", got, want)
+	if len(unmarked(thinking)) < 3 || len(unmarked(text)) < 2 {
+		t.Errorf("blocks did not wrap at the terminal width:\nthinking:\n%s\ntext:\n%s", thinking, text)
 	}
 	if thinking == text {
 		t.Error("thinking is styled the same as assistant text, want it set apart")
+	}
+}
+
+func TestRenderAssistantTextRendersMarkdown(t *testing.T) {
+	got := RenderBlock(TextBlock{Text: "**important**"}, RoleAssistant, 80)
+
+	if !strings.Contains(stripANSI(got), "important") {
+		t.Fatalf("rendered text = %q, want the markdown text", stripANSI(got))
+	}
+	if styleOf(t, got) == styleOf(t, RenderBlock(TextBlock{Text: "plain"}, RoleAssistant, 80)) {
+		t.Errorf("markdown emphasis did not add styling:\n%q", got)
+	}
+}
+
+func TestRenderAssistantTextWrapsWideMarkdownTables(t *testing.T) {
+	markdown := "| Name | Description |\n| --- | --- |\n| alpha | a description that is much wider than the terminal |"
+	got := RenderBlock(TextBlock{Text: markdown}, RoleAssistant, 40)
+
+	if width := widest(got); width > 40 {
+		t.Errorf("wide table rendered %d columns, want <= 40:\n%s", width, got)
+	}
+	plain := stripANSI(got)
+	if !strings.Contains(plain, "alpha") || !strings.Contains(plain, "terminal") {
+		t.Errorf("wide table = %q, want it to retain table content", got)
+	}
+	if lines := strings.Split(plain, "\n"); len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
+		t.Errorf("wide table starts with an empty row:\n%s", got)
+	}
+}
+
+func TestRenderAssistantCodeUsesHeaderColor(t *testing.T) {
+	got := RenderBlock(TextBlock{Text: "`code`"}, RoleAssistant, 80)
+
+	if !strings.Contains(got, markdownCodeColorPrefix()) {
+		t.Errorf("code rendering = %q, want header color", got)
 	}
 }
 
