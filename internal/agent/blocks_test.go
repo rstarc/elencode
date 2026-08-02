@@ -67,7 +67,7 @@ func stripANSI(s string) string {
 func TestRenderFitsWithinAvailableWidth(t *testing.T) {
 	long := errors.New(strings.Repeat("something went wrong ", 20))
 
-	for _, available := range []int{20, 40, 80, maxBlockWidth} {
+	for _, available := range []int{20, 40, 80, 200} {
 		if got := widest(RenderError(long, available)); got > available {
 			t.Errorf("RenderError at width %d rendered %d columns wide, want <= %d", available, got, available)
 		}
@@ -77,13 +77,16 @@ func TestRenderFitsWithinAvailableWidth(t *testing.T) {
 	}
 }
 
-func TestRenderCapsAtMaxWidth(t *testing.T) {
-	// Long lines are hard to read, so a wide terminal does not stretch a block
-	// across the whole of it.
-	got := widest(RenderError(errors.New(strings.Repeat("wide ", 100)), 500))
+// TestRenderUsesTheWholeTerminal covers a wide terminal: a block fills the
+// width it is given rather than stopping at a fixed column, so the transcript
+// is laid out to the terminal the user chose.
+func TestRenderUsesTheWholeTerminal(t *testing.T) {
+	const available = 200
 
-	if got > maxBlockWidth {
-		t.Errorf("render is %d columns wide, want it capped at %d", got, maxBlockWidth)
+	got := widest(RenderError(errors.New(strings.Repeat("wide ", 100)), available))
+
+	if got != available {
+		t.Errorf("render is %d columns wide, want the full %d", got, available)
 	}
 }
 
@@ -132,8 +135,7 @@ func TestRenderNoticeFitsNarrowTerminal(t *testing.T) {
 
 // TestRenderNoticeSpansTheTerminal covers the point of drawing a notice as a
 // rule: it separates what is above it from what is below, which it can only do
-// by reaching both edges. Unlike a message block it is not capped at
-// maxBlockWidth.
+// by reaching both edges.
 func TestRenderNoticeSpansTheTerminal(t *testing.T) {
 	for _, width := range []int{40, 80, 120, 200} {
 		if got := lipgloss.Width(RenderNotice("switched to some-model", width)); got != width {

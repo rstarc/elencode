@@ -11,16 +11,11 @@ import (
 // By definining it as an interface with an unexported function, we emulate a sum type in Go
 type Block interface{ block() }
 
-const (
-	// maxBlockWidth caps how wide a block grows on a large terminal, since long
-	// lines are hard to read.
-	maxBlockWidth = 90
-	// minBlockWidth is the narrowest box worth drawing. Below roughly five
-	// columns lipgloss ignores the requested width and renders at the content's
-	// natural width, which is exactly the clipping we are avoiding, so anything
-	// narrower than this is clamped up and allowed to overflow instead.
-	minBlockWidth = 20
-)
+// minBlockWidth is the narrowest box worth drawing. Below roughly five
+// columns lipgloss ignores the requested width and renders at the content's
+// natural width, which is exactly the clipping we are avoiding, so anything
+// narrower than this is clamped up and allowed to overflow instead.
+const minBlockWidth = 20
 
 // markerFirst marks the first line of a block, so its start is easy to spot
 // when scanning down the transcript. markerRest continues the left border on
@@ -46,7 +41,7 @@ var userForeground = lipgloss.Black
 // blockWidth fits a block to the space available, which includes the marker
 // column. available is 0 before the first WindowSizeMsg arrives.
 func blockWidth(available int) int {
-	return min(max(available, minBlockWidth), maxBlockWidth)
+	return max(available, minBlockWidth)
 }
 
 // renderBoxedBlock prefixes content, wrapped to width, with a colored marker
@@ -109,9 +104,9 @@ func RenderHeader(text string, width int) string {
 	return renderRule(text, width, lipgloss.NewStyle().Foreground(headerColor).Bold(true))
 }
 
-// renderRule centers label in a line of rule characters. Unlike a message
-// block it is not capped at maxBlockWidth: a rule that stopped short of the
-// edge would read as a box around nothing rather than as a divider.
+// renderRule centers label in a line of rule characters, spanning the width it
+// is given: a rule that stopped short of the edge would read as a box around
+// nothing rather than as a divider.
 func renderRule(label string, width int, style lipgloss.Style) string {
 	total := max(width, minBlockWidth)
 	padded := " " + label + " "
