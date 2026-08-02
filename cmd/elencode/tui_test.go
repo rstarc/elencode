@@ -343,8 +343,6 @@ type failingProvider struct{ err error }
 
 func (p failingProvider) Models(ctx context.Context) ([]agent.Model, error) { return nil, p.err }
 
-func (p failingProvider) SetModel(model agent.Model) {}
-
 func (p failingProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
 	events := make(chan agent.Event, 1)
 	events <- agent.ErrorEvent{Err: p.err}
@@ -631,11 +629,9 @@ type errStub struct{}
 
 func (errStub) Error() string { return "stub failure" }
 
-// modelProvider serves a fixed model list and records the model it was switched
-// to, so a test can assert the choice reached the provider.
+// modelProvider serves a fixed model list.
 type modelProvider struct {
 	models []agent.Model
-	set    string
 }
 
 func (p *modelProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
@@ -646,8 +642,6 @@ func (p *modelProvider) Stream(ctx context.Context, req agent.Request) <-chan ag
 }
 
 func (p *modelProvider) Models(ctx context.Context) ([]agent.Model, error) { return p.models, nil }
-
-func (p *modelProvider) SetModel(model agent.Model) { p.set = model.ID }
 
 var testModels = []agent.Model{
 	{ID: "model-one", DisplayName: "Model One"},
@@ -735,6 +729,20 @@ func TestModelPickerStartsOnTheCurrentModel(t *testing.T) {
 	}
 }
 
+func TestEffectiveDefaultModelIsShownAndSelected(t *testing.T) {
+	m := newPickerModel(t, &modelProvider{models: testModels})
+	m.config = configWithEffectiveModel(m.config, agent.Model{ID: "model-two"})
+
+	if view := renderConfig(m.config, 80); !strings.Contains(view, "model-two") {
+		t.Errorf("config view does not show the effective model:\n%s", view)
+	}
+
+	m = update(t, m, modelsMsg{models: testModels})
+	if m.modelIndex != 1 {
+		t.Errorf("modelIndex = %d, want the effective default at index 1", m.modelIndex)
+	}
+}
+
 func TestEnterSelectsTheHighlightedModel(t *testing.T) {
 	provider := &modelProvider{models: testModels}
 	m := update(t, newPickerModel(t, provider), modelsMsg{models: testModels})
@@ -742,9 +750,6 @@ func TestEnterSelectsTheHighlightedModel(t *testing.T) {
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if provider.set != "model-two" {
-		t.Errorf("provider was switched to %q, want %q", provider.set, "model-two")
-	}
 	if m.config.Model != "model-two" {
 		t.Errorf("config model = %q, want %q", m.config.Model, "model-two")
 	}
@@ -780,9 +785,6 @@ func TestModelArgumentSelectsWithoutOpeningThePicker(t *testing.T) {
 	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = update(t, m, modelsFrom(t, cmd))
 
-	if provider.set != "model-two" {
-		t.Errorf("provider was switched to %q, want %q", provider.set, "model-two")
-	}
 	if m.modelPickerVisible {
 		t.Error("picker opened for a model named on the command line")
 	}
@@ -795,9 +797,6 @@ func TestUnknownModelArgumentIsReported(t *testing.T) {
 	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	_, cmd = updateCmd(t, m, modelsFrom(t, cmd))
 
-	if provider.set != "" {
-		t.Errorf("provider was switched to %q, want no switch for a model that does not exist", provider.set)
-	}
 	if got := printed(t, cmd); !strings.Contains(got, "model-nine") {
 		t.Errorf("printed %q, want it to name the model asked for", got)
 	}
@@ -827,9 +826,6 @@ func TestEscClosesTheModelPicker(t *testing.T) {
 
 	if m.modelPickerVisible {
 		t.Error("picker still open after Esc")
-	}
-	if provider.set != "" {
-		t.Errorf("Esc switched the model to %q, want it to change nothing", provider.set)
 	}
 }
 
@@ -1065,8 +1061,6 @@ func (p scriptedProvider) Stream(ctx context.Context, req agent.Request) <-chan 
 }
 
 func (p scriptedProvider) Models(ctx context.Context) ([]agent.Model, error) { return nil, nil }
-
-func (p scriptedProvider) SetModel(model agent.Model) {}
 
 // TestProgramPrintsThePromptAndTheReply drives the whole program, which is the
 // only place the printing is real: Update hands back commands, and it is

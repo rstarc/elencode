@@ -40,6 +40,7 @@ type Agent struct {
 	mu                sync.Mutex
 	contextWindow     []Message
 	contextGeneration int
+	model             Model
 	maxTokens         int64
 	provider          Provider
 }
@@ -47,6 +48,7 @@ type Agent struct {
 type turnMark struct {
 	index      int
 	generation int
+	model      Model
 }
 
 func (a *Agent) useTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
@@ -80,7 +82,7 @@ func (a *Agent) Run(ctx context.Context, userInput string) <-chan Event {
 		}()
 
 		for {
-			response, ok := a.infer(ctx, events)
+			response, ok := a.infer(ctx, events, mark.model)
 			if !ok {
 				a.rollback(mark)
 				return
@@ -116,9 +118,10 @@ func (a *Agent) Run(ctx context.Context, userInput string) <-chan Event {
 // infer runs one round of inference, forwarding Events to the caller and
 // returning the assembled Response. ok is false if the turn should stop, which
 // covers provider errors and cancellation.
-func (a *Agent) infer(ctx context.Context, events chan<- Event) (Response, bool) {
+func (a *Agent) infer(ctx context.Context, events chan<- Event, model Model) (Response, bool) {
 	a.mu.Lock()
 	req := Request{
+		Model:     model,
 		MaxTokens: a.maxTokens, // TODO: set dynamically from API query if not set explicitly
 		Tools:     a.tools,
 		Messages:  a.contextWindow,
@@ -183,9 +186,8 @@ func (a *Agent) SetModel(model Model) {
 	a.mu.Lock()
 	a.contextGeneration++
 	a.contextWindow = []Message{}
+	a.model = model
 	a.mu.Unlock()
-
-	a.provider.SetModel(model)
 }
 
 func (a *Agent) AppendMessage(msg Message) {
@@ -200,7 +202,7 @@ func (a *Agent) AppendMessage(msg Message) {
 func (a *Agent) beginTurn(msg Message) turnMark {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	mark := turnMark{index: len(a.contextWindow), generation: a.contextGeneration}
+	mark := turnMark{index: len(a.contextWindow), generation: a.contextGeneration, model: a.model}
 	a.contextWindow = append(a.contextWindow, msg)
 	return mark
 }

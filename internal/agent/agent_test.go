@@ -22,12 +22,9 @@ type scriptedProvider struct {
 	calls    int
 	requests []Request
 	models   []Model // what Models returns
-	model    Model   // the last model SetModel was given
 }
 
 func (p *scriptedProvider) Models(ctx context.Context) ([]Model, error) { return p.models, nil }
-
-func (p *scriptedProvider) SetModel(model Model) { p.model = model }
 
 func (p *scriptedProvider) Stream(ctx context.Context, req Request) <-chan Event {
 	p.requests = append(p.requests, req)
@@ -58,8 +55,6 @@ type blockingProvider struct{ started chan struct{} }
 
 func (p *blockingProvider) Models(ctx context.Context) ([]Model, error) { return nil, nil }
 
-func (p *blockingProvider) SetModel(model Model) {}
-
 func (p *blockingProvider) Stream(ctx context.Context, req Request) <-chan Event {
 	events := make(chan Event)
 	go func() {
@@ -76,16 +71,16 @@ type switchProvider struct {
 	started  chan struct{}
 	release  chan struct{}
 	calls    int
+	requests []Request
 	response Response
 }
 
 func (p *switchProvider) Models(ctx context.Context) ([]Model, error) { return nil, nil }
 
-func (p *switchProvider) SetModel(model Model) {}
-
 func (p *switchProvider) Stream(ctx context.Context, req Request) <-chan Event {
 	call := p.calls
 	p.calls++
+	p.requests = append(p.requests, req)
 	events := make(chan Event, 1)
 	if call == 0 {
 		go func() {
@@ -368,6 +363,20 @@ func TestModelsComeFromTheProvider(t *testing.T) {
 	}
 }
 
+func TestRunCarriesTheSelectedModelInItsRequest(t *testing.T) {
+	provider := &scriptedProvider{turns: [][]Event{{
+		ResponseEvent{Response: Response{Message: assistantMessage(TextBlock{Text: "Hello"}), StopReason: StopReasonEndTurn}},
+	}}}
+	a := New(provider, nil)
+	a.SetModel(Model{ID: "model-a", Thinking: ThinkingAdaptive})
+
+	collect(t, a.Run(context.Background(), "hi"))
+
+	if got := provider.requests[0].Model; got.ID != "model-a" || got.Thinking != ThinkingAdaptive {
+		t.Errorf("request model = %#v, want model-a with adaptive thinking", got)
+	}
+}
+
 // TestSetModelClearsTheContextWindow covers the point of switching models: the
 // conversation so far was produced by another model, and is not carried over.
 func TestSetModelClearsTheContextWindow(t *testing.T) {
@@ -385,8 +394,8 @@ func TestSetModelClearsTheContextWindow(t *testing.T) {
 	if len(a.contextWindow) != 0 {
 		t.Errorf("context window has %d messages after switching models, want it cleared", len(a.contextWindow))
 	}
-	if provider.model.ID != "b" {
-		t.Errorf("provider model = %q, want %q", provider.model.ID, "b")
+	if a.model.ID != "b" {
+		t.Errorf("agent model = %q, want %q", a.model.ID, "b")
 	}
 }
 
@@ -397,6 +406,7 @@ func TestOldTurnCannotAppendAfterModelSwitch(t *testing.T) {
 		response: Response{Message: assistantMessage(TextBlock{Text: "old"}), StopReason: StopReasonEndTurn},
 	}
 	a := New(provider, nil)
+	a.SetModel(Model{ID: "a"})
 
 	events := a.Run(context.Background(), "old prompt")
 	<-provider.started
@@ -406,6 +416,9 @@ func TestOldTurnCannotAppendAfterModelSwitch(t *testing.T) {
 
 	if len(a.contextWindow) != 0 {
 		t.Errorf("context window = %#v, want stale response discarded after model switch", a.contextWindow)
+	}
+	if got := provider.requests[0].Model.ID; got != "a" {
+		t.Errorf("old turn request model = %q, want a", got)
 	}
 }
 

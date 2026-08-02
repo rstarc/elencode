@@ -9,13 +9,6 @@ type Provider interface {
 	// Models lists the models this provider can be pointed at. It talks to the
 	// API, so it blocks and takes a ctx.
 	Models(ctx context.Context) ([]Model, error)
-	// SetModel points every later Stream at the given model. The whole Model is
-	// passed, not just its id, because what a model accepts differs between
-	// them and the caller has already looked it up.
-	//
-	// Providers are used from the turn goroutine, so this must be safe to call
-	// concurrently.
-	SetModel(model Model)
 }
 
 // Model is one model the provider offers, as shown in the picker
@@ -75,6 +68,7 @@ func (e ErrorEvent) event() {}
 
 // Request represents a single Request we send to the provider's API
 type Request struct {
+	Model     Model
 	MaxTokens int64
 	Tools     []Tool
 	Messages  []Message

@@ -22,14 +22,22 @@ func main() {
 	}
 
 	// Initialize provider
-	provider := anthropic.New(cfg.AnthropicAPIKey.Reveal(), cfg.Model, cfg.ThinkingEnabled)
+	provider := anthropic.New(cfg.AnthropicAPIKey.Reveal(), cfg.ThinkingEnabled)
+	modelID := cfg.Model
+	if modelID == "" {
+		modelID = anthropic.DefaultModelID()
+	}
+	selectedModel := agent.Model{ID: modelID}
 
 	// Models differ in what kind of reasoning they accept, and asking for the
 	// wrong kind fails the turn. Not fatal: without it the session simply runs
 	// without thinking, which beats refusing to start.
-	if err := provider.Resolve(context.Background()); err != nil {
-		fmt.Fprintf(os.Stderr, "elencode: could not read what %s supports, continuing without thinking: %v\n", cfg.Model, err)
+	if resolved, err := provider.Resolve(context.Background(), modelID); err != nil {
+		fmt.Fprintf(os.Stderr, "elencode: could not read what %s supports, continuing without thinking: %v\n", modelID, err)
+	} else {
+		selectedModel = resolved
 	}
+	cfg = configWithEffectiveModel(cfg, selectedModel)
 
 	// TODO: Use os.OpenRoot instead
 	root := os.DirFS(".")
@@ -40,6 +48,7 @@ func main() {
 		tools.NewBashTool(root),
 	}
 	agentConfig := agent.New(provider, tools)
+	agentConfig.SetModel(selectedModel)
 
 	tui := tea.NewProgram(newModel(agentConfig, cfg))
 	if _, err := tui.Run(); err != nil {
@@ -47,4 +56,11 @@ func main() {
 		os.Exit(1)
 	}
 
+}
+
+func configWithEffectiveModel(cfg config.Config, model agent.Model) config.Config {
+	if cfg.Model == "" {
+		cfg.Model = model.ID
+	}
+	return cfg
 }

@@ -3,7 +3,6 @@ package anthropic
 import (
 	"context"
 	"fmt"
-	"sync"
 
 	"github.com/rstarc/elencode/internal/agent"
 
@@ -16,7 +15,7 @@ import (
 // renders, without letting an unread stream grow without bound.
 const eventBuffer = 64
 
-// defaultModel is used when the config file names none
+// defaultModel is used when the config file names none.
 const defaultModel = sdk.ModelClaudeHaiku4_5
 
 type Client struct {
@@ -24,41 +23,32 @@ type Client struct {
 	// thinking asks for the model's reasoning. Fixed for the life of the
 	// client: it comes from the config file and nothing changes it at runtime.
 	thinking bool
-	// mu guards model alone: /model can switch it from the UI goroutine while a
-	// turn is streaming on another.
-	mu    sync.RWMutex
-	model agent.Model
 }
 
-func New(apiKey, model string, thinking bool) *Client {
-	return newWithOptions(apiKey, model, thinking)
+func New(apiKey string, thinking bool) *Client {
+	return newWithOptions(apiKey, thinking)
 }
 
 // newWithOptions is New with extra SDK options, which tests use to point the
 // client at a stub server.
-func newWithOptions(apiKey, model string, thinking bool, opts ...option.RequestOption) *Client {
-	chosen := model
-	if chosen == "" {
-		chosen = string(defaultModel)
-	}
+func newWithOptions(apiKey string, thinking bool, opts ...option.RequestOption) *Client {
 	opts = append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
 	// Thinking stays off until Resolve says what this model accepts: asking for
 	// the wrong kind is rejected outright, not ignored.
-	return &Client{client: sdk.NewClient(opts...), model: agent.Model{ID: chosen}, thinking: thinking}
+	return &Client{client: sdk.NewClient(opts...), thinking: thinking}
 }
 
-// Resolve looks up what the configured model accepts, so later requests ask for
-// the kind of thinking it supports. Called once at startup, for the model that
-// came from the config file rather than from the picker — a model chosen there
-// arrives already resolved.
-func (c *Client) Resolve(ctx context.Context) error {
-	info, err := c.client.Models.Get(ctx, c.currentModel().ID, sdk.ModelGetParams{})
-	if err != nil {
-		return err
-	}
+// DefaultModelID is the model used when configuration names none.
+func DefaultModelID() string { return string(defaultModel) }
 
-	c.SetModel(toModel(*info))
-	return nil
+// Resolve looks up what model accepts, so the agent can put the correct
+// thinking mode into each request.
+func (c *Client) Resolve(ctx context.Context, modelID string) (agent.Model, error) {
+	info, err := c.client.Models.Get(ctx, modelID, sdk.ModelGetParams{})
+	if err != nil {
+		return agent.Model{ID: modelID}, err
+	}
+	return toModel(*info), nil
 }
 
 // thinkingBudget is how many tokens a model of the older kind may reason with.
@@ -69,14 +59,12 @@ const thinkingBudget = 2048
 
 // messageParams builds the request for one round of inference
 func (c *Client) messageParams(req agent.Request, messages []sdk.MessageParam) sdk.MessageNewParams {
-	model := c.currentModel()
-
 	return sdk.MessageNewParams{
 		MaxTokens: req.MaxTokens,
 		Messages:  messages,
-		Model:     sdk.Model(model.ID),
+		Model:     sdk.Model(req.Model.ID),
 		Tools:     toolParams(req.Tools),
-		Thinking:  c.thinkingParam(model),
+		Thinking:  c.thinkingParam(req.Model),
 	}
 }
 
@@ -99,19 +87,6 @@ func (c *Client) thinkingParam(model agent.Model) sdk.ThinkingConfigParamUnion {
 	default:
 		return sdk.ThinkingConfigParamUnion{}
 	}
-}
-
-// SetModel points every later Stream at the given model
-func (c *Client) SetModel(model agent.Model) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.model = model
-}
-
-func (c *Client) currentModel() agent.Model {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.model
 }
 
 // Models lists every model the API offers, newest first, following pagination
