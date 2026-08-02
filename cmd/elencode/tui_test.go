@@ -865,8 +865,22 @@ func printed(t *testing.T, cmd tea.Cmd) string {
 	if cmd == nil {
 		t.Fatal("command is nil, want one that prints")
 	}
-	body := fmt.Sprintf("%v", cmd())
-	return strings.TrimSuffix(strings.TrimPrefix(body, "{"), "}")
+
+	// Run it off the test goroutine. tea.Sequence collapses to its only non-nil
+	// command, so a sequence whose print is empty is just the command that waits
+	// for the next stream event — which blocks here until the test times out.
+	// Failing beats hanging.
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+
+	select {
+	case msg := <-done:
+		body := fmt.Sprintf("%v", msg)
+		return strings.TrimSuffix(strings.TrimPrefix(body, "{"), "}")
+	case <-time.After(time.Second):
+		t.Fatal("command did not return: printed is for a command that prints and nothing else")
+		return ""
+	}
 }
 
 // wrappingText is long enough to wrap into several transcript rows at the
