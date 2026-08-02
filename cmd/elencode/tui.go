@@ -12,6 +12,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
 )
 
@@ -51,8 +52,9 @@ type model struct {
 	state           uiState
 	// command menu state. Visibility is derived from the input rather than
 	// stored, so the two cannot disagree; see menuVisible.
-	menuDismissed bool // Esc hides the menu for the rest of this command line
-	menuIndex     int  // highlighted row within the current match set
+	commands      commands.Registry // the slash commands this session knows
+	menuDismissed bool              // Esc hides the menu for the rest of this command line
+	menuIndex     int               // highlighted row within the current match set
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
 	headerPrinted bool // the session title has been printed
@@ -94,7 +96,7 @@ func (m model) quitHint() string {
 
 // menuVisible reports whether the command menu is showing
 func (m model) menuVisible() bool {
-	return !m.menuDismissed && strings.HasPrefix(m.input.Value(), commandPrefix)
+	return !m.menuDismissed && strings.HasPrefix(m.input.Value(), commands.Prefix)
 }
 
 // menuView renders the command menu, or "" while it is hidden
@@ -102,7 +104,7 @@ func (m model) menuView() string {
 	if !m.menuVisible() {
 		return ""
 	}
-	return renderMenu(matchCommands(m.input.Value()), m.menuIndex, m.width)
+	return renderMenu(m.commands.Match(m.input.Value()), m.menuIndex, m.width)
 }
 
 // modelPickerView renders the model picker, or "" while it is closed
@@ -113,7 +115,7 @@ func (m model) modelPickerView() string {
 	return renderModelMenu(m.models, m.modelIndex, m.width)
 }
 
-func newModel(agent *agent.Agent, cfg config.Config) model {
+func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry) model {
 
 	input := textinput.New()
 	input.Placeholder = "start typing..."
@@ -123,11 +125,12 @@ func newModel(agent *agent.Agent, cfg config.Config) model {
 	input.CharLimit = 0
 
 	return model{
-		agent:   agent,
-		config:  cfg,
-		input:   input,
-		spinner: spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
-		state:   uiStateIdle,
+		agent:    agent,
+		config:   cfg,
+		commands: registry,
+		input:    input,
+		spinner:  spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
+		state:    uiStateIdle,
 	}
 }
 
@@ -302,44 +305,26 @@ func (m model) forwardToInput(msg tea.Msg) (model, tea.Cmd) {
 	// point at a different command than the one the user was looking at.
 	m.menuIndex = 0
 	// Esc dismisses the menu for one command line only; leaving the line clears it.
-	if !strings.HasPrefix(m.input.Value(), commandPrefix) {
+	if !strings.HasPrefix(m.input.Value(), commands.Prefix) {
 		m.menuDismissed = false
 	}
 	return m, cmd
 }
 
 // runCommand handles Enter on a command line: it runs the command the input
-// names exactly, or reports that there is no such command.
+// names exactly, or reports that there is no such command. What the command
+// does arrives back as a message, so the effect is handled in Update alongside
+// every other one rather than here.
 func (m model) runCommand() (model, tea.Cmd) {
-	cmd, ok := lookupCommand(m.input.Value())
+	cmd, ok := m.commands.Run(m.input.Value())
 	if !ok {
-		unknown := fmt.Errorf("unknown command: %s", m.input.Value())
-		m.input.Reset()
-		m.menuDismissed = false
-		m.menuIndex = 0
-		return m, m.reportError(unknown)
+		cmd = m.reportError(fmt.Errorf("unknown command: %s", m.input.Value()))
 	}
 
-	_, arg := splitCommand(m.input.Value())
-
-	switch cmd.name {
-	case "config":
-		m.configVisible = true
-		m.input.Reset()
-		m.menuIndex = 0
-		return m, nil
-	case "model":
-		return m.loadModels(arg)
-	case "quit":
-		// Abandon any in-flight turn, as ctrl+c does, so its goroutine unblocks
-		if m.cancel != nil {
-			m.cancel()
-		}
-		return m, tea.Quit
-	default:
-		m.input.Reset()
-		return m, m.reportError(fmt.Errorf("command not implemented: %s", cmd.name))
-	}
+	m.input.Reset()
+	m.menuDismissed = false
+	m.menuIndex = 0
+	return m, cmd
 }
 
 // reportError prints a failure into the transcript, where it stays: the user
@@ -361,8 +346,6 @@ type modelsMsg struct {
 // and the UI must stay responsive while it runs.
 func (m model) loadModels(choose string) (model, tea.Cmd) {
 	m.modelsLoading = true
-	m.input.Reset()
-	m.menuIndex = 0
 
 	// Captured rather than read off m inside the closure: the command runs later,
 	// against whatever model value the loop happens to hold.
@@ -577,14 +560,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.String() == "up" {
 				delta = -1
 			}
-			m.menuIndex = moveHighlight(m.menuIndex, delta, len(matchCommands(m.input.Value())))
+			m.menuIndex = moveHighlight(m.menuIndex, delta, len(m.commands.Match(m.input.Value())))
 			return m, nil
 		case "tab":
 			if !m.menuVisible() {
 				return m.forwardToInput(msg)
 			}
-			if matches := matchCommands(m.input.Value()); len(matches) > 0 {
-				m.input.SetValue(commandPrefix + matches[m.menuIndex].name)
+			if matches := m.commands.Match(m.input.Value()); len(matches) > 0 {
+				m.input.SetValue(commands.Prefix + matches[m.menuIndex].Name)
 				m.input.CursorEnd()
 				m.menuIndex = 0
 			}
@@ -592,7 +575,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "enter":
 			// A command line never reaches the agent, in either UI state: /quit
 			// is an escape hatch, so it must work while a turn is in flight.
-			if strings.HasPrefix(m.input.Value(), commandPrefix) {
+			if strings.HasPrefix(m.input.Value(), commands.Prefix) {
 				return m.runCommand()
 			}
 			// only actually do anything if we are not currently waiting and there is actual input
@@ -626,6 +609,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// channel closes, not here: a MessageEvent may be followed by tool
 		// results and another round of inference.
 		return m, tea.Sequence(print, waitForEvent(m.events, m.turnID))
+	case commands.ShowConfigMsg:
+		m.configVisible = true
+		return m, nil
+
+	case commands.ChooseModelMsg:
+		return m.loadModels(msg.ID)
+
+	case commands.QuitMsg:
+		// Abandon any in-flight turn, as ctrl+c does, so its goroutine unblocks
+		if m.cancel != nil {
+			m.cancel()
+		}
+		return m, tea.Quit
+
 	case modelsMsg:
 		return m.showModels(msg)
 

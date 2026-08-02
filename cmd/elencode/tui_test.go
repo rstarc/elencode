@@ -16,13 +16,14 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	teatest "github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
 )
 
 // newTestModel builds a model backed by an agent that is never Run, so it needs
 // no provider: only the transcript is read during rendering.
 func newTestModel() model {
-	return newModel(agent.New(nil, nil), config.Config{})
+	return newModel(agent.New(nil, nil), config.Config{}, defaultCommands())
 }
 
 // update applies msg and asserts the result is still our model type
@@ -172,6 +173,24 @@ func updateCmd(t *testing.T, m model, msg tea.Msg) (model, tea.Cmd) {
 	return got, cmd
 }
 
+// enter presses Enter on a command line and delivers what the command produced
+// back to Update, as the runtime would. A slash command reports what it did as
+// a message, so its effect is one round-trip away from the keypress. Only for
+// command lines: plain input starts a turn, whose command blocks.
+func enter(t *testing.T, m model) (model, tea.Cmd) {
+	t.Helper()
+
+	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if cmd == nil {
+		return m, nil
+	}
+	msg := cmd()
+	if msg == nil {
+		return m, nil
+	}
+	return updateCmd(t, m, msg)
+}
+
 // quits reports whether cmd would end the program
 func quits(cmd tea.Cmd) bool {
 	if cmd == nil {
@@ -187,7 +206,7 @@ func newSizedModel(t *testing.T) model {
 }
 
 func TestSlashOpensTheCommandMenu(t *testing.T) {
-	m := typeText(t, newSizedModel(t), commandPrefix)
+	m := typeText(t, newSizedModel(t), commands.Prefix)
 
 	if view := m.View().Content; !strings.Contains(view, "/quit") {
 		t.Errorf("view does not show the command menu:\n%s", view)
@@ -203,7 +222,7 @@ func TestPlainTextDoesNotOpenTheCommandMenu(t *testing.T) {
 }
 
 func TestEscDismissesTheMenuForTheRestOfTheLine(t *testing.T) {
-	m := typeText(t, newSizedModel(t), commandPrefix)
+	m := typeText(t, newSizedModel(t), commands.Prefix)
 
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 	if m.menuVisible() {
@@ -221,12 +240,12 @@ func TestEscDismissesTheMenuForTheRestOfTheLine(t *testing.T) {
 }
 
 func TestMenuReopensOnANewCommandLine(t *testing.T) {
-	m := typeText(t, newSizedModel(t), commandPrefix)
+	m := typeText(t, newSizedModel(t), commands.Prefix)
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 
 	// Backspacing away the slash ends the dismissed line; the next one starts fresh
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
-	m = typeText(t, m, commandPrefix)
+	m = typeText(t, m, commands.Prefix)
 
 	if !m.menuVisible() {
 		t.Error("menu stayed dismissed on a new command line")
@@ -244,13 +263,13 @@ func TestTabCompletesTheHighlightedCommand(t *testing.T) {
 }
 
 func TestArrowKeysDoNotReachTheInputWhileTheMenuIsOpen(t *testing.T) {
-	m := typeText(t, newSizedModel(t), commandPrefix)
+	m := typeText(t, newSizedModel(t), commands.Prefix)
 
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
 
-	if m.input.Value() != commandPrefix {
-		t.Errorf("input = %q, want %q: arrows must drive the menu, not the input", m.input.Value(), commandPrefix)
+	if m.input.Value() != commands.Prefix {
+		t.Errorf("input = %q, want %q: arrows must drive the menu, not the input", m.input.Value(), commands.Prefix)
 	}
 	if m.menuIndex != 0 {
 		t.Errorf("menuIndex = %d, want 0 with a single match", m.menuIndex)
@@ -258,7 +277,7 @@ func TestArrowKeysDoNotReachTheInputWhileTheMenuIsOpen(t *testing.T) {
 }
 
 func TestTypingResetsTheHighlight(t *testing.T) {
-	m := typeText(t, newSizedModel(t), commandPrefix)
+	m := typeText(t, newSizedModel(t), commands.Prefix)
 	m.menuIndex = 2 // as if the user had arrowed down a longer match set
 
 	m = typeText(t, m, "q")
@@ -272,7 +291,7 @@ func TestTypingResetsTheHighlight(t *testing.T) {
 func TestEnterRunsQuitCommand(t *testing.T) {
 	m := typeText(t, newSizedModel(t), "/quit")
 
-	_, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	_, cmd := enter(t, m)
 
 	if !quits(cmd) {
 		t.Error("Enter on /quit did not quit the program")
@@ -306,7 +325,7 @@ func TestQuitCommandWorksWhileProcessing(t *testing.T) {
 		t.Error("menu does not open while a turn is in flight")
 	}
 
-	_, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	_, cmd := enter(t, m)
 	if !quits(cmd) {
 		t.Error("Enter on /quit did not quit while processing")
 	}
@@ -325,7 +344,7 @@ func TestEnterStillSendsPlainInputOnly(t *testing.T) {
 }
 
 func TestViewPutsCursorBelowTheMenu(t *testing.T) {
-	m := typeText(t, newSizedModel(t), commandPrefix)
+	m := typeText(t, newSizedModel(t), commands.Prefix)
 
 	view := m.View()
 	if view.Cursor == nil {
@@ -361,7 +380,7 @@ func TestProgramFitsErrorToTerminal(t *testing.T) {
 	for _, width := range []int{20, 30, 40, 80, 120} {
 		t.Run(fmt.Sprintf("width%d", width), func(t *testing.T) {
 			a := agent.New(failingProvider{err: errors.New("429 rate_limit_error: too many requests, slow down")}, nil)
-			tm := teatest.NewTestModel(t, newModel(a, config.Config{}), teatest.WithInitialTermSize(width, 20))
+			tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands()), teatest.WithInitialTermSize(width, 20))
 
 			tm.Type("hi")
 			tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -388,7 +407,7 @@ func TestProgramFitsErrorToTerminal(t *testing.T) {
 func TestConfigCommandOpensTheView(t *testing.T) {
 	m := typeText(t, newSizedModel(t), "/config")
 
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = enter(t, m)
 
 	if !m.configVisible {
 		t.Fatal("/config did not open the config view")
@@ -408,7 +427,7 @@ func TestConfigViewShowsLoadedConfigWithoutTheKey(t *testing.T) {
 		AnthropicAPIKey: config.Secret(key),
 		Path:            "/tmp/elencode/config.json",
 		APIKeyFromEnv:   true,
-	})
+	}, defaultCommands())
 	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	m.configVisible = true
 
@@ -562,7 +581,7 @@ func TestStaleDisarmDoesNotDisarmAReArmedQuit(t *testing.T) {
 // while the agent is working: arming there would make an interrupt look like a
 // half-pressed quit.
 func TestCtrlCDuringATurnCancelsWithoutArming(t *testing.T) {
-	m := newModel(agent.New(failingProvider{err: errors.New("boom")}, nil), config.Config{})
+	m := newModel(agent.New(failingProvider{err: errors.New("boom")}, nil), config.Config{}, defaultCommands())
 	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	m.input.SetValue("hello")
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -585,7 +604,7 @@ func TestCtrlCDuringATurnCancelsWithoutArming(t *testing.T) {
 // returning tea.Quit is not by itself proof the program exits.
 func TestProgramQuitsOnQuitCommand(t *testing.T) {
 	a := agent.New(failingProvider{err: errors.New("never asked")}, nil)
-	tm := teatest.NewTestModel(t, newModel(a, config.Config{}), teatest.WithInitialTermSize(80, 20))
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands()), teatest.WithInitialTermSize(80, 20))
 
 	tm.Type("/")
 	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
@@ -603,7 +622,7 @@ func TestProgramQuitsOnQuitCommand(t *testing.T) {
 // not end the event loop and the second must.
 func TestProgramQuitsOnSecondCtrlC(t *testing.T) {
 	a := agent.New(failingProvider{err: errors.New("never asked")}, nil)
-	tm := teatest.NewTestModel(t, newModel(a, config.Config{}), teatest.WithInitialTermSize(80, 20))
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands()), teatest.WithInitialTermSize(80, 20))
 
 	tm.Send(ctrlC)
 	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
@@ -657,7 +676,7 @@ func newPickerModel(t *testing.T, provider agent.Provider) model {
 	if err := os.WriteFile(file, []byte(`{"anthropic_api_key":"key"}`), 0o600); err != nil {
 		t.Fatalf("writing config: %v", err)
 	}
-	m := newModel(agent.New(provider, nil), config.Config{Path: file, AnthropicAPIKey: "key"})
+	m := newModel(agent.New(provider, nil), config.Config{Path: file, AnthropicAPIKey: "key"}, defaultCommands())
 	return update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 }
 
@@ -686,7 +705,7 @@ func modelsFrom(t *testing.T, cmd tea.Cmd) modelsMsg {
 func TestModelCommandFetchesTheModelList(t *testing.T) {
 	m := typeText(t, newPickerModel(t, &modelProvider{models: testModels}), "/model")
 
-	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, cmd := enter(t, m)
 
 	if !m.modelsLoading {
 		t.Error("/model did not start loading the model list")
@@ -782,7 +801,7 @@ func TestModelArgumentSelectsWithoutOpeningThePicker(t *testing.T) {
 	provider := &modelProvider{models: testModels}
 	m := typeText(t, newPickerModel(t, provider), "/model model-two")
 
-	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, cmd := enter(t, m)
 	m = update(t, m, modelsFrom(t, cmd))
 
 	if m.modelPickerVisible {
@@ -794,7 +813,7 @@ func TestUnknownModelArgumentIsReported(t *testing.T) {
 	provider := &modelProvider{models: testModels}
 	m := typeText(t, newPickerModel(t, provider), "/model model-nine")
 
-	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, cmd := enter(t, m)
 	_, cmd = updateCmd(t, m, modelsFrom(t, cmd))
 
 	if got := printed(t, cmd); !strings.Contains(got, "model-nine") {
@@ -1067,7 +1086,7 @@ func (p scriptedProvider) Models(ctx context.Context) ([]agent.Model, error) { r
 // bubbletea that turns them into lines above the frame.
 func TestProgramPrintsThePromptAndTheReply(t *testing.T) {
 	a := agent.New(scriptedProvider{deltas: []string{"Hel", "lo there, ", "how can I help?"}}, nil)
-	tm := teatest.NewTestModel(t, newModel(a, config.Config{}), teatest.WithInitialTermSize(80, 20))
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands()), teatest.WithInitialTermSize(80, 20))
 
 	tm.Type("hi")
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})

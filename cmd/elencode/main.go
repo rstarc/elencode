@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
 	"github.com/rstarc/elencode/internal/provider/anthropic"
 	"github.com/rstarc/elencode/internal/tools"
@@ -50,12 +51,23 @@ func main() {
 	agentConfig := agent.New(provider, tools)
 	agentConfig.SetModel(selectedModel)
 
-	tui := tea.NewProgram(newModel(agentConfig, cfg))
+	tui := tea.NewProgram(newModel(agentConfig, cfg, defaultCommands()))
 	if _, err := tui.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
 		os.Exit(1)
 	}
 
+}
+
+// defaultCommands is the set of slash commands a session offers. Assembled here
+// rather than in the commands package, so what exists is decided in one place,
+// the way the tool set is.
+func defaultCommands() commands.Registry {
+	return commands.NewRegistry(
+		commands.NewConfigCommand(),
+		commands.NewModelCommand(),
+		commands.NewQuitCommand(),
+	)
 }
 
 func configWithEffectiveModel(cfg config.Config, model agent.Model) config.Config {

@@ -7,65 +7,27 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
 )
 
-// names reduces a match set to command names, so tests can compare them without
-// restating descriptions that are free to change.
-func names(matches []command) []string {
-	got := make([]string, len(matches))
-	for i, c := range matches {
-		got[i] = c.name
-	}
-	return got
-}
-
-func TestMatchCommands(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  []string
-	}{
-		{"slash alone lists everything", "/", []string{"config", "model", "quit"}},
-		{"exact name", "/quit", []string{"quit"}},
-		{"prefix", "/qu", []string{"quit"}},
-		{"subsequence", "/qt", []string{"quit"}},
-		{"case insensitive", "/QUIT", []string{"quit"}},
-		{"narrows to one command", "/co", []string{"config"}},
-		{"a shared letter matches both", "/i", []string{"config", "quit"}},
-		{"no match", "/zzz", nil},
-		{"out of order is not a subsequence", "/tq", nil},
-		{"missing slash", "quit", nil},
-		{"empty", "", nil},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			got := names(matchCommands(test.input))
-			if strings.Join(got, ",") != strings.Join(test.want, ",") {
-				t.Errorf("matchCommands(%q) = %v, want %v", test.input, got, test.want)
-			}
-		})
-	}
-}
-
 // menuFixture is a stand-in registry, so the menu tests keep working as
 // commands are added or renamed.
-var menuFixture = []command{
-	{"alpha", "the first one"},
-	{"beta", "the second one"},
-	{"gamma", "the third one"},
+var menuFixture = []commands.Command{
+	{Name: "alpha", Description: "the first one"},
+	{Name: "beta", Description: "the second one"},
+	{Name: "gamma", Description: "the third one"},
 }
 
 func TestRenderMenuShowsEveryMatch(t *testing.T) {
 	view := renderMenu(menuFixture, 0, 80)
 
 	for _, c := range menuFixture {
-		if !strings.Contains(view, commandPrefix+c.name) {
-			t.Errorf("menu is missing %q:\n%s", c.name, view)
+		if !strings.Contains(view, commands.Prefix+c.Name) {
+			t.Errorf("menu is missing %q:\n%s", c.Name, view)
 		}
-		if !strings.Contains(view, c.description) {
-			t.Errorf("menu is missing the description of %q:\n%s", c.name, view)
+		if !strings.Contains(view, c.Description) {
+			t.Errorf("menu is missing the description of %q:\n%s", c.Name, view)
 		}
 	}
 }
@@ -221,51 +183,6 @@ func TestMoveHighlight(t *testing.T) {
 				t.Errorf("moveHighlight(%d, %d, %d) = %d, want %d", test.index, test.delta, test.len, got, test.want)
 			}
 		})
-	}
-}
-
-func TestLookupCommandRequiresExactName(t *testing.T) {
-	if _, ok := lookupCommand("/quit"); !ok {
-		t.Error("lookupCommand(\"/quit\") found nothing, want the quit command")
-	}
-	// A fuzzy match must not run on Enter, or a typo silently quits the program.
-	if _, ok := lookupCommand("/qt"); ok {
-		t.Error("lookupCommand(\"/qt\") matched, want no match for a non-exact name")
-	}
-}
-
-func TestSplitCommand(t *testing.T) {
-	tests := []struct {
-		name             string
-		input            string
-		wantCmd, wantArg string
-	}{
-		{"no argument", "/model", "/model", ""},
-		{"argument", "/model claude-opus-4-5", "/model", "claude-opus-4-5"},
-		{"extra spaces", "/model   claude-opus-4-5  ", "/model", "claude-opus-4-5"},
-		{"trailing space alone", "/model ", "/model", ""},
-		{"plain text", "hello there", "hello", "there"},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			gotCmd, gotArg := splitCommand(test.input)
-			if gotCmd != test.wantCmd || gotArg != test.wantArg {
-				t.Errorf("splitCommand(%q) = %q, %q, want %q, %q", test.input, gotCmd, gotArg, test.wantCmd, test.wantArg)
-			}
-		})
-	}
-}
-
-// TestLookupCommandIgnoresTheArgument covers "/model some-id": the argument is
-// the command's input, not part of its name.
-func TestLookupCommandIgnoresTheArgument(t *testing.T) {
-	cmd, ok := lookupCommand("/model claude-opus-4-5")
-	if !ok {
-		t.Fatal("lookupCommand found nothing for a command with an argument")
-	}
-	if cmd.name != "model" {
-		t.Errorf("command = %q, want %q", cmd.name, "model")
 	}
 }
 
