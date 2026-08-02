@@ -28,6 +28,20 @@ Do not call `go build`/`go test` directly; use the Makefile targets.
 - `internal/tools` — read, write, edit and bash tools, rooted at the working directory
 - `internal/config` — `$XDG_CONFIG_HOME/elencode/config.json`, overridden by `ANTHROPIC_API_KEY`
 
+## TUI
+
+- The transcript is printed above the frame with `tea.Println`, never redrawn: the
+  terminal owns it. The frame holds only what can still change — the row being
+  streamed into, the spinner, the menus, the input. Printed output cannot be changed
+  afterwards, so anything still in flight stays in the frame until it is final.
+- Commands run concurrently, so prints issued from separate updates can arrive in
+  either order. Chain anything ordered with `tea.Sequence`, not `tea.Batch`.
+- `tea.Sequence` and `tea.Batch` return their only non-nil command directly rather
+  than wrapping it (`compactCmds`). So a sequence whose print turned out empty *is*
+  the command it was chained with — usually the one waiting for the next stream
+  event, which blocks when run. A test that runs a command to see what it printed
+  hangs on this rather than failing.
+
 ## Conventions
 
 - `internal/agent` must not import a provider SDK. `agent.Provider` is the boundary;
