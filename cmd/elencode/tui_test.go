@@ -173,14 +173,14 @@ func updateCmd(t *testing.T, m model, msg tea.Msg) (model, tea.Cmd) {
 	return got, cmd
 }
 
-// enter presses Enter on a command line and delivers what the command produced
-// back to Update, as the runtime would. A slash command reports what it did as
-// a message, so its effect is one round-trip away from the keypress. Only for
-// command lines: plain input starts a turn, whose command blocks.
-func enter(t *testing.T, m model) (model, tea.Cmd) {
+// press sends a key and delivers whatever it produced back to Update, as the
+// runtime would. Slash commands and the sub-components report what the user did
+// as a message, so the effect is one round-trip away from the keypress. Only
+// for keys handled that way: plain input starts a turn, whose command blocks.
+func press(t *testing.T, m model, key tea.KeyPressMsg) (model, tea.Cmd) {
 	t.Helper()
 
-	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, cmd := updateCmd(t, m, key)
 	if cmd == nil {
 		return m, nil
 	}
@@ -189,6 +189,12 @@ func enter(t *testing.T, m model) (model, tea.Cmd) {
 		return m, nil
 	}
 	return updateCmd(t, m, msg)
+}
+
+// enter is press on the Enter key, which is how every command line is run
+func enter(t *testing.T, m model) (model, tea.Cmd) {
+	t.Helper()
+	return press(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
 // quits reports whether cmd would end the program
@@ -225,13 +231,13 @@ func TestEscDismissesTheMenuForTheRestOfTheLine(t *testing.T) {
 	m := typeText(t, newSizedModel(t), commands.Prefix)
 
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
-	if m.menuVisible() {
+	if m.menu.Visible() {
 		t.Error("menu still visible after Esc")
 	}
 
 	// Typing on must not revive it, or Esc only hides the menu for one keystroke
 	m = typeText(t, m, "q")
-	if m.menuVisible() {
+	if m.menu.Visible() {
 		t.Errorf("menu came back after typing, input = %q", m.input.Value())
 	}
 	if m.input.Value() != "/q" {
@@ -247,7 +253,7 @@ func TestMenuReopensOnANewCommandLine(t *testing.T) {
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	m = typeText(t, m, commands.Prefix)
 
-	if !m.menuVisible() {
+	if !m.menu.Visible() {
 		t.Error("menu stayed dismissed on a new command line")
 	}
 }
@@ -255,7 +261,7 @@ func TestMenuReopensOnANewCommandLine(t *testing.T) {
 func TestTabCompletesTheHighlightedCommand(t *testing.T) {
 	m := typeText(t, newSizedModel(t), "/qu")
 
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyTab})
 
 	if m.input.Value() != "/quit" {
 		t.Errorf("input = %q, want %q", m.input.Value(), "/quit")
@@ -270,21 +276,6 @@ func TestArrowKeysDoNotReachTheInputWhileTheMenuIsOpen(t *testing.T) {
 
 	if m.input.Value() != commands.Prefix {
 		t.Errorf("input = %q, want %q: arrows must drive the menu, not the input", m.input.Value(), commands.Prefix)
-	}
-	if m.menuIndex != 0 {
-		t.Errorf("menuIndex = %d, want 0 with a single match", m.menuIndex)
-	}
-}
-
-func TestTypingResetsTheHighlight(t *testing.T) {
-	m := typeText(t, newSizedModel(t), commands.Prefix)
-	m.menuIndex = 2 // as if the user had arrowed down a longer match set
-
-	m = typeText(t, m, "q")
-
-	// The match set just changed, so the old index may point at another command
-	if m.menuIndex != 0 {
-		t.Errorf("menuIndex = %d, want it reset to 0 when the matches change", m.menuIndex)
 	}
 }
 
@@ -321,7 +312,7 @@ func TestQuitCommandWorksWhileProcessing(t *testing.T) {
 	m.state = uiStateProcessing
 	m = typeText(t, m, "/quit")
 
-	if !m.menuVisible() {
+	if !m.menu.Visible() {
 		t.Error("menu does not open while a turn is in flight")
 	}
 
@@ -350,7 +341,7 @@ func TestViewPutsCursorBelowTheMenu(t *testing.T) {
 	if view.Cursor == nil {
 		t.Fatal("view has no cursor, want one on the input row")
 	}
-	wantY := lipgloss.Height(m.menuView())
+	wantY := lipgloss.Height(m.menu.View())
 	if view.Cursor.Y != wantY {
 		t.Errorf("cursor row = %d, want %d (below the menu)", view.Cursor.Y, wantY)
 	}
@@ -743,8 +734,11 @@ func TestModelPickerStartsOnTheCurrentModel(t *testing.T) {
 
 	m = update(t, m, modelsMsg{models: testModels})
 
-	if m.modelIndex != 1 {
-		t.Errorf("modelIndex = %d, want 1 (the model in use)", m.modelIndex)
+	// Where the highlight starts is the picker's own business; what it means
+	// here is that Enter, pressed without arrowing, keeps the model in use.
+	m, _ = enter(t, m)
+	if m.config.Model != "model-two" {
+		t.Errorf("config model = %q, want the picker to open on the model in use", m.config.Model)
 	}
 }
 
@@ -757,8 +751,9 @@ func TestEffectiveDefaultModelIsShownAndSelected(t *testing.T) {
 	}
 
 	m = update(t, m, modelsMsg{models: testModels})
-	if m.modelIndex != 1 {
-		t.Errorf("modelIndex = %d, want the effective default at index 1", m.modelIndex)
+	m, _ = enter(t, m)
+	if m.config.Model != "model-two" {
+		t.Errorf("config model = %q, want the picker to open on the effective default", m.config.Model)
 	}
 }
 
@@ -767,12 +762,12 @@ func TestEnterSelectsTheHighlightedModel(t *testing.T) {
 	m := update(t, newPickerModel(t, provider), modelsMsg{models: testModels})
 
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = enter(t, m)
 
 	if m.config.Model != "model-two" {
 		t.Errorf("config model = %q, want %q", m.config.Model, "model-two")
 	}
-	if m.modelPickerVisible {
+	if m.picker.Focused() {
 		t.Error("picker still open after a choice")
 	}
 
@@ -783,7 +778,7 @@ func TestEnterSelectsTheHighlightedModel(t *testing.T) {
 func TestSelectingAModelPersistsIt(t *testing.T) {
 	m := update(t, newPickerModel(t, &modelProvider{models: testModels}), modelsMsg{models: testModels})
 
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	m, _ = enter(t, m)
 
 	body, err := os.ReadFile(m.config.Path)
 	if err != nil {
@@ -804,7 +799,7 @@ func TestModelArgumentSelectsWithoutOpeningThePicker(t *testing.T) {
 	m, cmd := enter(t, m)
 	m = update(t, m, modelsFrom(t, cmd))
 
-	if m.modelPickerVisible {
+	if m.picker.Focused() {
 		t.Error("picker opened for a model named on the command line")
 	}
 }
@@ -829,7 +824,7 @@ func TestFailureToListModelsIsReported(t *testing.T) {
 	if m.modelsLoading {
 		t.Error("still loading after the request failed")
 	}
-	if m.modelPickerVisible {
+	if m.picker.Focused() {
 		t.Error("picker opened with no models to show")
 	}
 	if got := printed(t, cmd); !strings.Contains(got, "503 overloaded") {
@@ -843,7 +838,7 @@ func TestEscClosesTheModelPicker(t *testing.T) {
 
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 
-	if m.modelPickerVisible {
+	if m.picker.Focused() {
 		t.Error("picker still open after Esc")
 	}
 }
@@ -858,7 +853,7 @@ func TestModelPickerSwallowsTypedKeys(t *testing.T) {
 	if m.input.Value() != "" {
 		t.Errorf("input = %q, want keystrokes swallowed while the picker is open", m.input.Value())
 	}
-	if !m.modelPickerVisible {
+	if !m.picker.Focused() {
 		t.Error("typing closed the picker")
 	}
 }
@@ -1110,7 +1105,7 @@ func TestProgramPrintsThePromptAndTheReply(t *testing.T) {
 func TestSelectingAModelSaysSo(t *testing.T) {
 	m := update(t, newPickerModel(t, &modelProvider{models: testModels}), modelsMsg{models: testModels})
 
-	_, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	_, cmd := enter(t, m)
 
 	got := printed(t, cmd)
 	if !strings.Contains(got, "model-one") {

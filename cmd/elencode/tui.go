@@ -14,6 +14,9 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
+	"github.com/rstarc/elencode/internal/tui/commandmenu"
+	"github.com/rstarc/elencode/internal/tui/menu"
+	"github.com/rstarc/elencode/internal/tui/modelpicker"
 )
 
 // banner titles the session, printed once the terminal width is known
@@ -50,19 +53,17 @@ type model struct {
 	spinner         spinner.Model   // shown above input while state is uiStateProcessing
 	width           int             // terminal width, 0 until the first WindowSizeMsg
 	state           uiState
-	// command menu state. Visibility is derived from the input rather than
-	// stored, so the two cannot disagree; see menuVisible.
-	commands      commands.Registry // the slash commands this session knows
-	menuDismissed bool              // Esc hides the menu for the rest of this command line
-	menuIndex     int               // highlighted row within the current match set
+	// Sub-components. Each owns its own state and reports what the user did as
+	// a message, which Update handles below.
+	commands commands.Registry // the slash commands this session knows
+	menu     commandmenu.Model // the command menu under the input
+	picker   modelpicker.Model // the model list /model opens
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
 	headerPrinted bool // the session title has been printed
-	// model picker state, driven by /model
-	modelsLoading      bool          // the model list is being fetched
-	modelPickerVisible bool          // the picker has the keyboard
-	models             []agent.Model // what the last fetch returned
-	modelIndex         int           // highlighted row within models
+	// modelsLoading drives the spinner while the list is fetched, which happens
+	// here rather than in the picker: it is an API call and needs the agent.
+	modelsLoading bool
 	// quit confirmation. quitGeneration counts armings so a disarm message left
 	// over from an earlier one cannot disarm the current one.
 	quitArmed      bool
@@ -91,28 +92,7 @@ func (m model) quitHint() string {
 	if !m.quitArmed {
 		return ""
 	}
-	return lipgloss.NewStyle().Foreground(menuDescriptionColor).Render("press ctrl+c again to exit")
-}
-
-// menuVisible reports whether the command menu is showing
-func (m model) menuVisible() bool {
-	return !m.menuDismissed && strings.HasPrefix(m.input.Value(), commands.Prefix)
-}
-
-// menuView renders the command menu, or "" while it is hidden
-func (m model) menuView() string {
-	if !m.menuVisible() {
-		return ""
-	}
-	return renderMenu(m.commands.Match(m.input.Value()), m.menuIndex, m.width)
-}
-
-// modelPickerView renders the model picker, or "" while it is closed
-func (m model) modelPickerView() string {
-	if !m.modelPickerVisible {
-		return ""
-	}
-	return renderModelMenu(m.models, m.modelIndex, m.width)
+	return lipgloss.NewStyle().Foreground(menu.DescriptionColor).Render("press ctrl+c again to exit")
 }
 
 func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry) model {
@@ -128,6 +108,8 @@ func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry)
 		agent:    agent,
 		config:   cfg,
 		commands: registry,
+		menu:     commandmenu.New(registry),
+		picker:   modelpicker.New(),
 		input:    input,
 		spinner:  spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
 		state:    uiStateIdle,
@@ -300,14 +282,7 @@ func waitForEvent(events <-chan agent.Event, turnID int) tea.Cmd {
 func (m model) forwardToInput(msg tea.Msg) (model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-
-	// The match set may have changed under the highlight, so it would otherwise
-	// point at a different command than the one the user was looking at.
-	m.menuIndex = 0
-	// Esc dismisses the menu for one command line only; leaving the line clears it.
-	if !strings.HasPrefix(m.input.Value(), commands.Prefix) {
-		m.menuDismissed = false
-	}
+	m.menu = m.menu.SetQuery(m.input.Value())
 	return m, cmd
 }
 
@@ -322,8 +297,7 @@ func (m model) runCommand() (model, tea.Cmd) {
 	}
 
 	m.input.Reset()
-	m.menuDismissed = false
-	m.menuIndex = 0
+	m.menu = m.menu.SetQuery("")
 	return m, cmd
 }
 
@@ -377,15 +351,7 @@ func (m model) showModels(msg modelsMsg) (model, tea.Cmd) {
 		return m, m.reportError(fmt.Errorf("unknown model: %s", msg.choose))
 	}
 
-	m.models = msg.models
-	m.modelPickerVisible = true
-	// Start where the user already is, rather than making them find it
-	m.modelIndex = 0
-	for i, candidate := range msg.models {
-		if candidate.ID == m.config.Model {
-			m.modelIndex = i
-		}
-	}
+	m.picker = m.picker.Show(msg.models, m.config.Model)
 	return m, nil
 }
 
@@ -402,9 +368,6 @@ func (m model) selectModel(chosen agent.Model) (model, tea.Cmd) {
 
 	m.agent.SetModel(chosen)
 	m.config.Model = chosen.ID
-	m.modelPickerVisible = false
-	m.models = nil
-	m.modelIndex = 0
 
 	// Reported but not fatal: the model is switched for this session either way
 	var failed tea.Cmd
@@ -419,28 +382,6 @@ func (m model) selectModel(chosen agent.Model) (model, tea.Cmd) {
 
 	// Sequenced, not batched: these have to reach the scrollback in this order
 	return m, tea.Sequence(printAbove(interrupted), printAbove(notice), failed)
-}
-
-// updateModelPicker drives the picker, which owns the keyboard while it is
-// open: a keystroke reaching the input would open the command menu underneath.
-func (m model) updateModelPicker(msg tea.KeyPressMsg) (model, tea.Cmd) {
-	switch msg.String() {
-	case "esc":
-		m.modelPickerVisible = false
-		m.models = nil
-		m.modelIndex = 0
-	case "up", "down":
-		delta := 1
-		if msg.String() == "up" {
-			delta = -1
-		}
-		m.modelIndex = moveHighlight(m.modelIndex, delta, len(m.models))
-	case "enter":
-		if len(m.models) > 0 {
-			return m.selectModel(m.models[m.modelIndex])
-		}
-	}
-	return m, nil
 }
 
 // startTurn hands userInput to the agent and begins receiving its Events
@@ -493,6 +434,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// than the terminal. JoinVertical then pads every other row out to
 		// match, pushing the whole view past the right edge.
 		m.input.SetWidth(max(msg.Width-lipgloss.Width(m.input.Prompt)-1, 1))
+		m.menu.SetWidth(msg.Width)
+		m.picker.SetWidth(msg.Width)
 		// Only the frame follows the new width. What is already printed keeps
 		// the width it was printed at, as the terminal owns those lines now.
 
@@ -521,9 +464,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.quitArmed = false
 		}
 		// The picker takes every key but ctrl+c, which keeps meaning "quit"
-		// wherever the user is.
-		if m.modelPickerVisible && msg.String() != "ctrl+c" {
-			return m.updateModelPicker(msg)
+		// wherever the user is. A keystroke reaching the input underneath would
+		// open the command menu behind the picker.
+		if m.picker.Focused() && msg.String() != "ctrl+c" {
+			var cmd tea.Cmd
+			m.picker, cmd = m.picker.Update(msg)
+			return m, cmd
 		}
 		// handle user input
 		switch msg.String() {
@@ -546,32 +492,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m.armQuit()
-		case "esc":
-			if !m.menuVisible() {
+		case "esc", "up", "down", "tab":
+			// These belong to the menu while it is showing, and to the input
+			// otherwise: an arrow key still has to move the cursor.
+			if !m.menu.Visible() {
 				return m.forwardToInput(msg)
 			}
-			m.menuDismissed = true
-			return m, nil
-		case "up", "down":
-			if !m.menuVisible() {
-				return m.forwardToInput(msg)
-			}
-			delta := 1
-			if msg.String() == "up" {
-				delta = -1
-			}
-			m.menuIndex = moveHighlight(m.menuIndex, delta, len(m.commands.Match(m.input.Value())))
-			return m, nil
-		case "tab":
-			if !m.menuVisible() {
-				return m.forwardToInput(msg)
-			}
-			if matches := m.commands.Match(m.input.Value()); len(matches) > 0 {
-				m.input.SetValue(commands.Prefix + matches[m.menuIndex].Name)
-				m.input.CursorEnd()
-				m.menuIndex = 0
-			}
-			return m, nil
+			var cmd tea.Cmd
+			m.menu, cmd = m.menu.Update(msg)
+			return m, cmd
 		case "enter":
 			// A command line never reaches the agent, in either UI state: /quit
 			// is an escape hatch, so it must work while a turn is in flight.
@@ -622,6 +551,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cancel()
 		}
 		return m, tea.Quit
+
+	case commandmenu.CompleteMsg:
+		m.input.SetValue(msg.Input)
+		m.input.CursorEnd()
+		m.menu = m.menu.SetQuery(msg.Input)
+		return m, nil
+
+	case modelpicker.SelectedMsg:
+		return m.selectModel(msg.Model)
+
+	case modelpicker.ClosedMsg:
+		// The picker closed itself; there is nothing left to undo here.
+		return m, nil
 
 	case modelsMsg:
 		return m.showModels(msg)
@@ -687,11 +629,11 @@ func (m model) View() tea.View {
 	if hint := m.quitHint(); hint != "" {
 		rows = append(rows, hint)
 	}
-	if menu := m.menuView(); menu != "" {
-		rows = append(rows, menu)
+	if view := m.menu.View(); view != "" {
+		rows = append(rows, view)
 	}
-	if picker := m.modelPickerView(); picker != "" {
-		rows = append(rows, picker)
+	if view := m.picker.View(); view != "" {
+		rows = append(rows, view)
 	}
 	rows = append(rows, inputView)
 
