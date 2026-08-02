@@ -39,6 +39,7 @@ type model struct {
 	// Both are handles to this turn specifically, not to the agent.
 	events <-chan agent.Event
 	cancel context.CancelFunc
+	turnID int // identifies the active turn to reject messages from an older one
 	// TUI state. The transcript is not held here: it is printed above the frame
 	// as it happens and belongs to the terminal's scrollback from then on.
 	partial         string          // the block being streamed, as text
@@ -269,22 +270,25 @@ func (m *model) printMessage(msg agent.Message) string {
 }
 
 // streamEventMsg carries one Event from the in-flight turn
-type streamEventMsg struct{ event agent.Event }
+type streamEventMsg struct {
+	turnID int
+	event  agent.Event
+}
 
 // streamClosedMsg reports that the turn ended and the channel is drained
-type streamClosedMsg struct{}
+type streamClosedMsg struct{ turnID int }
 
 // waitForEvent receives one Event from the in-flight turn. Update re-issues it
 // after each event, since a tea.Cmd delivers exactly one message. The channel is captured
 // by value, so a command left over from a finished turn reads that turn's
 // closed channel rather than stealing an event from the next one.
-func waitForEvent(events <-chan agent.Event) tea.Cmd {
+func waitForEvent(events <-chan agent.Event, turnID int) tea.Cmd {
 	return func() tea.Msg {
 		event, ok := <-events
 		if !ok {
-			return streamClosedMsg{}
+			return streamClosedMsg{turnID: turnID}
 		}
-		return streamEventMsg{event}
+		return streamEventMsg{turnID: turnID, event: event}
 	}
 }
 
@@ -460,6 +464,7 @@ func (m model) updateModelPicker(msg tea.KeyPressMsg) (model, tea.Cmd) {
 func (m model) startTurn(userInput string) (model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
+	m.turnID++
 	m.events = m.agent.Run(ctx, userInput)
 	m.partial = ""
 	m.streamed = 0
@@ -470,7 +475,7 @@ func (m model) startTurn(userInput string) (model, tea.Cmd) {
 	// announcing it. Sequenced ahead of the turn so it cannot land after the
 	// reply it asked for.
 	prompt := agent.RenderMessage(agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: userInput}}), m.width)
-	return m, tea.Sequence(printAbove(prompt), tea.Batch(waitForEvent(m.events), m.spinner.Tick))
+	return m, tea.Sequence(printAbove(prompt), tea.Batch(waitForEvent(m.events, m.turnID), m.spinner.Tick))
 }
 
 // endTurn releases the finished turn's resources and returns to idle
@@ -595,6 +600,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.forwardToInput(msg)
 		}
 	case streamEventMsg:
+		if m.state != uiStateProcessing || msg.turnID != m.turnID {
+			return m, nil
+		}
 		var print tea.Cmd
 		switch event := msg.event.(type) {
 		case agent.TextDeltaEvent:
@@ -611,7 +619,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// chained behind the print for the same reason. The turn ends when the
 		// channel closes, not here: a MessageEvent may be followed by tool
 		// results and another round of inference.
-		return m, tea.Sequence(print, waitForEvent(m.events))
+		return m, tea.Sequence(print, waitForEvent(m.events, m.turnID))
 	case modelsMsg:
 		return m.showModels(msg)
 
@@ -624,6 +632,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case streamClosedMsg:
+		if m.state != uiStateProcessing || msg.turnID != m.turnID {
+			return m, nil
+		}
 		// A turn cut short leaves its last row in the frame, where nothing will
 		// print it once the frame stops showing it.
 		rest := m.endStream()

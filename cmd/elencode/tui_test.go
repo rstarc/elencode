@@ -39,9 +39,10 @@ func update(t *testing.T, m model, msg tea.Msg) model {
 
 func TestUpdateAccumulatesTextDeltas(t *testing.T) {
 	m := newTestModel()
+	m.state = uiStateProcessing
 
-	m = update(t, m, streamEventMsg{agent.TextDeltaEvent{Text: "Hel"}})
-	m = update(t, m, streamEventMsg{agent.TextDeltaEvent{Text: "lo"}})
+	m = update(t, m, streamEventMsg{event: agent.TextDeltaEvent{Text: "Hel"}})
+	m = update(t, m, streamEventMsg{event: agent.TextDeltaEvent{Text: "lo"}})
 
 	if m.partial != "Hello" {
 		t.Errorf("partial = %q, want %q", m.partial, "Hello")
@@ -53,13 +54,30 @@ func TestUpdateReturnsToIdleWhenStreamCloses(t *testing.T) {
 	m.state = uiStateProcessing
 	m.partial = "half a sentence"
 
-	m = update(t, m, streamClosedMsg{})
+	m = update(t, m, streamClosedMsg{turnID: m.turnID})
 
 	if m.state != uiStateIdle {
 		t.Errorf("state = %v, want uiStateIdle", m.state)
 	}
 	if m.partial != "" {
 		t.Errorf("partial = %q, want it cleared when the turn ends", m.partial)
+	}
+}
+
+func TestStaleStreamCloseDoesNotEndNewTurn(t *testing.T) {
+	m := newTestModel()
+	m.state = uiStateProcessing
+	m.turnID = 2
+	newEvents := make(chan agent.Event)
+	m.events = newEvents
+
+	m = update(t, m, streamClosedMsg{turnID: 1})
+
+	if m.state != uiStateProcessing {
+		t.Errorf("state = %v, want the new turn to remain active", m.state)
+	}
+	if m.events != newEvents {
+		t.Error("stale close cleared the new turn's event channel")
 	}
 }
 
@@ -447,7 +465,8 @@ func TestConfigViewSwallowsOtherKeys(t *testing.T) {
 
 func TestConfigViewHidesTheTranscriptAndInput(t *testing.T) {
 	m := newSizedModel(t)
-	m = update(t, m, streamEventMsg{agent.TextDeltaEvent{Text: "half a sentence"}})
+	m.state = uiStateProcessing
+	m = update(t, m, streamEventMsg{event: agent.TextDeltaEvent{Text: "half a sentence"}})
 	m.configVisible = true
 
 	view := m.View()
@@ -980,7 +999,8 @@ func TestPrintMessagePrintsBlocksThatNeverStream(t *testing.T) {
 func TestViewShowsTheRowBeingWrittenInto(t *testing.T) {
 	m := newSizedModel(t)
 
-	m = update(t, m, streamEventMsg{agent.TextDeltaEvent{Text: "half a sen"}})
+	m.state = uiStateProcessing
+	m = update(t, m, streamEventMsg{event: agent.TextDeltaEvent{Text: "half a sen"}})
 
 	if view := ansi.Strip(m.View().Content); !strings.Contains(view, "half a sen") {
 		t.Errorf("frame does not show the text being streamed:\n%s", view)
@@ -1082,7 +1102,8 @@ func TestHeaderIsPrintedOnce(t *testing.T) {
 func TestThinkingStreamsIntoTheFrame(t *testing.T) {
 	m := newSizedModel(t)
 
-	m = update(t, m, streamEventMsg{agent.ThinkingDeltaEvent{Text: "let me check"}})
+	m.state = uiStateProcessing
+	m = update(t, m, streamEventMsg{event: agent.ThinkingDeltaEvent{Text: "let me check"}})
 
 	// Compared against the rendered thinking block rather than the bare text, so
 	// this also catches reasoning painted as though it were the answer.
@@ -1120,7 +1141,8 @@ func TestAnswerAfterThinkingFinishesTheThinkingBlock(t *testing.T) {
 // message must not repeat it.
 func TestPrintMessageLeavesOutThinkingAlreadyStreamed(t *testing.T) {
 	m := newSizedModel(t)
-	m = update(t, m, streamEventMsg{agent.ThinkingDeltaEvent{Text: "let me check"}})
+	m.state = uiStateProcessing
+	m = update(t, m, streamEventMsg{event: agent.ThinkingDeltaEvent{Text: "let me check"}})
 
 	landed := agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{
 		agent.ThinkingBlock{Thinking: "let me check", Signature: "sig"},
