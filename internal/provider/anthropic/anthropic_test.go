@@ -132,7 +132,7 @@ func TestToMessagesConvertsEveryBlockKind(t *testing.T) {
 func TestNewUsesTheConfiguredModel(t *testing.T) {
 	c := New("key", "claude-opus-4-5", false)
 
-	if got := string(c.model); got != "claude-opus-4-5" {
+	if got := c.model.ID; got != "claude-opus-4-5" {
 		t.Errorf("model = %q, want the configured one", got)
 	}
 }
@@ -140,7 +140,7 @@ func TestNewUsesTheConfiguredModel(t *testing.T) {
 func TestNewFallsBackToADefaultModel(t *testing.T) {
 	c := New("key", "", false)
 
-	if c.model == "" {
+	if c.model.ID == "" {
 		t.Error("model is empty with none configured, want the default")
 	}
 }
@@ -148,9 +148,9 @@ func TestNewFallsBackToADefaultModel(t *testing.T) {
 func TestSetModelSwitchesTheModel(t *testing.T) {
 	c := New("key", "claude-opus-4-5", false)
 
-	c.SetModel("claude-haiku-4-5")
+	c.SetModel(agent.Model{ID: "claude-haiku-4-5"})
 
-	if got := string(c.model); got != "claude-haiku-4-5" {
+	if got := c.model.ID; got != "claude-haiku-4-5" {
 		t.Errorf("model = %q, want the one SetModel was given", got)
 	}
 }
@@ -352,26 +352,102 @@ func TestDeltaEventCarriesEachStreamedKind(t *testing.T) {
 	}
 }
 
-func TestThinkingIsRequestedWhenEnabled(t *testing.T) {
+func TestModelsReportWhatThinkingTheyAccept(t *testing.T) {
+	const body = `{"data":[
+		{"type":"model","id":"new","display_name":"New","created_at":"2026-01-01T00:00:00Z",
+		 "capabilities":{"thinking":{"supported":true,"types":{"adaptive":{"supported":true},"enabled":{"supported":false}}}}},
+		{"type":"model","id":"old","display_name":"Old","created_at":"2025-01-01T00:00:00Z",
+		 "capabilities":{"thinking":{"supported":true,"types":{"adaptive":{"supported":false},"enabled":{"supported":true}}}}},
+		{"type":"model","id":"none","display_name":"None","created_at":"2024-01-01T00:00:00Z",
+		 "capabilities":{"thinking":{"supported":false,"types":{"adaptive":{"supported":false},"enabled":{"supported":false}}}}}
+	],"has_more":false}`
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, body)
+	}))
+	defer server.Close()
+
+	got, err := newWithOptions("key", "", true, option.WithBaseURL(server.URL)).Models(context.Background())
+	if err != nil {
+		t.Fatalf("Models: %v", err)
+	}
+
+	want := []agent.Model{
+		{ID: "new", DisplayName: "New", Thinking: agent.ThinkingAdaptive},
+		{ID: "old", DisplayName: "Old", Thinking: agent.ThinkingBudgeted},
+		{ID: "none", DisplayName: "None", Thinking: agent.ThinkingNone},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("Models() = %#v\nwant %#v", got, want)
+	}
+}
+
+// TestThinkingMatchesWhatTheModelAccepts is the point of carrying the mode
+// around: the API rejects the wrong kind rather than ignoring it.
+func TestThinkingMatchesWhatTheModelAccepts(t *testing.T) {
+	tests := []struct {
+		name     string
+		mode     agent.ThinkingMode
+		adaptive bool
+		budgeted bool
+	}{
+		{"adaptive", agent.ThinkingAdaptive, true, false},
+		{"budgeted", agent.ThinkingBudgeted, false, true},
+		{"none", agent.ThinkingNone, false, false},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			c := newWithOptions("key", "", true)
+			c.SetModel(agent.Model{ID: "m", Thinking: test.mode})
+
+			params := c.messageParams(agent.Request{MaxTokens: 8092}, nil)
+
+			if got := params.Thinking.OfAdaptive != nil; got != test.adaptive {
+				t.Errorf("adaptive thinking requested = %v, want %v", got, test.adaptive)
+			}
+			if got := params.Thinking.OfEnabled != nil; got != test.budgeted {
+				t.Errorf("budgeted thinking requested = %v, want %v", got, test.budgeted)
+			}
+		})
+	}
+}
+
+// TestAdaptiveThinkingAsksForTheSummary covers the reason reasoning is rendered
+// at all: the API returns thinking blocks with empty text unless the summary is
+// asked for, which would put a heading over nothing on screen.
+func TestAdaptiveThinkingAsksForTheSummary(t *testing.T) {
 	c := newWithOptions("key", "", true)
+	c.SetModel(agent.Model{ID: "m", Thinking: agent.ThinkingAdaptive})
 
 	params := c.messageParams(agent.Request{MaxTokens: 8092}, nil)
 
-	if params.Thinking.OfEnabled == nil {
-		t.Fatalf("thinking = %#v, want it enabled", params.Thinking)
-	}
-	// The API rejects a budget that does not leave room for an answer
-	if budget := params.Thinking.OfEnabled.BudgetTokens; budget < 1024 || budget >= params.MaxTokens {
-		t.Errorf("budget = %d, want between 1024 and the %d token limit", budget, params.MaxTokens)
+	if got := params.Thinking.OfAdaptive.Display; got != sdk.ThinkingConfigAdaptiveDisplaySummarized {
+		t.Errorf("display = %q, want %q", got, sdk.ThinkingConfigAdaptiveDisplaySummarized)
 	}
 }
 
 func TestThinkingIsNotRequestedWhenDisabled(t *testing.T) {
 	c := newWithOptions("key", "", false)
+	c.SetModel(agent.Model{ID: "m", Thinking: agent.ThinkingAdaptive})
 
 	params := c.messageParams(agent.Request{MaxTokens: 8092}, nil)
 
-	if params.Thinking.OfEnabled != nil {
+	if params.Thinking.OfAdaptive != nil || params.Thinking.OfEnabled != nil {
 		t.Errorf("thinking = %#v, want it left out of the request", params.Thinking)
+	}
+}
+
+// TestBudgetLeavesRoomForAnAnswer guards the older kind of thinking: the API
+// rejects a budget that does not leave the request room to answer.
+func TestBudgetLeavesRoomForAnAnswer(t *testing.T) {
+	c := newWithOptions("key", "", true)
+	c.SetModel(agent.Model{ID: "m", Thinking: agent.ThinkingBudgeted})
+
+	params := c.messageParams(agent.Request{MaxTokens: 8092}, nil)
+
+	if budget := params.Thinking.OfEnabled.BudgetTokens; budget < 1024 || budget >= params.MaxTokens {
+		t.Errorf("budget = %d, want between 1024 and the %d token limit", budget, params.MaxTokens)
 	}
 }

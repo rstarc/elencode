@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -22,6 +23,13 @@ func main() {
 
 	// Initialize provider
 	provider := anthropic.New(cfg.AnthropicAPIKey.Reveal(), cfg.Model, cfg.ThinkingEnabled)
+
+	// Models differ in what kind of reasoning they accept, and asking for the
+	// wrong kind fails the turn. Not fatal: without it the session simply runs
+	// without thinking, which beats refusing to start.
+	if err := provider.Resolve(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "elencode: could not read what %s supports, continuing without thinking: %v\n", cfg.Model, err)
+	}
 
 	// TODO: Use os.OpenRoot instead
 	root := os.DirFS(".")

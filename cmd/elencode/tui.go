@@ -382,7 +382,7 @@ func (m model) showModels(msg modelsMsg) (model, tea.Cmd) {
 	if msg.choose != "" {
 		for _, candidate := range msg.models {
 			if strings.EqualFold(candidate.ID, msg.choose) {
-				return m.selectModel(candidate.ID)
+				return m.selectModel(candidate)
 			}
 		}
 		// The list was just fetched, so an unknown id is the user's typo rather
@@ -404,7 +404,7 @@ func (m model) showModels(msg modelsMsg) (model, tea.Cmd) {
 
 // selectModel switches to id, clearing the conversation the previous model
 // produced and remembering the choice for the next session.
-func (m model) selectModel(id string) (model, tea.Cmd) {
+func (m model) selectModel(chosen agent.Model) (model, tea.Cmd) {
 	// The turn in flight was started on the old model and is about to lose the
 	// context window it belongs to, so it is abandoned rather than left running.
 	var interrupted string
@@ -413,8 +413,8 @@ func (m model) selectModel(id string) (model, tea.Cmd) {
 		m = m.endTurn()
 	}
 
-	m.agent.SetModel(id)
-	m.config.Model = id
+	m.agent.SetModel(chosen)
+	m.config.Model = chosen.ID
 	m.modelPickerVisible = false
 	m.models = nil
 	m.modelIndex = 0
@@ -428,7 +428,7 @@ func (m model) selectModel(id string) (model, tea.Cmd) {
 	// The switch changes nothing on screen by itself: what is printed stays
 	// printed, and the conversation above is no longer sent to anyone. The
 	// notice is the only thing that says so.
-	notice := agent.RenderNotice("switched to "+id+" (context cleared)", m.width)
+	notice := agent.RenderNotice("switched to "+chosen.ID+" (context cleared)", m.width)
 
 	// Sequenced, not batched: these have to reach the scrollback in this order
 	return m, tea.Sequence(printAbove(interrupted), printAbove(notice), failed)
@@ -450,7 +450,7 @@ func (m model) updateModelPicker(msg tea.KeyPressMsg) (model, tea.Cmd) {
 		m.modelIndex = moveHighlight(m.modelIndex, delta, len(m.models))
 	case "enter":
 		if len(m.models) > 0 {
-			return m.selectModel(m.models[m.modelIndex].ID)
+			return m.selectModel(m.models[m.modelIndex])
 		}
 	}
 	return m, nil

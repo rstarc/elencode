@@ -27,7 +27,7 @@ type Client struct {
 	// mu guards model alone: /model can switch it from the UI goroutine while a
 	// turn is streaming on another.
 	mu    sync.RWMutex
-	model sdk.Model
+	model agent.Model
 }
 
 func New(apiKey, model string, thinking bool) *Client {
@@ -37,41 +37,78 @@ func New(apiKey, model string, thinking bool) *Client {
 // newWithOptions is New with extra SDK options, which tests use to point the
 // client at a stub server.
 func newWithOptions(apiKey, model string, thinking bool, opts ...option.RequestOption) *Client {
-	chosen := sdk.Model(model)
+	chosen := model
 	if chosen == "" {
-		chosen = defaultModel
+		chosen = string(defaultModel)
 	}
 	opts = append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
-	return &Client{client: sdk.NewClient(opts...), model: chosen, thinking: thinking}
+	// Thinking stays off until Resolve says what this model accepts: asking for
+	// the wrong kind is rejected outright, not ignored.
+	return &Client{client: sdk.NewClient(opts...), model: agent.Model{ID: chosen}, thinking: thinking}
 }
 
-// thinkingBudget is how many tokens the model may reason with. Fixed rather
-// than configurable: the setting is a yes or no, and a budget has to stay under
-// the request's own token limit to leave room for an answer.
+// Resolve looks up what the configured model accepts, so later requests ask for
+// the kind of thinking it supports. Called once at startup, for the model that
+// came from the config file rather than from the picker — a model chosen there
+// arrives already resolved.
+func (c *Client) Resolve(ctx context.Context) error {
+	info, err := c.client.Models.Get(ctx, c.currentModel().ID, sdk.ModelGetParams{})
+	if err != nil {
+		return err
+	}
+
+	c.SetModel(toModel(*info))
+	return nil
+}
+
+// thinkingBudget is how many tokens a model of the older kind may reason with.
+// Fixed rather than configurable: the setting is a yes or no, and a budget has
+// to stay under the request's own token limit to leave room for an answer.
+// Models that reason adaptively need no budget — they pace themselves.
 const thinkingBudget = 2048
 
 // messageParams builds the request for one round of inference
 func (c *Client) messageParams(req agent.Request, messages []sdk.MessageParam) sdk.MessageNewParams {
-	params := sdk.MessageNewParams{
+	model := c.currentModel()
+
+	return sdk.MessageNewParams{
 		MaxTokens: req.MaxTokens,
 		Messages:  messages,
-		Model:     c.currentModel(),
+		Model:     sdk.Model(model.ID),
 		Tools:     toolParams(req.Tools),
+		Thinking:  c.thinkingParam(model),
 	}
-	if c.thinking {
-		params.Thinking = sdk.ThinkingConfigParamOfEnabled(thinkingBudget)
+}
+
+// thinkingParam asks for the kind of reasoning this model accepts, or for none.
+func (c *Client) thinkingParam(model agent.Model) sdk.ThinkingConfigParamUnion {
+	if !c.thinking {
+		return sdk.ThinkingConfigParamUnion{}
 	}
-	return params
+
+	switch model.Thinking {
+	case agent.ThinkingAdaptive:
+		// Summarized, because the reasoning is rendered: the API otherwise
+		// returns thinking blocks whose text is empty, which would draw a
+		// heading over nothing.
+		return sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{
+			Display: sdk.ThinkingConfigAdaptiveDisplaySummarized,
+		}}
+	case agent.ThinkingBudgeted:
+		return sdk.ThinkingConfigParamOfEnabled(thinkingBudget)
+	default:
+		return sdk.ThinkingConfigParamUnion{}
+	}
 }
 
 // SetModel points every later Stream at the given model
-func (c *Client) SetModel(id string) {
+func (c *Client) SetModel(model agent.Model) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.model = sdk.Model(id)
+	c.model = model
 }
 
-func (c *Client) currentModel() sdk.Model {
+func (c *Client) currentModel() agent.Model {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.model
@@ -84,13 +121,28 @@ func (c *Client) Models(ctx context.Context) ([]agent.Model, error) {
 
 	pager := c.client.Models.ListAutoPaging(ctx, sdk.ModelListParams{})
 	for pager.Next() {
-		info := pager.Current()
-		models = append(models, agent.Model{ID: info.ID, DisplayName: info.DisplayName})
+		models = append(models, toModel(pager.Current()))
 	}
 	if err := pager.Err(); err != nil {
 		return nil, err
 	}
 	return models, nil
+}
+
+// toModel reads what a model is and what it accepts. The thinking kinds are
+// mutually exclusive in practice — a model takes the adaptive kind or the
+// budgeted one, not both — and adaptive is preferred where there is a choice,
+// since the model then decides how much reasoning the turn is worth.
+func toModel(info sdk.ModelInfo) agent.Model {
+	model := agent.Model{ID: info.ID, DisplayName: info.DisplayName}
+
+	switch thinking := info.Capabilities.Thinking; {
+	case thinking.Types.Adaptive.Supported:
+		model.Thinking = agent.ThinkingAdaptive
+	case thinking.Types.Enabled.Supported:
+		model.Thinking = agent.ThinkingBudgeted
+	}
+	return model
 }
 
 // Stream sends every event through a select on ctx.Done. Buffering delays a

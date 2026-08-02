@@ -324,7 +324,7 @@ type failingProvider struct{ err error }
 
 func (p failingProvider) Models(ctx context.Context) ([]agent.Model, error) { return nil, p.err }
 
-func (p failingProvider) SetModel(id string) {}
+func (p failingProvider) SetModel(model agent.Model) {}
 
 func (p failingProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
 	events := make(chan agent.Event, 1)
@@ -627,7 +627,7 @@ func (p *modelProvider) Stream(ctx context.Context, req agent.Request) <-chan ag
 
 func (p *modelProvider) Models(ctx context.Context) ([]agent.Model, error) { return p.models, nil }
 
-func (p *modelProvider) SetModel(id string) { p.set = id }
+func (p *modelProvider) SetModel(model agent.Model) { p.set = model.ID }
 
 var testModels = []agent.Model{
 	{ID: "model-one", DisplayName: "Model One"},
@@ -1007,7 +1007,7 @@ func (p scriptedProvider) Stream(ctx context.Context, req agent.Request) <-chan 
 
 func (p scriptedProvider) Models(ctx context.Context) ([]agent.Model, error) { return nil, nil }
 
-func (p scriptedProvider) SetModel(id string) {}
+func (p scriptedProvider) SetModel(model agent.Model) {}
 
 // TestProgramPrintsThePromptAndTheReply drives the whole program, which is the
 // only place the printing is real: Update hands back commands, and it is

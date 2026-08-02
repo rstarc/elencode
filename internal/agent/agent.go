@@ -169,8 +169,8 @@ func (a *Agent) Models(ctx context.Context) ([]Model, error) {
 
 // SetModel switches models and drops the conversation so far, which was
 // produced by the previous model and does not carry over.
-func (a *Agent) SetModel(id string) {
-	a.provider.SetModel(id)
+func (a *Agent) SetModel(model Model) {
+	a.provider.SetModel(model)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()

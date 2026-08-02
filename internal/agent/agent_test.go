@@ -22,12 +22,12 @@ type scriptedProvider struct {
 	calls    int
 	requests []Request
 	models   []Model // what Models returns
-	model    string  // the last id SetModel was given
+	model    Model   // the last model SetModel was given
 }
 
 func (p *scriptedProvider) Models(ctx context.Context) ([]Model, error) { return p.models, nil }
 
-func (p *scriptedProvider) SetModel(id string) { p.model = id }
+func (p *scriptedProvider) SetModel(model Model) { p.model = model }
 
 func (p *scriptedProvider) Stream(ctx context.Context, req Request) <-chan Event {
 	p.requests = append(p.requests, req)
@@ -58,7 +58,7 @@ type blockingProvider struct{ started chan struct{} }
 
 func (p *blockingProvider) Models(ctx context.Context) ([]Model, error) { return nil, nil }
 
-func (p *blockingProvider) SetModel(id string) {}
+func (p *blockingProvider) SetModel(model Model) {}
 
 func (p *blockingProvider) Stream(ctx context.Context, req Request) <-chan Event {
 	events := make(chan Event)
@@ -346,13 +346,13 @@ func TestSetModelClearsTheContextWindow(t *testing.T) {
 		t.Fatal("context window is empty before switching models, nothing to clear")
 	}
 
-	a.SetModel("b")
+	a.SetModel(Model{ID: "b"})
 
 	if len(a.contextWindow) != 0 {
 		t.Errorf("context window has %d messages after switching models, want it cleared", len(a.contextWindow))
 	}
-	if provider.model != "b" {
-		t.Errorf("provider model = %q, want %q", provider.model, "b")
+	if provider.model.ID != "b" {
+		t.Errorf("provider model = %q, want %q", provider.model.ID, "b")
 	}
 }
 
@@ -369,7 +369,7 @@ func TestRollbackSurvivesAModelSwitch(t *testing.T) {
 	events := a.Run(ctx, "hi")
 	<-provider.started
 
-	a.SetModel("b")
+	a.SetModel(Model{ID: "b"})
 	cancel()
 
 	for _, event := range collect(t, events) {

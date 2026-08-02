@@ -9,16 +9,35 @@ type Provider interface {
 	// Models lists the models this provider can be pointed at. It talks to the
 	// API, so it blocks and takes a ctx.
 	Models(ctx context.Context) ([]Model, error)
-	// SetModel points every later Stream at the given model. Providers are used
-	// from the turn goroutine, so this must be safe to call concurrently.
-	SetModel(id string)
+	// SetModel points every later Stream at the given model. The whole Model is
+	// passed, not just its id, because what a model accepts differs between
+	// them and the caller has already looked it up.
+	//
+	// Providers are used from the turn goroutine, so this must be safe to call
+	// concurrently.
+	SetModel(model Model)
 }
 
 // Model is one model the provider offers, as shown in the picker
 type Model struct {
 	ID          string
 	DisplayName string
+	Thinking    ThinkingMode
 }
+
+// ThinkingMode is how a model can be asked to reason, if at all. Models differ,
+// and asking for the wrong kind is rejected outright rather than ignored, so
+// the request has to be built from what the model actually accepts.
+type ThinkingMode string
+
+const (
+	// ThinkingNone: the model cannot be asked to reason
+	ThinkingNone ThinkingMode = ""
+	// ThinkingAdaptive: the model decides for itself how much to reason
+	ThinkingAdaptive ThinkingMode = "adaptive"
+	// ThinkingBudgeted: the model reasons within a token budget the caller sets
+	ThinkingBudgeted ThinkingMode = "budgeted"
+)
 
 // Event is an incremental update emitted while a turn is being processed.
 // By defining it as an interface with an unexported function, we emulate a sum type in Go
