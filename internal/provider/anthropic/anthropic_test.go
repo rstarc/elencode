@@ -130,7 +130,7 @@ func TestToMessagesConvertsEveryBlockKind(t *testing.T) {
 // TestNewUsesTheConfiguredModel and its sibling pin the two ways a model is
 // chosen: the config file, or the built-in default when it says nothing.
 func TestNewUsesTheConfiguredModel(t *testing.T) {
-	c := New("key", "claude-opus-4-5")
+	c := New("key", "claude-opus-4-5", false)
 
 	if got := string(c.model); got != "claude-opus-4-5" {
 		t.Errorf("model = %q, want the configured one", got)
@@ -138,7 +138,7 @@ func TestNewUsesTheConfiguredModel(t *testing.T) {
 }
 
 func TestNewFallsBackToADefaultModel(t *testing.T) {
-	c := New("key", "")
+	c := New("key", "", false)
 
 	if c.model == "" {
 		t.Error("model is empty with none configured, want the default")
@@ -146,7 +146,7 @@ func TestNewFallsBackToADefaultModel(t *testing.T) {
 }
 
 func TestSetModelSwitchesTheModel(t *testing.T) {
-	c := New("key", "claude-opus-4-5")
+	c := New("key", "claude-opus-4-5", false)
 
 	c.SetModel("claude-haiku-4-5")
 
@@ -172,7 +172,7 @@ func TestModelsListsWhatTheAPIReturns(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := newWithOptions("key", "", option.WithBaseURL(server.URL))
+	c := newWithOptions("key", "", false, option.WithBaseURL(server.URL))
 	got, err := c.Models(context.Background())
 	if err != nil {
 		t.Fatalf("Models: %v", err)
@@ -349,5 +349,29 @@ func TestDeltaEventCarriesEachStreamedKind(t *testing.T) {
 				t.Errorf("delta produced %#v, want %#v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestThinkingIsRequestedWhenEnabled(t *testing.T) {
+	c := newWithOptions("key", "", true)
+
+	params := c.messageParams(agent.Request{MaxTokens: 8092}, nil)
+
+	if params.Thinking.OfEnabled == nil {
+		t.Fatalf("thinking = %#v, want it enabled", params.Thinking)
+	}
+	// The API rejects a budget that does not leave room for an answer
+	if budget := params.Thinking.OfEnabled.BudgetTokens; budget < 1024 || budget >= params.MaxTokens {
+		t.Errorf("budget = %d, want between 1024 and the %d token limit", budget, params.MaxTokens)
+	}
+}
+
+func TestThinkingIsNotRequestedWhenDisabled(t *testing.T) {
+	c := newWithOptions("key", "", false)
+
+	params := c.messageParams(agent.Request{MaxTokens: 8092}, nil)
+
+	if params.Thinking.OfEnabled != nil {
+		t.Errorf("thinking = %#v, want it left out of the request", params.Thinking)
 	}
 }

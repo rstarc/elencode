@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strconv"
 	"strings"
 
 	"charm.land/lipgloss/v2"
@@ -44,6 +45,7 @@ func renderConfig(cfg config.Config, width int) string {
 		menuRow(menuMarker, "", width),
 		configRow("anthropic_api_key", cfg.AnthropicAPIKey.String()+"  ("+source+")", width),
 		configRow("model", cfg.Model, width),
+		configRow("thinking_enabled", strconv.FormatBool(cfg.ThinkingEnabled), width),
 		configRow("config file", cfg.Path, width),
 		menuRow(menuMarker, "", width),
 		menuRow(menuMarker, lipgloss.NewStyle().Foreground(menuDescriptionColor).Render("esc to close"), width),

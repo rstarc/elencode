@@ -41,6 +41,11 @@ type Config struct {
 	AnthropicAPIKey Secret `json:"anthropic_api_key,omitempty"`
 	// Model the provider should use. Empty means the provider's own default.
 	Model string `json:"model,omitempty"`
+	// ThinkingEnabled asks the provider for the model's reasoning. Not
+	// omitempty, unlike the rest: false is a bool's zero value, so omitting it
+	// would make turning thinking off indistinguishable from never setting it,
+	// and a save would drop it back to the default.
+	ThinkingEnabled bool `json:"thinking_enabled"`
 	// Provenance, filled in by Load and never read from the file, so the config
 	// view can say where a value came from.
 	Path          string `json:"-"` // config file Load read
@@ -109,7 +114,9 @@ const ANTHROPIC_API_KEY_ENV_VAR_NAME = "ANTHROPIC_API_KEY"
 // and unmarshals the contents into a Config, then reads any environment variables to check if they override any of the values
 func Load() (Config, error) {
 
-	cfg := Config{}
+	// Defaults first: the file is unmarshalled over them, so a setting it does
+	// not mention keeps the value here rather than a zero one.
+	cfg := Config{ThinkingEnabled: true}
 
 	userConfigDir, err := os.UserConfigDir()
 	if err != nil {

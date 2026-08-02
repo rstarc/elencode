@@ -257,3 +257,54 @@ func readConfig(t *testing.T, file string) map[string]any {
 	}
 	return settings
 }
+
+// TestThinkingIsEnabledByDefault covers a config file written before the
+// setting existed: an absent JSON bool unmarshals to false, so the default has
+// to be in place before the file is read rather than after.
+func TestThinkingIsEnabledByDefault(t *testing.T) {
+	writeConfig(t, `{"anthropic_api_key":"`+realKey+`"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if !cfg.ThinkingEnabled {
+		t.Error("thinking is off with nothing in the config file, want it on by default")
+	}
+}
+
+func TestThinkingCanBeTurnedOff(t *testing.T) {
+	writeConfig(t, `{"anthropic_api_key":"`+realKey+`","thinking_enabled":false}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.ThinkingEnabled {
+		t.Error("thinking is on, want the config file's false to win over the default")
+	}
+}
+
+// TestSaveKeepsThinkingOff guards the round trip: false is a bool's zero value,
+// so a save that treated it as "unset" would quietly turn thinking back on.
+func TestSaveKeepsThinkingOff(t *testing.T) {
+	file := writeConfig(t, `{"anthropic_api_key":"`+realKey+`","thinking_enabled":false}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	cfg.Model = "claude-opus-4-5"
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if saved := readConfig(t, file); saved["thinking_enabled"] != false {
+		t.Errorf("thinking_enabled = %v after saving, want it still off", saved["thinking_enabled"])
+	}
+}

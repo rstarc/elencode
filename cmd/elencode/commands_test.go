@@ -354,3 +354,40 @@ func TestAlignNamesPadsToTheWidest(t *testing.T) {
 		}
 	}
 }
+
+func TestRenderConfigShowsWhetherThinkingIsOn(t *testing.T) {
+	tests := []struct {
+		name    string
+		enabled bool
+		want    string
+	}{
+		{"on", true, "true"},
+		{"off", false, "false"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := config.Config{ThinkingEnabled: test.enabled, Path: "/tmp/c.json"}
+
+			view := renderConfig(cfg, 80)
+
+			line := rowFor(view, "thinking_enabled")
+			if line == "" {
+				t.Fatalf("config view has no thinking_enabled row:\n%s", view)
+			}
+			if !strings.Contains(line, test.want) {
+				t.Errorf("thinking row = %q, want it to say %q", line, test.want)
+			}
+		})
+	}
+}
+
+// rowFor returns the config view's row for a setting, or "" if it has none
+func rowFor(view, name string) string {
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, name) {
+			return line
+		}
+	}
+	return ""
+}

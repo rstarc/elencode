@@ -21,25 +21,47 @@ const defaultModel = sdk.ModelClaudeHaiku4_5
 
 type Client struct {
 	client sdk.Client
+	// thinking asks for the model's reasoning. Fixed for the life of the
+	// client: it comes from the config file and nothing changes it at runtime.
+	thinking bool
 	// mu guards model alone: /model can switch it from the UI goroutine while a
 	// turn is streaming on another.
 	mu    sync.RWMutex
 	model sdk.Model
 }
 
-func New(apiKey, model string) *Client {
-	return newWithOptions(apiKey, model)
+func New(apiKey, model string, thinking bool) *Client {
+	return newWithOptions(apiKey, model, thinking)
 }
 
 // newWithOptions is New with extra SDK options, which tests use to point the
 // client at a stub server.
-func newWithOptions(apiKey, model string, opts ...option.RequestOption) *Client {
+func newWithOptions(apiKey, model string, thinking bool, opts ...option.RequestOption) *Client {
 	chosen := sdk.Model(model)
 	if chosen == "" {
 		chosen = defaultModel
 	}
 	opts = append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
-	return &Client{client: sdk.NewClient(opts...), model: chosen}
+	return &Client{client: sdk.NewClient(opts...), model: chosen, thinking: thinking}
+}
+
+// thinkingBudget is how many tokens the model may reason with. Fixed rather
+// than configurable: the setting is a yes or no, and a budget has to stay under
+// the request's own token limit to leave room for an answer.
+const thinkingBudget = 2048
+
+// messageParams builds the request for one round of inference
+func (c *Client) messageParams(req agent.Request, messages []sdk.MessageParam) sdk.MessageNewParams {
+	params := sdk.MessageNewParams{
+		MaxTokens: req.MaxTokens,
+		Messages:  messages,
+		Model:     c.currentModel(),
+		Tools:     toolParams(req.Tools),
+	}
+	if c.thinking {
+		params.Thinking = sdk.ThinkingConfigParamOfEnabled(thinkingBudget)
+	}
+	return params
 }
 
 // SetModel points every later Stream at the given model
@@ -88,12 +110,7 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 			return
 		}
 
-		stream := c.client.Messages.NewStreaming(ctx, sdk.MessageNewParams{
-			MaxTokens: req.MaxTokens,
-			Messages:  messages,
-			Model:     c.currentModel(),
-			Tools:     toolParams(req.Tools),
-		})
+		stream := c.client.Messages.NewStreaming(ctx, c.messageParams(req, messages))
 
 		// The SDK has no GetFinalMessage; Accumulate folds each event into
 		// message, rebuilding what a non-streaming call would have returned.
