@@ -1,7 +1,5 @@
 package agent
 
-import "strings"
-
 type Role string
 
 const (
@@ -22,17 +20,4 @@ func NewUserMessage(content []Block) Message {
 		Role:    RoleUser,
 		Content: content,
 	}
-}
-
-// RenderMessage renders msg's blocks, dropping any that render empty (such
-// as a ToolResultBlock, whose raw output is not shown) so they don't leave a
-// blank line behind.
-func RenderMessage(msg Message, width int) string {
-	var blocks []string
-	for _, block := range msg.Content {
-		if rendered := RenderBlock(block, msg.Role, width); rendered != "" {
-			blocks = append(blocks, rendered)
-		}
-	}
-	return strings.Join(blocks, "\n")
 }

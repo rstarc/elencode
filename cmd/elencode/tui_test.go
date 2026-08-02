@@ -18,6 +18,7 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
+	"github.com/rstarc/elencode/internal/tui/transcript"
 )
 
 // newTestModel builds a model backed by an agent that is never Run, so it needs
@@ -45,23 +46,23 @@ func TestUpdateAccumulatesTextDeltas(t *testing.T) {
 	m = update(t, m, streamEventMsg{event: agent.TextDeltaEvent{Text: "Hel"}})
 	m = update(t, m, streamEventMsg{event: agent.TextDeltaEvent{Text: "lo"}})
 
-	if m.partial != "Hello" {
-		t.Errorf("partial = %q, want %q", m.partial, "Hello")
+	if got := ansi.Strip(m.stream.Tail()); !strings.Contains(got, "Hello") {
+		t.Errorf("streamed row = %q, want the deltas accumulated into %q", got, "Hello")
 	}
 }
 
 func TestUpdateReturnsToIdleWhenStreamCloses(t *testing.T) {
 	m := newTestModel()
 	m.state = uiStateProcessing
-	m.partial = "half a sentence"
+	m.stream.Delta("half a sentence", false)
 
 	m = update(t, m, streamClosedMsg{turnID: m.turnID})
 
 	if m.state != uiStateIdle {
 		t.Errorf("state = %v, want uiStateIdle", m.state)
 	}
-	if m.partial != "" {
-		t.Errorf("partial = %q, want it cleared when the turn ends", m.partial)
+	if got := m.stream.Tail(); got != "" {
+		t.Errorf("stream = %q, want it cleared when the turn ends", got)
 	}
 }
 
@@ -913,137 +914,6 @@ func printed(t *testing.T, cmd tea.Cmd) string {
 	}
 }
 
-// wrappingText is long enough to wrap into several transcript rows at the
-// widths these tests use.
-var wrappingText = strings.Repeat("the quick brown fox jumps over the lazy dog ", 5)
-
-func TestFlushStreamPrintsRowsThatHaveSettled(t *testing.T) {
-	m := newSizedModel(t)
-	m.partial = wrappingText
-	if len(m.streamRows()) < 3 {
-		t.Fatalf("test text wraps to %d rows, want at least 3", len(m.streamRows()))
-	}
-
-	got := m.flushStream()
-
-	rows := m.streamRows()
-	// Every row but the last: the last one can still grow, so printing it would
-	// put a half-written line in the scrollback.
-	want := strings.Join(rows[:len(rows)-1], "\n")
-	if got != want {
-		t.Errorf("flushed\n%q\nwant\n%q", got, want)
-	}
-	if strings.Contains(got, rows[len(rows)-1]) {
-		t.Error("flushed the row that is still being written into")
-	}
-}
-
-func TestFlushStreamPrintsEachRowOnce(t *testing.T) {
-	m := newSizedModel(t)
-	m.partial = wrappingText
-	m.flushStream()
-
-	// No new text, so nothing has settled since the last flush
-	if got := m.flushStream(); got != "" {
-		t.Errorf("flushed %q a second time, want nothing", got)
-	}
-}
-
-func TestFlushStreamWaitsForARowToFill(t *testing.T) {
-	m := newSizedModel(t)
-
-	m.partial = "short"
-
-	// One unfinished row is not something to print yet
-	if got := m.flushStream(); got != "" {
-		t.Errorf("flushed %q, want nothing until a row has settled", got)
-	}
-}
-
-func TestEndStreamPrintsWhatIsLeftInTheFrame(t *testing.T) {
-	m := newSizedModel(t)
-	m.partial = wrappingText
-	m.flushStream()
-	tail := m.streamTail()
-
-	got := m.endStream()
-
-	if got != tail {
-		t.Errorf("end of stream printed %q, want the trailing row %q", got, tail)
-	}
-	if m.partial != "" || m.streamed != 0 {
-		t.Errorf("stream not forgotten: partial = %q, streamed = %d", m.partial, m.streamed)
-	}
-}
-
-func TestWideningDuringAStreamPrintsTheOldWidthTail(t *testing.T) {
-	m := newSizedModel(t)
-	m.state = uiStateProcessing
-	m.partial = wrappingText
-	m.flushStream()
-	if m.streamed == 0 {
-		t.Fatal("test did not flush a row before resizing")
-	}
-	tail := m.streamTail()
-
-	m, cmd := updateCmd(t, m, tea.WindowSizeMsg{Width: 120, Height: 20})
-	if got := printed(t, cmd); got != tail {
-		t.Errorf("resize printed %q, want old-width tail %q", got, tail)
-	}
-	if m.partial != "" || m.streamed != 0 {
-		t.Errorf("stream not finalized during resize: partial = %q, streamed = %d", m.partial, m.streamed)
-	}
-}
-
-func TestNarrowingDuringAStreamPrintsTheOldWidthTail(t *testing.T) {
-	m := newSizedModel(t)
-	m.state = uiStateProcessing
-	m.partial = wrappingText
-	m.flushStream()
-	if m.streamed == 0 {
-		t.Fatal("test did not flush a row before resizing")
-	}
-	tail := m.streamTail()
-
-	m, cmd := updateCmd(t, m, tea.WindowSizeMsg{Width: 40, Height: 20})
-	if got := printed(t, cmd); got != tail {
-		t.Errorf("resize printed %q, want old-width tail %q", got, tail)
-	}
-	if m.partial != "" || m.streamed != 0 {
-		t.Errorf("stream not finalized during resize: partial = %q, streamed = %d", m.partial, m.streamed)
-	}
-}
-
-// TestPrintMessageLeavesOutTextAlreadyStreamed guards against the reply landing
-// on screen twice: it was printed as it streamed, and the message that follows
-// carries the same text.
-func TestPrintMessageLeavesOutTextAlreadyStreamed(t *testing.T) {
-	m := newSizedModel(t)
-	m.partial = "Hello"
-	m.flushStream()
-
-	landed := agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{agent.TextBlock{Text: "Hello"}}}
-	got := m.printMessage(landed)
-
-	if strings.Count(got, "Hello") > 1 {
-		t.Errorf("message printed the streamed text again:\n%s", got)
-	}
-}
-
-// TestPrintMessagePrintsBlocksThatNeverStream covers tool calls: no delta
-// carries them, so the landed message is the only chance to show them.
-func TestPrintMessagePrintsBlocksThatNeverStream(t *testing.T) {
-	m := newSizedModel(t)
-
-	landed := agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{
-		agent.ToolUseBlock{ID: "toolu_1", Name: "read", Input: []byte(`{"path":"a.txt"}`)},
-	}}
-
-	if got := m.printMessage(landed); !strings.Contains(got, "read") {
-		t.Errorf("landed message did not print the tool use:\n%s", got)
-	}
-}
-
 func TestViewShowsTheRowBeingWrittenInto(t *testing.T) {
 	m := newSizedModel(t)
 
@@ -1153,7 +1023,7 @@ func TestThinkingStreamsIntoTheFrame(t *testing.T) {
 
 	// Compared against the rendered thinking block rather than the bare text, so
 	// this also catches reasoning painted as though it were the answer.
-	rows := strings.Split(agent.RenderBlock(agent.ThinkingBlock{Thinking: "let me check"}, agent.RoleAssistant, 80), "\n")
+	rows := strings.Split(transcript.Block(agent.ThinkingBlock{Thinking: "let me check"}, agent.RoleAssistant, 80), "\n")
 	want := rows[len(rows)-1]
 	if view := m.View().Content; !strings.Contains(view, want) {
 		t.Errorf("frame does not show the reasoning being streamed:\n%s\nwant a row %q", view, want)
@@ -1165,9 +1035,9 @@ func TestThinkingStreamsIntoTheFrame(t *testing.T) {
 // printed in full before the answer starts being written.
 func TestAnswerAfterThinkingFinishesTheThinkingBlock(t *testing.T) {
 	m := newSizedModel(t)
-	m.streamDelta("let me check the file", true)
+	m.stream.Delta("let me check the file", true)
 
-	settled := m.streamDelta("It is in internal/agent.", false)
+	settled := m.stream.Delta("It is in internal/agent.", false)
 
 	if !strings.Contains(settled, "let me check the file") {
 		t.Errorf("settled rows = %q, want the reasoning printed once the answer started", settled)
@@ -1179,23 +1049,5 @@ func TestAnswerAfterThinkingFinishesTheThinkingBlock(t *testing.T) {
 	}
 	if !strings.Contains(ansi.Strip(view), "It is in internal/agent.") {
 		t.Errorf("frame does not show the answer:\n%s", view)
-	}
-}
-
-// TestPrintMessageLeavesOutThinkingAlreadyStreamed is the thinking twin of the
-// text case: reasoning reaches the scrollback as it streams, so the landed
-// message must not repeat it.
-func TestPrintMessageLeavesOutThinkingAlreadyStreamed(t *testing.T) {
-	m := newSizedModel(t)
-	m.state = uiStateProcessing
-	m = update(t, m, streamEventMsg{event: agent.ThinkingDeltaEvent{Text: "let me check"}})
-
-	landed := agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{
-		agent.ThinkingBlock{Thinking: "let me check", Signature: "sig"},
-	}}
-	got := m.printMessage(landed)
-
-	if strings.Count(got, "let me check") > 1 {
-		t.Errorf("the landed message printed the reasoning again:\n%s", got)
 	}
 }

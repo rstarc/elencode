@@ -1,4 +1,4 @@
-package agent
+package transcript
 
 import (
 	"errors"
@@ -7,6 +7,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/rstarc/elencode/internal/agent"
 )
 
 // widest reports the width of the longest line, which is what decides whether
@@ -21,8 +22,8 @@ func widest(render string) int {
 	return widest
 }
 
-func TestRenderErrorIsLabelledAndBoxed(t *testing.T) {
-	got := RenderError(errors.New("429 rate_limit_error"), 80)
+func TestErrorIsLabelledAndBoxed(t *testing.T) {
+	got := Error(errors.New("429 rate_limit_error"), 80)
 
 	if !strings.Contains(got, "429 rate_limit_error") {
 		t.Errorf("render = %q, want it to contain the error text", got)
@@ -37,10 +38,10 @@ func TestRenderErrorIsLabelledAndBoxed(t *testing.T) {
 	}
 }
 
-func TestRenderMarksOnlyFirstLineWithAsterisk(t *testing.T) {
+func TestMarksOnlyFirstLineWithAsterisk(t *testing.T) {
 	// Force a wrap onto multiple lines so the marker can differ per line.
 	long := errors.New(strings.Repeat("wraps to more than one line ", 10))
-	got := RenderError(long, 30)
+	got := Error(long, 30)
 
 	lines := strings.Split(got, "\n")
 	if len(lines) < 2 {
@@ -64,15 +65,15 @@ func stripANSI(s string) string {
 	return ansi.Strip(s)
 }
 
-func TestRenderFitsWithinAvailableWidth(t *testing.T) {
+func TestFitsWithinAvailableWidth(t *testing.T) {
 	long := errors.New(strings.Repeat("something went wrong ", 20))
 
 	for _, available := range []int{20, 40, 80, 200} {
-		if got := widest(RenderError(long, available)); got > available {
+		if got := widest(Error(long, available)); got > available {
 			t.Errorf("RenderError at width %d rendered %d columns wide, want <= %d", available, got, available)
 		}
-		if got := widest(RenderStreamingText(long.Error(), available)); got > available {
-			t.Errorf("RenderStreamingText at width %d rendered %d columns wide, want <= %d", available, got, available)
+		if got := widest(Block(agent.TextBlock{Text: long.Error()}, agent.RoleAssistant, available)); got > available {
+			t.Errorf("a text block at width %d rendered %d columns wide, want <= %d", available, got, available)
 		}
 	}
 }
@@ -80,33 +81,33 @@ func TestRenderFitsWithinAvailableWidth(t *testing.T) {
 // TestRenderUsesTheWholeTerminal covers a wide terminal: a block fills the
 // width it is given rather than stopping at a fixed column, so the transcript
 // is laid out to the terminal the user chose.
-func TestRenderUsesTheWholeTerminal(t *testing.T) {
+func TestUsesTheWholeTerminal(t *testing.T) {
 	const available = 200
 
-	got := widest(RenderError(errors.New(strings.Repeat("wide ", 100)), available))
+	got := widest(Error(errors.New(strings.Repeat("wide ", 100)), available))
 
 	if got != available {
 		t.Errorf("render is %d columns wide, want the full %d", got, available)
 	}
 }
 
-func TestRenderStaysReadableWhenWidthIsUnusable(t *testing.T) {
+func TestStaysReadableWhenWidthIsUnusable(t *testing.T) {
 	// Below a handful of columns lipgloss ignores the width entirely, so a
 	// terminal narrower than minBlockWidth (or a model that has not seen a
 	// WindowSizeMsg yet, width 0) must not be passed straight through.
 	for _, available := range []int{0, 1, 4, 7} {
-		got := widest(RenderError(errors.New("boom"), available))
+		got := widest(Error(errors.New("boom"), available))
 		if got > minBlockWidth {
 			t.Errorf("render at width %d is %d columns wide, want <= %d", available, got, minBlockWidth)
 		}
 	}
 }
 
-func TestRenderToolUseFormatsArguments(t *testing.T) {
-	got := RenderBlock(ToolUseBlock{
+func TestToolUseFormatsArguments(t *testing.T) {
+	got := Block(agent.ToolUseBlock{
 		Name:  "read",
 		Input: []byte(`{"path":"README.md","offset":10}`),
-	}, RoleAssistant, 80)
+	}, agent.RoleAssistant, 80)
 
 	plain := stripANSI(got)
 	if !strings.Contains(plain, "read(README.md,offset=10)") {
@@ -114,11 +115,11 @@ func TestRenderToolUseFormatsArguments(t *testing.T) {
 	}
 }
 
-func TestRenderToolUseBoldsName(t *testing.T) {
-	got := RenderBlock(ToolUseBlock{
+func TestToolUseBoldsName(t *testing.T) {
+	got := Block(agent.ToolUseBlock{
 		Name:  "read",
 		Input: []byte(`{"path":"README.md"}`),
-	}, RoleAssistant, 80)
+	}, agent.RoleAssistant, 80)
 
 	bold := lipgloss.NewStyle().Foreground(textBlockColor).Bold(true).Render("read")
 	if !strings.Contains(got, bold) {
@@ -126,11 +127,11 @@ func TestRenderToolUseBoldsName(t *testing.T) {
 	}
 }
 
-func TestRenderToolUseUsesBrightBlackText(t *testing.T) {
-	got := RenderBlock(ToolUseBlock{
+func TestToolUseUsesBrightBlackText(t *testing.T) {
+	got := Block(agent.ToolUseBlock{
 		Name:  "read",
 		Input: []byte(`{"path":"README.md"}`),
-	}, RoleAssistant, 80)
+	}, agent.RoleAssistant, 80)
 
 	brightBlack, _, _ := strings.Cut(lipgloss.NewStyle().Foreground(textBlockColor).Render("x"), "x")
 	if !strings.Contains(got, brightBlack+"(README.md)") {
@@ -141,8 +142,8 @@ func TestRenderToolUseUsesBrightBlackText(t *testing.T) {
 // TestRenderNoticeReadsAsNeitherSide covers what a notice is for: it reports
 // something the program did, so it must not look like a message from the user
 // or the assistant.
-func TestRenderNoticeReadsAsNeitherSide(t *testing.T) {
-	got := stripANSI(RenderNotice("switched to some-model", 80))
+func TestNoticeReadsAsNeitherSide(t *testing.T) {
+	got := stripANSI(Notice("switched to some-model", 80))
 
 	if !strings.Contains(got, "switched to some-model") {
 		t.Errorf("notice = %q, want it to carry the text", got)
@@ -154,15 +155,15 @@ func TestRenderNoticeReadsAsNeitherSide(t *testing.T) {
 	}
 }
 
-func TestRenderNoticeIsOneLine(t *testing.T) {
-	if got := RenderNotice("switched to some-model", 80); strings.Contains(got, "\n") {
+func TestNoticeIsOneLine(t *testing.T) {
+	if got := Notice("switched to some-model", 80); strings.Contains(got, "\n") {
 		t.Errorf("notice = %q, want a single line", got)
 	}
 }
 
-func TestRenderNoticeFitsNarrowTerminal(t *testing.T) {
+func TestNoticeFitsNarrowTerminal(t *testing.T) {
 	for _, width := range []int{10, 20, 40, 80} {
-		got := RenderNotice("switched to a model with a rather long name", width)
+		got := Notice("switched to a model with a rather long name", width)
 		if lipgloss.Width(got) > max(width, minBlockWidth) {
 			t.Errorf("notice at width %d is %d columns wide:\n%s", width, lipgloss.Width(got), got)
 		}
@@ -172,77 +173,41 @@ func TestRenderNoticeFitsNarrowTerminal(t *testing.T) {
 // TestRenderNoticeSpansTheTerminal covers the point of drawing a notice as a
 // rule: it separates what is above it from what is below, which it can only do
 // by reaching both edges.
-func TestRenderNoticeSpansTheTerminal(t *testing.T) {
+func TestNoticeSpansTheTerminal(t *testing.T) {
 	for _, width := range []int{40, 80, 120, 200} {
-		if got := lipgloss.Width(RenderNotice("switched to some-model", width)); got != width {
+		if got := lipgloss.Width(Notice("switched to some-model", width)); got != width {
 			t.Errorf("notice at width %d is %d columns wide, want the full %d", width, got, width)
 		}
 	}
 }
 
-func TestRenderHeaderSpansTheTerminal(t *testing.T) {
+func TestHeaderSpansTheTerminal(t *testing.T) {
 	for _, width := range []int{40, 120, 200} {
-		if got := lipgloss.Width(RenderHeader("elencode", width)); got != width {
+		if got := lipgloss.Width(Header("elencode", width)); got != width {
 			t.Errorf("header at width %d is %d columns wide, want the full %d", width, got, width)
 		}
 	}
 }
 
-func TestRenderHeaderCarriesTheTitle(t *testing.T) {
-	if got := stripANSI(RenderHeader("elencode", 80)); !strings.Contains(got, "elencode") {
+func TestHeaderCarriesTheTitle(t *testing.T) {
+	if got := stripANSI(Header("elencode", 80)); !strings.Contains(got, "elencode") {
 		t.Errorf("header = %q, want it to carry the title", got)
 	}
 }
 
 // TestRenderThinkingIsLaidOutLikeAssistantText pins the "same block, different
-// styling" part: both blocks wrap in the marker column, while assistant text
-// is additionally formatted as Markdown.
-func TestRenderThinkingIsLaidOutLikeAssistantText(t *testing.T) {
+// styling" part: both wrap in the marker column, and only the styling differs.
+func TestThinkingIsLaidOutLikeAssistantText(t *testing.T) {
 	const same = "a sentence long enough to wrap onto a second row when the terminal is narrow"
 
-	thinking := RenderBlock(ThinkingBlock{Thinking: same}, RoleAssistant, 40)
-	text := RenderBlock(TextBlock{Text: same}, RoleAssistant, 40)
+	thinking := Block(agent.ThinkingBlock{Thinking: same}, agent.RoleAssistant, 40)
+	text := Block(agent.TextBlock{Text: same}, agent.RoleAssistant, 40)
 
 	if len(unmarked(thinking)) < 3 || len(unmarked(text)) < 2 {
 		t.Errorf("blocks did not wrap at the terminal width:\nthinking:\n%s\ntext:\n%s", thinking, text)
 	}
 	if thinking == text {
 		t.Error("thinking is styled the same as assistant text, want it set apart")
-	}
-}
-
-func TestRenderAssistantTextRendersMarkdown(t *testing.T) {
-	got := RenderBlock(TextBlock{Text: "**important**"}, RoleAssistant, 80)
-
-	if !strings.Contains(stripANSI(got), "important") {
-		t.Fatalf("rendered text = %q, want the markdown text", stripANSI(got))
-	}
-	if styleOf(t, got) == styleOf(t, RenderBlock(TextBlock{Text: "plain"}, RoleAssistant, 80)) {
-		t.Errorf("markdown emphasis did not add styling:\n%q", got)
-	}
-}
-
-func TestRenderAssistantTextWrapsWideMarkdownTables(t *testing.T) {
-	markdown := "| Name | Description |\n| --- | --- |\n| alpha | a description that is much wider than the terminal |"
-	got := RenderBlock(TextBlock{Text: markdown}, RoleAssistant, 40)
-
-	if width := widest(got); width > 40 {
-		t.Errorf("wide table rendered %d columns, want <= 40:\n%s", width, got)
-	}
-	plain := stripANSI(got)
-	if !strings.Contains(plain, "alpha") || !strings.Contains(plain, "terminal") {
-		t.Errorf("wide table = %q, want it to retain table content", got)
-	}
-	if lines := strings.Split(plain, "\n"); len(lines) == 0 || strings.TrimSpace(lines[0]) == "" {
-		t.Errorf("wide table starts with an empty row:\n%s", got)
-	}
-}
-
-func TestRenderAssistantCodeUsesHeaderColor(t *testing.T) {
-	got := RenderBlock(TextBlock{Text: "`code`"}, RoleAssistant, 80)
-
-	if !strings.Contains(got, markdownCodeColorPrefix()) {
-		t.Errorf("code rendering = %q, want header color", got)
 	}
 }
 
@@ -259,8 +224,8 @@ func unmarked(rendered string) []string {
 	return lines
 }
 
-func TestRenderThinkingIsItalic(t *testing.T) {
-	got := RenderBlock(ThinkingBlock{Thinking: "wondering"}, RoleAssistant, 80)
+func TestThinkingIsItalic(t *testing.T) {
+	got := Block(agent.ThinkingBlock{Thinking: "wondering"}, agent.RoleAssistant, 80)
 
 	want, _, _ := strings.Cut(lipgloss.NewStyle().Italic(true).Foreground(thinkingColor).Render("x"), "x")
 	if !strings.Contains(got, want) {
@@ -268,10 +233,10 @@ func TestRenderThinkingIsItalic(t *testing.T) {
 	}
 }
 
-func TestRenderThinkingIsTitled(t *testing.T) {
+func TestThinkingIsTitled(t *testing.T) {
 	const width = 80
 
-	lines := strings.Split(stripANSI(RenderBlock(ThinkingBlock{Thinking: "wondering"}, RoleAssistant, width)), "\n")
+	lines := strings.Split(stripANSI(Block(agent.ThinkingBlock{Thinking: "wondering"}, agent.RoleAssistant, width)), "\n")
 
 	if len(lines) != 2 {
 		t.Fatalf("thinking rendered %d lines, want a title line and a line of content:\n%s", len(lines), strings.Join(lines, "\n"))
@@ -290,10 +255,10 @@ func TestRenderThinkingIsTitled(t *testing.T) {
 
 // TestRenderRedactedThinkingIsAPlaceholder covers a block with nothing to show:
 // the reasoning is encrypted, so the title is the whole of it.
-func TestRenderRedactedThinkingIsAPlaceholder(t *testing.T) {
+func TestRedactedThinkingIsAPlaceholder(t *testing.T) {
 	const width = 80
 
-	got := RenderBlock(RedactedThinkingBlock{Data: "encrypted-payload"}, RoleAssistant, width)
+	got := Block(agent.RedactedThinkingBlock{Data: "encrypted-payload"}, agent.RoleAssistant, width)
 
 	lines := strings.Split(stripANSI(got), "\n")
 	if len(lines) != 1 {
@@ -308,8 +273,8 @@ func TestRenderRedactedThinkingIsAPlaceholder(t *testing.T) {
 }
 
 func TestRedactedThinkingIsStyledLikeThinking(t *testing.T) {
-	redacted := RenderBlock(RedactedThinkingBlock{Data: "x"}, RoleAssistant, 80)
-	thinking := RenderBlock(ThinkingBlock{Thinking: ""}, RoleAssistant, 80)
+	redacted := Block(agent.RedactedThinkingBlock{Data: "x"}, agent.RoleAssistant, 80)
+	thinking := Block(agent.ThinkingBlock{Thinking: ""}, agent.RoleAssistant, 80)
 
 	// Same styling, differing only in which title they carry
 	if styleOf(t, redacted) != styleOf(t, thinking) {
@@ -329,4 +294,58 @@ func styleOf(t *testing.T, rendered string) string {
 		}
 	}
 	return strings.Join(escapes, ",")
+}
+
+func TestMessageSkipsBlocksThatRenderEmpty(t *testing.T) {
+	// ToolResultBlock deliberately renders to "" (raw tool output is not shown
+	// in the transcript). It must not leave a blank line behind.
+	msg := agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{
+		agent.TextBlock{Text: "hi"},
+		agent.NewToolResultBlock("id", "some output", false),
+	}}
+
+	got := Message(msg, 80)
+
+	if strings.Contains(got, "\n\n") {
+		t.Errorf("render = %q, want no blank line left by the empty block", got)
+	}
+}
+
+func TestUserMessageUsesPromptMarker(t *testing.T) {
+	msg := agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hello"}})
+
+	got := Message(msg, 80)
+
+	if !strings.HasPrefix(stripANSI(got), UserPromptMarker+" ") {
+		t.Errorf("render = %q, want it to start with the input prompt marker %q", got, UserPromptMarker)
+	}
+}
+
+func TestUserMessageContinuesWithBorderRune(t *testing.T) {
+	long := strings.Repeat("word ", 30)
+	msg := agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: long}})
+
+	got := Message(msg, 30)
+
+	lines := strings.Split(got, "\n")
+	if len(lines) < 2 {
+		t.Fatalf("render did not wrap to multiple lines: %q", got)
+	}
+	for i, line := range lines[1:] {
+		if !strings.HasPrefix(stripANSI(line), markerRest+" ") {
+			t.Errorf("line %d = %q, want it continued with the border rune", i+1, line)
+		}
+	}
+}
+
+func TestUserMessageIsStyledDifferentlyFromAssistantText(t *testing.T) {
+	userMsg := agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "same text"}})
+	assistantMsg := agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{agent.TextBlock{Text: "same text"}}}
+
+	userRendered := Message(userMsg, 80)
+	assistantRendered := Message(assistantMsg, 80)
+
+	if userRendered == assistantRendered {
+		t.Errorf("user and assistant text rendered identically, want the user message set apart (e.g. background)")
+	}
 }

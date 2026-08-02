@@ -17,16 +17,17 @@ import (
 	"github.com/rstarc/elencode/internal/tui/commandmenu"
 	"github.com/rstarc/elencode/internal/tui/menu"
 	"github.com/rstarc/elencode/internal/tui/modelpicker"
+	"github.com/rstarc/elencode/internal/tui/transcript"
 )
 
 // banner titles the session, printed once the terminal width is known
 const banner = "elencode"
 
-// inputPrompt mirrors agent.UserPromptMarker, which marks user messages in
+// inputPrompt mirrors transcript.UserPromptMarker, which marks user messages in
 // the transcript, so the two stay visibly the same character. Declared at
 // package level (not inside newModel) because its *agent.Agent parameter
 // shadows the agent package name.
-const inputPrompt = agent.UserPromptMarker
+const inputPrompt = transcript.UserPromptMarker
 
 type uiState int
 
@@ -45,14 +46,14 @@ type model struct {
 	cancel context.CancelFunc
 	turnID int // identifies the active turn to reject messages from an older one
 	// TUI state. The transcript is not held here: it is printed above the frame
-	// as it happens and belongs to the terminal's scrollback from then on.
-	partial         string          // the block being streamed, as text
-	partialThinking bool            // whether that block is reasoning rather than the answer
-	streamed        int             // rows of partial already printed; the rest is in the frame
-	input           textinput.Model // user input field
-	spinner         spinner.Model   // shown above input while state is uiStateProcessing
-	width           int             // terminal width, 0 until the first WindowSizeMsg
-	state           uiState
+	// as it happens and belongs to the terminal's scrollback from then on. The
+	// one exception is the block still being generated, which the stream holds
+	// until it settles.
+	stream  transcript.Stream
+	input   textinput.Model // user input field
+	spinner spinner.Model   // shown above input while state is uiStateProcessing
+	width   int             // terminal width, 0 until the first WindowSizeMsg
+	state   uiState
 	// Sub-components. Each owns its own state and reports what the user did as
 	// a message, which Update handles below.
 	commands commands.Registry // the slash commands this session knows
@@ -145,115 +146,6 @@ func printAbove(rendered string) tea.Cmd {
 	return tea.Println(rendered)
 }
 
-// streamRows renders what has been streamed so far as transcript rows. Every
-// row but the last is settled: wrapping is greedy, so more text can only extend
-// the last row, never reflow the ones above it.
-func (m model) streamRows() []string {
-	if m.partial == "" {
-		return nil
-	}
-
-	var block agent.Block = agent.TextBlock{Text: m.partial}
-	if m.partialThinking {
-		block = agent.ThinkingBlock{Thinking: m.partial}
-	}
-	return strings.Split(agent.RenderBlock(block, agent.RoleAssistant, m.width), "\n")
-}
-
-// streamDelta adds a fragment to the block being streamed and returns whatever
-// that settles. Reasoning and the answer are separate blocks, so a fragment of
-// one ends the other: the model reasons first and answers after.
-func (m *model) streamDelta(text string, thinking bool) string {
-	var finished string
-	if m.partial != "" && m.partialThinking != thinking {
-		finished = m.endStream()
-	}
-
-	m.partialThinking = thinking
-	m.partial += text
-	return joinRows(finished, m.flushStream())
-}
-
-// joinRows joins rendered rows, dropping the empty ones so nothing contributes
-// a blank line to the transcript.
-func joinRows(rows ...string) string {
-	var present []string
-	for _, row := range rows {
-		if row != "" {
-			present = append(present, row)
-		}
-	}
-	return strings.Join(present, "\n")
-}
-
-// streamTail is the row the text is still being written into, the one part of
-// the transcript that lives in the frame rather than in the scrollback.
-func (m model) streamTail() string {
-	rows := m.streamRows()
-	if len(rows) == 0 {
-		return ""
-	}
-	return rows[len(rows)-1]
-}
-
-// flushStream returns the rows that have settled since the last flush, and
-// records them as printed. The trailing row is held back: it can still grow.
-func (m *model) flushStream() string {
-	rows := m.streamRows()
-	if len(rows) <= m.streamed+1 {
-		return ""
-	}
-
-	settled := rows[m.streamed : len(rows)-1]
-	m.streamed = len(rows) - 1
-	return strings.Join(settled, "\n")
-}
-
-// endStream returns whatever of the streamed text has not been printed yet,
-// including the trailing row, and forgets it. Called when the text can no
-// longer grow: the message landed, or the turn ended without it.
-func (m *model) endStream() string {
-	rows := m.streamRows()
-	var rest string
-	if m.streamed < len(rows) {
-		rest = strings.Join(rows[m.streamed:], "\n")
-	}
-	m.partial, m.streamed, m.partialThinking = "", 0, false
-	return rest
-}
-
-// streams reports whether a block reaches the screen as it is generated. Those
-// are already printed by the time the message lands, so printing the message
-// would show them twice.
-func streams(block agent.Block) bool {
-	switch block.(type) {
-	case agent.TextBlock, agent.ThinkingBlock:
-		return true
-	default:
-		return false
-	}
-}
-
-// printMessage returns what a landed message adds to the transcript: the row
-// still being written into, and the blocks that never stream — tool uses, and
-// reasoning the API only ever returns encrypted.
-func (m *model) printMessage(msg agent.Message) string {
-	rendered := []string{}
-	if rest := m.endStream(); rest != "" {
-		rendered = append(rendered, rest)
-	}
-
-	for _, block := range msg.Content {
-		if msg.Role == agent.RoleAssistant && streams(block) {
-			continue
-		}
-		if row := agent.RenderBlock(block, msg.Role, m.width); row != "" {
-			rendered = append(rendered, row)
-		}
-	}
-	return joinRows(rendered...)
-}
-
 // streamEventMsg carries one Event from the in-flight turn
 type streamEventMsg struct {
 	turnID int
@@ -305,7 +197,7 @@ func (m model) runCommand() (model, tea.Cmd) {
 // keeps whatever scrolled past, rather than watching it vanish on the next
 // repaint.
 func (m model) reportError(err error) tea.Cmd {
-	return printAbove(agent.RenderError(err, m.width))
+	return printAbove(transcript.Error(err, m.width))
 }
 
 // modelsMsg carries the result of a /model lookup. choose is the model the user
@@ -362,7 +254,7 @@ func (m model) selectModel(chosen agent.Model) (model, tea.Cmd) {
 	// context window it belongs to, so it is abandoned rather than left running.
 	var interrupted string
 	if m.state == uiStateProcessing {
-		interrupted = m.endStream()
+		interrupted = m.stream.End()
 		m = m.endTurn()
 	}
 
@@ -378,7 +270,7 @@ func (m model) selectModel(chosen agent.Model) (model, tea.Cmd) {
 	// The switch changes nothing on screen by itself: what is printed stays
 	// printed, and the conversation above is no longer sent to anyone. The
 	// notice is the only thing that says so.
-	notice := agent.RenderNotice("switched to "+chosen.ID+" (context cleared)", m.width)
+	notice := transcript.Notice("switched to "+chosen.ID+" (context cleared)", m.width)
 
 	// Sequenced, not batched: these have to reach the scrollback in this order
 	return m, tea.Sequence(printAbove(interrupted), printAbove(notice), failed)
@@ -390,15 +282,14 @@ func (m model) startTurn(userInput string) (model, tea.Cmd) {
 	m.cancel = cancel
 	m.turnID++
 	m.events = m.agent.Run(ctx, userInput)
-	m.partial = ""
-	m.streamed = 0
+	m.stream.Reset()
 	m.state = uiStateProcessing
 
 	// The prompt is printed here rather than when the agent echoes it back,
 	// because it never comes back: Run appends it to the context window without
 	// announcing it. Sequenced ahead of the turn so it cannot land after the
 	// reply it asked for.
-	prompt := agent.RenderMessage(agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: userInput}}), m.width)
+	prompt := transcript.Message(agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: userInput}}), m.width)
 	return m, tea.Sequence(printAbove(prompt), tea.Batch(waitForEvent(m.events, m.turnID), m.spinner.Tick))
 }
 
@@ -426,7 +317,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.state == uiStateProcessing && m.width > 0 && m.width != msg.Width {
 			// Rendered row indexes are not stable across widths, so settle the
 			// current segment before the frame starts using the new width.
-			print = printAbove(m.endStream())
+			print = printAbove(m.stream.End())
 		}
 		m.width = msg.Width
 		// textinput draws the prompt before, and a cursor cell after, the width
@@ -434,6 +325,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// than the terminal. JoinVertical then pads every other row out to
 		// match, pushing the whole view past the right edge.
 		m.input.SetWidth(max(msg.Width-lipgloss.Width(m.input.Prompt)-1, 1))
+		m.stream.SetWidth(msg.Width)
 		m.menu.SetWidth(msg.Width)
 		m.picker.SetWidth(msg.Width)
 		// Only the frame follows the new width. What is already printed keeps
@@ -445,7 +337,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// was no width to span. A resize is not a new session.
 		if !m.headerPrinted {
 			m.headerPrinted = true
-			return m, printAbove(agent.RenderHeader(banner, m.width))
+			return m, printAbove(transcript.Header(banner, m.width))
 		}
 		return m, print
 	case tea.KeyPressMsg:
@@ -524,11 +416,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var print tea.Cmd
 		switch event := msg.event.(type) {
 		case agent.TextDeltaEvent:
-			print = printAbove(m.streamDelta(event.Text, false))
+			print = printAbove(m.stream.Delta(event.Text, false))
 		case agent.ThinkingDeltaEvent:
-			print = printAbove(m.streamDelta(event.Text, true))
+			print = printAbove(m.stream.Delta(event.Text, true))
 		case agent.MessageEvent:
-			print = printAbove(m.printMessage(event.Message))
+			print = printAbove(m.stream.Landed(event.Message))
 		case agent.ErrorEvent:
 			print = m.reportError(event.Err)
 		}
@@ -582,7 +474,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// A turn cut short leaves its last row in the frame, where nothing will
 		// print it once the frame stops showing it.
-		rest := m.endStream()
+		rest := m.stream.End()
 		return m.endTurn(), printAbove(rest)
 
 	case cursor.BlinkMsg:
@@ -620,7 +512,7 @@ func (m model) View() tea.View {
 	var rows []string
 	// The only part of the transcript still in the frame: the row being written
 	// into. Everything settled has already been printed above.
-	if tail := m.streamTail(); tail != "" {
+	if tail := m.stream.Tail(); tail != "" {
 		rows = append(rows, tail)
 	}
 	if m.busy() {
