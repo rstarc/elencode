@@ -81,7 +81,10 @@ func (c Config) Save() error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(c.Path, append(body, '\n'), configFileMode)
+	if err := os.WriteFile(c.Path, append(body, '\n'), configFileMode); err != nil {
+		return err
+	}
+	return os.Chmod(c.Path, configFileMode)
 }
 
 // readSettings decodes the config file as raw JSON keys, so Save can write back

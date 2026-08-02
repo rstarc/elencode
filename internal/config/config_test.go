@@ -242,6 +242,29 @@ func TestSaveKeepsTheFilePrivate(t *testing.T) {
 	}
 }
 
+func TestSaveRepairsPermissiveFilePermissions(t *testing.T) {
+	file := writeConfig(t, `{"anthropic_api_key":"`+realKey+`","future_setting":42}`)
+	if err := os.Chmod(file, 0o644); err != nil {
+		t.Fatalf("making config permissive: %v", err)
+	}
+
+	cfg := Config{Path: file, AnthropicAPIKey: realKey, Model: "claude-opus-4-5"}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("config file mode = %o, want 600", perm)
+	}
+	if saved := readConfig(t, file); saved["future_setting"] != float64(42) {
+		t.Errorf("Save dropped an unknown setting: %v", saved)
+	}
+}
+
 // readConfig decodes the config file as plain JSON, so a test can assert on
 // what is actually on disk rather than on what Load makes of it.
 func readConfig(t *testing.T, file string) map[string]any {
