@@ -498,6 +498,12 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
+		var print tea.Cmd
+		if m.state == uiStateProcessing && m.width > 0 && m.width != msg.Width {
+			// Rendered row indexes are not stable across widths, so settle the
+			// current segment before the frame starts using the new width.
+			print = printAbove(m.endStream())
+		}
 		m.width = msg.Width
 		// textinput draws the prompt before, and a cursor cell after, the width
 		// it is given, so passing the terminal width makes the input row wider
@@ -515,7 +521,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.headerPrinted = true
 			return m, printAbove(agent.RenderHeader(banner, m.width))
 		}
-		return m, nil
+		return m, print
 	case tea.KeyPressMsg:
 		// The config view owns the whole frame, so it takes the keyboard with it:
 		// the input is off screen and would otherwise be typed into blind.

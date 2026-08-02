@@ -966,6 +966,44 @@ func TestEndStreamPrintsWhatIsLeftInTheFrame(t *testing.T) {
 	}
 }
 
+func TestWideningDuringAStreamPrintsTheOldWidthTail(t *testing.T) {
+	m := newSizedModel(t)
+	m.state = uiStateProcessing
+	m.partial = wrappingText
+	m.flushStream()
+	if m.streamed == 0 {
+		t.Fatal("test did not flush a row before resizing")
+	}
+	tail := m.streamTail()
+
+	m, cmd := updateCmd(t, m, tea.WindowSizeMsg{Width: 120, Height: 20})
+	if got := printed(t, cmd); got != tail {
+		t.Errorf("resize printed %q, want old-width tail %q", got, tail)
+	}
+	if m.partial != "" || m.streamed != 0 {
+		t.Errorf("stream not finalized during resize: partial = %q, streamed = %d", m.partial, m.streamed)
+	}
+}
+
+func TestNarrowingDuringAStreamPrintsTheOldWidthTail(t *testing.T) {
+	m := newSizedModel(t)
+	m.state = uiStateProcessing
+	m.partial = wrappingText
+	m.flushStream()
+	if m.streamed == 0 {
+		t.Fatal("test did not flush a row before resizing")
+	}
+	tail := m.streamTail()
+
+	m, cmd := updateCmd(t, m, tea.WindowSizeMsg{Width: 40, Height: 20})
+	if got := printed(t, cmd); got != tail {
+		t.Errorf("resize printed %q, want old-width tail %q", got, tail)
+	}
+	if m.partial != "" || m.streamed != 0 {
+		t.Errorf("stream not finalized during resize: partial = %q, streamed = %d", m.partial, m.streamed)
+	}
+}
+
 // TestPrintMessageLeavesOutTextAlreadyStreamed guards against the reply landing
 // on screen twice: it was printed as it streamed, and the message that follows
 // carries the same text.
