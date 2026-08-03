@@ -539,3 +539,104 @@ func TestModelsFiltersToChatModels(t *testing.T) {
 		t.Errorf("Models() = %#v, want %#v", got, want)
 	}
 }
+
+// TestAgentLoopRoundTripsReasoningAndTools proves the composition the unit
+// tests cannot: a full turn — reasoning, a tool call, the tool result, a second
+// inference — through the real Agent, asserting on the bytes of the second
+// request. The automated stand-in for the manual end-to-end check.
+func TestAgentLoopRoundTripsReasoningAndTools(t *testing.T) {
+	s, url := newStub(t,
+		sse(
+			`{"type":"response.reasoning_summary_text.delta","delta":"planning"}`,
+			`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"planning"}],"encrypted_content":"ENC"},{"type":"function_call","call_id":"call_1","name":"read","arguments":"{\"path\":\"go.mod\"}","id":"fc_1"}]}}`,
+		),
+		sse(
+			`{"type":"response.output_text.delta","delta":"done"}`,
+			`{"type":"response.completed","response":{"id":"resp_2","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}`,
+		),
+	)
+
+	c := newWithOptions("key", true, agent.EffortMedium, option.WithBaseURL(url))
+	read := agent.Tool{
+		Name:        "read",
+		Description: "read a file",
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+			return "module elencode", nil
+		},
+	}
+	a := agent.New(c, []agent.Tool{read})
+	a.SetModel(agent.Model{ID: "gpt-5", Thinking: agent.ThinkingEffort})
+
+	events := collect(t, a.Run(context.Background(), "read go.mod"))
+
+	// The turn must complete: the last transcript change is the final answer.
+	var last agent.Message
+	for _, e := range events {
+		if m, ok := e.(agent.MessageEvent); ok {
+			last = m.Message
+		}
+	}
+	if len(last.Content) != 1 || last.Content[0] != (agent.TextBlock{Text: "done"}) {
+		t.Fatalf("last message = %#v, want the final answer", last)
+	}
+
+	// Two rounds of inference, and the second request's input must replay the
+	// turn in the shape the API demands: the reasoning item (id + encrypted
+	// content) before the function_call it produced, then the output.
+	if s.requests() != 2 {
+		t.Fatalf("inference rounds = %d, want 2", s.requests())
+	}
+	input, ok := s.body(1)["input"].([]any)
+	if !ok || len(input) != 4 {
+		t.Fatalf("second request input = %v, want 4 items", s.body(1)["input"])
+	}
+	types := make([]string, len(input))
+	for i, item := range input {
+		m := item.(map[string]any)
+		tp, _ := m["type"].(string)
+		if tp == "" {
+			tp = "message"
+		}
+		types[i] = tp
+	}
+	want := []string{"message", "reasoning", "function_call", "function_call_output"}
+	if !reflect.DeepEqual(types, want) {
+		t.Fatalf("second request input = %v, want %v", types, want)
+	}
+	reasoning := input[1].(map[string]any)
+	if reasoning["id"] != "rs_1" || reasoning["encrypted_content"] != "ENC" {
+		t.Errorf("reasoning item = %v, want id and encrypted content preserved", reasoning)
+	}
+	output := input[3].(map[string]any)
+	if output["call_id"] != "call_1" || output["output"] != "module elencode" {
+		t.Errorf("function_call_output = %v, want the tool result under its call id", output)
+	}
+}
+
+// The Stream goroutine must exit and close its channel when the consumer
+// abandons the turn; -race plus the collect timeout make a leak loud.
+func TestStreamStopsWhenContextCancelled(t *testing.T) {
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"He\"}\n\n")
+		w.(http.Flusher).Flush()
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	events := c.Stream(ctx, agent.Request{
+		Model:    agent.Model{ID: "gpt-5"},
+		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	})
+
+	<-started
+	cancel()
+
+	// collect returning at all is the assertion: a Stream that ignored
+	// cancellation would leave the channel open and time out here.
+	collect(t, events)
+}
