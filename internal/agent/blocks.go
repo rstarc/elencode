@@ -16,6 +16,10 @@ func (b TextBlock) block() {}
 type ThinkingBlock struct {
 	Thinking  string
 	Signature string
+	// ID is an opaque provider handle for the reasoning item, carried only so
+	// the block round-trips. Anthropic leaves it empty; OpenAI stores the
+	// reasoning item id, which must accompany Signature when re-sent.
+	ID string
 }
 
 func (b ThinkingBlock) block() {}

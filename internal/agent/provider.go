@@ -30,6 +30,23 @@ const (
 	ThinkingAdaptive ThinkingMode = "adaptive"
 	// ThinkingBudgeted: the model reasons within a token budget the caller sets
 	ThinkingBudgeted ThinkingMode = "budgeted"
+	// ThinkingEffort: the model reasons at a discrete effort level the caller
+	// picks (OpenAI reasoning_effort; Anthropic OutputConfig.Effort).
+	ThinkingEffort ThinkingMode = "effort"
+)
+
+// Effort is how hard an effort-based model is asked to reason. Providers clamp
+// it to the levels their own API accepts and treat the zero value as their
+// default, medium.
+type Effort string
+
+const (
+	EffortNone   Effort = ""
+	EffortLow    Effort = "low"
+	EffortMedium Effort = "medium"
+	EffortHigh   Effort = "high"
+	EffortXHigh  Effort = "xhigh"
+	EffortMax    Effort = "max"
 )
 
 // Event is an incremental update emitted while a turn is being processed.
