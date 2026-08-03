@@ -195,6 +195,41 @@ func TestHeaderCarriesTheTitle(t *testing.T) {
 	}
 }
 
+// A retry is still a failure, so the part naming it is drawn in the same red an
+// Error box uses: a transcript scanned for what went wrong should turn it up.
+// Only what follows — the turn carrying on — is dimmed like a notice.
+func TestRetryColorsTheFailureLikeAnError(t *testing.T) {
+	got := Retry(errors.New("too many requests"), " — retrying in 2s (1/5)", 80)
+
+	wantFailure := lipgloss.NewStyle().Foreground(errorColor).Render("too many requests")
+	if !strings.Contains(got, wantFailure) {
+		t.Errorf("render = %q,\nwant it to contain the failure in the error color: %q", got, wantFailure)
+	}
+	wantDetail := lipgloss.NewStyle().Foreground(noticeColor).Render(" — retrying in 2s (1/5)")
+	if !strings.Contains(got, wantDetail) {
+		t.Errorf("render = %q,\nwant the rest dimmed like a notice: %q", got, wantDetail)
+	}
+}
+
+// Drawn as a rule like a notice, so it has to span the terminal the same way:
+// styling the label separately must not cost the line its width.
+func TestRetrySpansTheTerminal(t *testing.T) {
+	for _, width := range []int{40, 80, 120} {
+		if got := lipgloss.Width(Retry(errors.New("boom"), " — retrying", width)); got != width {
+			t.Errorf("retry width = %d, want %d", got, width)
+		}
+	}
+}
+
+func TestRetryFitsNarrowTerminal(t *testing.T) {
+	for _, width := range []int{0, 1, 10, 20, 40} {
+		got := Retry(errors.New("a rate limit with a rather long explanation"), " — retrying in 30s (4/5)", width)
+		if strings.Contains(got, "\n") {
+			t.Errorf("width %d: retry wrapped onto a second line: %q", width, got)
+		}
+	}
+}
+
 // TestRenderThinkingIsLaidOutLikeAssistantText pins the "same block, different
 // styling" part: both wrap in the marker column, and only the styling differs.
 func TestThinkingIsLaidOutLikeAssistantText(t *testing.T) {

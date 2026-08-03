@@ -122,13 +122,25 @@ func Error(err error, width int) string {
 // with none of the marker column a message block has, so it reads as a break in
 // the conversation instead of a turn in it.
 func Notice(text string, width int) string {
-	return renderRule(text, width, lipgloss.NewStyle().Foreground(noticeColor))
+	style := lipgloss.NewStyle().Foreground(noticeColor)
+	return renderRule(style.Render(text), width, style)
+}
+
+// Retry renders a transient failure the turn is about to try again. Drawn as a
+// notice, because the turn has not ended — but the failure itself is in the same
+// red an Error box uses, since it is still a failure and a transcript scanned
+// for what went wrong should turn it up. detail is what follows it, dimmed.
+func Retry(err error, detail string, width int) string {
+	notice := lipgloss.NewStyle().Foreground(noticeColor)
+	failure := lipgloss.NewStyle().Foreground(errorColor).Render(err.Error())
+	return renderRule(failure+notice.Render(detail), width, notice)
 }
 
 // Header renders the title the session opens with, as the same rule a notice is
 // drawn with but colored to read as a title rather than an event.
 func Header(text string, width int) string {
-	return renderRule(text, width, lipgloss.NewStyle().Foreground(headerColor).Bold(true))
+	style := lipgloss.NewStyle().Foreground(headerColor).Bold(true)
+	return renderRule(style.Render(text), width, style)
 }
 
 // renderBoxedBlock prefixes content, wrapped to width, with a colored marker
@@ -168,7 +180,11 @@ func renderTitledBlock(title, content string, contentStyle lipgloss.Style, first
 // renderRule centers label in a line of rule characters, spanning the width it
 // is given: a rule that stopped short of the edge would read as a box around
 // nothing rather than as a divider.
-func renderRule(label string, width int, style lipgloss.Style) string {
+//
+// label arrives already styled, and ruleStyle dresses only the rule either side
+// of it, so a caller can color part of the label differently from the line it
+// sits in. Widths are measured with lipgloss, which ignores escape sequences.
+func renderRule(label string, width int, ruleStyle lipgloss.Style) string {
 	total := max(width, minBlockWidth)
 	padded := " " + label + " "
 
@@ -176,11 +192,11 @@ func renderRule(label string, width int, style lipgloss.Style) string {
 	if fill < 2 {
 		// No room for a rule on both sides. The label alone still reads as a
 		// break, since nothing else in the transcript is unmarked.
-		return style.MaxWidth(total).Render(padded)
+		return lipgloss.NewStyle().MaxWidth(total).Render(padded)
 	}
 
 	left := fill / 2
-	return style.Render(strings.Repeat(rule, left) + padded + strings.Repeat(rule, fill-left))
+	return ruleStyle.Render(strings.Repeat(rule, left)) + padded + ruleStyle.Render(strings.Repeat(rule, fill-left))
 }
 
 // rule is the character a divider is drawn with

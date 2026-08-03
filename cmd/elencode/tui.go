@@ -204,9 +204,9 @@ func (m model) reportError(err error) tea.Cmd {
 // indistinguishable from a hang. Printed once per attempt instead of counting
 // down in the frame, which would need a ticker for a wait of a few seconds.
 func (m model) reportRetry(event agent.RetryEvent) tea.Cmd {
-	notice := fmt.Sprintf("%v — retrying in %s (%d/%d)",
-		event.Err, event.In.Round(time.Second), event.Attempt, event.Of)
-	return printAbove(transcript.Notice(notice, m.width))
+	detail := fmt.Sprintf(" — retrying in %s (%d/%d)",
+		event.In.Round(time.Second), event.Attempt, event.Of)
+	return printAbove(transcript.Retry(event.Err, detail, m.width))
 }
 
 // modelsMsg carries the result of a /model lookup. choose is the model the user
