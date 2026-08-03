@@ -20,22 +20,24 @@ const defaultModel = sdk.ModelClaudeHaiku4_5
 
 type Client struct {
 	client sdk.Client
-	// thinking asks for the model's reasoning. Fixed for the life of the
-	// client: it comes from the config file and nothing changes it at runtime.
+	// thinking asks for the model's reasoning, and effort says how hard an
+	// effort-based model should reason. Both are fixed for the life of the
+	// client: they come from the config file and nothing changes them at runtime.
 	thinking bool
+	effort   agent.Effort
 }
 
-func New(apiKey string, thinking bool) *Client {
-	return newWithOptions(apiKey, thinking)
+func New(apiKey string, thinking bool, effort agent.Effort) *Client {
+	return newWithOptions(apiKey, thinking, effort)
 }
 
 // newWithOptions is New with extra SDK options, which tests use to point the
 // client at a stub server.
-func newWithOptions(apiKey string, thinking bool, opts ...option.RequestOption) *Client {
+func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...option.RequestOption) *Client {
 	opts = append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
 	// Thinking stays off until Resolve says what this model accepts: asking for
 	// the wrong kind is rejected outright, not ignored.
-	return &Client{client: sdk.NewClient(opts...), thinking: thinking}
+	return &Client{client: sdk.NewClient(opts...), thinking: thinking, effort: effort}
 }
 
 // DefaultModelID is the model used when configuration names none.
@@ -59,12 +61,35 @@ const thinkingBudget = 2048
 
 // messageParams builds the request for one round of inference
 func (c *Client) messageParams(req agent.Request, messages []sdk.MessageParam) sdk.MessageNewParams {
-	return sdk.MessageNewParams{
+	params := sdk.MessageNewParams{
 		MaxTokens: req.MaxTokens,
 		Messages:  messages,
 		Model:     sdk.Model(req.Model.ID),
 		Tools:     toolParams(req.Tools),
 		Thinking:  c.thinkingParam(req.Model),
+	}
+
+	if c.thinking && req.Model.Thinking == agent.ThinkingEffort {
+		params.OutputConfig = sdk.OutputConfigParam{Effort: toAnthropicEffort(c.effort)}
+	}
+	return params
+}
+
+// toAnthropicEffort clamps to the levels the API accepts. The zero value falls
+// to the API's own default rather than erroring: an unset effort is not a
+// mistake, it just means "whatever you normally do".
+func toAnthropicEffort(e agent.Effort) sdk.OutputConfigEffort {
+	switch e {
+	case agent.EffortLow:
+		return sdk.OutputConfigEffortLow
+	case agent.EffortHigh:
+		return sdk.OutputConfigEffortHigh
+	case agent.EffortXHigh:
+		return sdk.OutputConfigEffortXhigh
+	case agent.EffortMax:
+		return sdk.OutputConfigEffortMax
+	default:
+		return sdk.OutputConfigEffortMedium
 	}
 }
 
@@ -75,10 +100,14 @@ func (c *Client) thinkingParam(model agent.Model) sdk.ThinkingConfigParamUnion {
 	}
 
 	switch model.Thinking {
-	case agent.ThinkingAdaptive:
+	case agent.ThinkingEffort, agent.ThinkingAdaptive:
 		// Summarized, because the reasoning is rendered: the API otherwise
 		// returns thinking blocks whose text is empty, which would draw a
 		// heading over nothing.
+		//
+		// Effort models ask for this too. OutputConfig.Effort says how hard to
+		// reason, not whether the reasoning comes back; without the thinking
+		// param there is nothing to render.
 		return sdk.ThinkingConfigParamUnion{OfAdaptive: &sdk.ThinkingConfigAdaptiveParam{
 			Display: sdk.ThinkingConfigAdaptiveDisplaySummarized,
 		}}
@@ -112,6 +141,8 @@ func toModel(info sdk.ModelInfo) agent.Model {
 	model := agent.Model{ID: info.ID, DisplayName: info.DisplayName}
 
 	switch thinking := info.Capabilities.Thinking; {
+	case info.Capabilities.Effort.Supported:
+		model.Thinking = agent.ThinkingEffort
 	case thinking.Types.Adaptive.Supported:
 		model.Thinking = agent.ThinkingAdaptive
 	case thinking.Types.Enabled.Supported:

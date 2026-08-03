@@ -30,7 +30,7 @@ func main() {
 	}
 
 	// Initialize provider
-	provider := anthropic.New(cfg.AnthropicAPIKey.Reveal(), cfg.ThinkingEnabled)
+	provider := anthropic.New(cfg.AnthropicAPIKey.Reveal(), cfg.ThinkingEnabled, agent.Effort(cfg.ThinkingEffort))
 	modelID := cfg.Model
 	if modelID == "" {
 		modelID = anthropic.DefaultModelID()

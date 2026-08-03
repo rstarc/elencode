@@ -149,7 +149,7 @@ func TestModelsListsWhatTheAPIReturns(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := newWithOptions("key", false, option.WithBaseURL(server.URL))
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
 	got, err := c.Models(context.Background())
 	if err != nil {
 		t.Fatalf("Models: %v", err)
@@ -347,7 +347,7 @@ func TestModelsReportWhatThinkingTheyAccept(t *testing.T) {
 	}))
 	defer server.Close()
 
-	got, err := newWithOptions("key", true, option.WithBaseURL(server.URL)).Models(context.Background())
+	got, err := newWithOptions("key", true, agent.EffortMedium, option.WithBaseURL(server.URL)).Models(context.Background())
 	if err != nil {
 		t.Fatalf("Models: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestThinkingMatchesWhatTheModelAccepts(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			c := newWithOptions("key", true)
+			c := newWithOptions("key", true, agent.EffortMedium)
 
 			params := c.messageParams(agent.Request{Model: agent.Model{ID: "m", Thinking: test.mode}, MaxTokens: 8092}, nil)
 
@@ -393,7 +393,7 @@ func TestThinkingMatchesWhatTheModelAccepts(t *testing.T) {
 }
 
 func TestMessageParamsUsesTheRequestModel(t *testing.T) {
-	c := newWithOptions("key", false)
+	c := newWithOptions("key", false, agent.EffortMedium)
 
 	params := c.messageParams(agent.Request{Model: agent.Model{ID: "model-from-request"}, MaxTokens: 8092}, nil)
 
@@ -406,7 +406,7 @@ func TestMessageParamsUsesTheRequestModel(t *testing.T) {
 // at all: the API returns thinking blocks with empty text unless the summary is
 // asked for, which would put a heading over nothing on screen.
 func TestAdaptiveThinkingAsksForTheSummary(t *testing.T) {
-	c := newWithOptions("key", true)
+	c := newWithOptions("key", true, agent.EffortMedium)
 
 	params := c.messageParams(agent.Request{Model: agent.Model{ID: "m", Thinking: agent.ThinkingAdaptive}, MaxTokens: 8092}, nil)
 
@@ -416,7 +416,7 @@ func TestAdaptiveThinkingAsksForTheSummary(t *testing.T) {
 }
 
 func TestThinkingIsNotRequestedWhenDisabled(t *testing.T) {
-	c := newWithOptions("key", false)
+	c := newWithOptions("key", false, agent.EffortMedium)
 
 	params := c.messageParams(agent.Request{Model: agent.Model{ID: "m", Thinking: agent.ThinkingAdaptive}, MaxTokens: 8092}, nil)
 
@@ -428,11 +428,76 @@ func TestThinkingIsNotRequestedWhenDisabled(t *testing.T) {
 // TestBudgetLeavesRoomForAnAnswer guards the older kind of thinking: the API
 // rejects a budget that does not leave the request room to answer.
 func TestBudgetLeavesRoomForAnAnswer(t *testing.T) {
-	c := newWithOptions("key", true)
+	c := newWithOptions("key", true, agent.EffortMedium)
 
 	params := c.messageParams(agent.Request{Model: agent.Model{ID: "m", Thinking: agent.ThinkingBudgeted}, MaxTokens: 8092}, nil)
 
 	if budget := params.Thinking.OfEnabled.BudgetTokens; budget < 1024 || budget >= params.MaxTokens {
 		t.Errorf("budget = %d, want between 1024 and the %d token limit", budget, params.MaxTokens)
+	}
+}
+
+// TestToModelPrefersEffortCapability: a model that reasons at an effort level
+// takes that over the adaptive or budgeted kinds, so the caller's configured
+// level is the one that reaches the API.
+func TestToModelPrefersEffortCapability(t *testing.T) {
+	info := sdk.ModelInfo{ID: "claude-x", DisplayName: "Claude X"}
+	info.Capabilities.Effort.Supported = true
+	info.Capabilities.Thinking.Types.Adaptive.Supported = true
+
+	if got := toModel(info); got.Thinking != agent.ThinkingEffort {
+		t.Fatalf("Thinking = %q, want effort", got.Thinking)
+	}
+}
+
+func TestMessageParamsSetsEffort(t *testing.T) {
+	c := newWithOptions("key", true, agent.EffortHigh)
+	m := agent.Model{ID: "claude-x", Thinking: agent.ThinkingEffort}
+
+	params := c.messageParams(agent.Request{Model: m, MaxTokens: 10}, nil)
+
+	if params.OutputConfig.Effort != sdk.OutputConfigEffortHigh {
+		t.Fatalf("effort = %q, want high", params.OutputConfig.Effort)
+	}
+}
+
+func TestEffortIsNotRequestedWhenThinkingDisabled(t *testing.T) {
+	c := newWithOptions("key", false, agent.EffortHigh)
+	m := agent.Model{ID: "claude-x", Thinking: agent.ThinkingEffort}
+
+	params := c.messageParams(agent.Request{Model: m, MaxTokens: 10}, nil)
+
+	if params.OutputConfig.Effort != "" {
+		t.Fatalf("effort = %q, want it left out of the request", params.OutputConfig.Effort)
+	}
+}
+
+func TestToAnthropicEffortClampsToKnownLevels(t *testing.T) {
+	tests := map[agent.Effort]sdk.OutputConfigEffort{
+		agent.EffortNone:   sdk.OutputConfigEffortMedium,
+		agent.EffortLow:    sdk.OutputConfigEffortLow,
+		agent.EffortMedium: sdk.OutputConfigEffortMedium,
+		agent.EffortHigh:   sdk.OutputConfigEffortHigh,
+		agent.EffortXHigh:  sdk.OutputConfigEffortXhigh,
+		agent.EffortMax:    sdk.OutputConfigEffortMax,
+	}
+	for in, want := range tests {
+		if got := toAnthropicEffort(in); got != want {
+			t.Errorf("toAnthropicEffort(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestEffortModelsStillAskForThinking: OutputConfig.Effort says how hard to
+// reason, not whether the reasoning comes back. Without the thinking param an
+// effort model returns nothing to render, so both go in the request.
+func TestEffortModelsStillAskForThinking(t *testing.T) {
+	c := newWithOptions("key", true, agent.EffortHigh)
+	m := agent.Model{ID: "claude-x", Thinking: agent.ThinkingEffort}
+
+	params := c.messageParams(agent.Request{Model: m, MaxTokens: 10}, nil)
+
+	if params.Thinking.OfAdaptive == nil {
+		t.Fatalf("thinking = %+v, want the adaptive summarized param alongside effort", params.Thinking)
 	}
 }
