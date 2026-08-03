@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -652,6 +653,72 @@ func TestStreamMarksTransientFailuresRetryable(t *testing.T) {
 			retryableError(t, streamAgainst(t, errorStatus(test.status, test.errType, nil)))
 		})
 	}
+}
+
+// The set matches what the SDK retries when left to itself. Diverging would
+// mean this build gives up on failures the vendor considers transient.
+func TestStreamMarksEveryStatusTheSDKWouldRetry(t *testing.T) {
+	for _, status := range []int{
+		http.StatusRequestTimeout,
+		http.StatusConflict,
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			// A type the table does not know, so only the status can mark it
+			retryableError(t, streamAgainst(t, errorStatus(status, "something_new", nil)))
+		})
+	}
+}
+
+// A request that never reached the API is retried too, matching the SDK's own
+// treatment of a connection error. Cancellation is the exception: the user
+// asked for the turn to stop, so there is nothing to recover.
+func TestStreamMarksAConnectionFailureRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	serverURL := server.URL
+	server.Close() // nothing is listening on that port now
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(serverURL))
+	retryableError(t, collectEvents(t, c.Stream(context.Background(), agent.Request{
+		Model:     agent.Model{ID: "claude-x"},
+		MaxTokens: 100,
+		Messages:  []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	})))
+}
+
+func TestClassifyLeavesCancellationAlone(t *testing.T) {
+	// Shaped like what the SDK returns: the transport error wraps ctx's own.
+	err := &url.Error{Op: "Post", URL: "https://api.anthropic.com", Err: context.Canceled}
+
+	var retryable *agent.RetryableError
+	if errors.As(classify(err), &retryable) {
+		t.Errorf("classify(%v) marked it retryable, want a cancelled turn left alone", err)
+	}
+}
+
+// x-should-retry is the API telling us directly, and it wins over anything the
+// status or the error type implies — in both directions.
+func TestStreamObeysTheShouldRetryHeader(t *testing.T) {
+	t.Run("false on a rate limit", func(t *testing.T) {
+		events := streamAgainst(t, errorStatus(
+			http.StatusTooManyRequests, "rate_limit_error", map[string]string{"x-should-retry": "false"},
+		))
+
+		last := events[len(events)-1].(agent.ErrorEvent)
+		var retryable *agent.RetryableError
+		if errors.As(last.Err, &retryable) {
+			t.Errorf("err = %v, want the header to veto the retry", last.Err)
+		}
+	})
+
+	t.Run("true on a permanent status", func(t *testing.T) {
+		retryableError(t, streamAgainst(t, errorStatus(
+			http.StatusBadRequest, "invalid_request_error", map[string]string{"x-should-retry": "true"},
+		)))
+	})
 }
 
 func TestStreamReadsRetryAfter(t *testing.T) {

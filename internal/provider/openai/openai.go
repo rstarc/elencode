@@ -256,20 +256,45 @@ var retryableCodes = map[string]bool{
 	"server_error":        true,
 }
 
-// classify marks err retryable when the failure was transient. A 429 or 5xx is
-// the usual shape; the agent decides what to do about it.
+// classify marks err retryable when the failure was transient, leaving the
+// agent to decide what to do about it.
 func classify(err error) error {
-	var apiErr *openai.Error
-	if !errors.As(err, &apiErr) {
-		// No status to judge by. A bare transport failure could well be
-		// transient, but so could a bug, and guessing wrong here means retrying
-		// something that will never work.
+	// Cancellation reaches here as a transport failure, and would otherwise be
+	// read as one worth retrying. The user asked for the turn to stop.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	if apiErr.StatusCode != http.StatusTooManyRequests && apiErr.StatusCode < http.StatusInternalServerError {
+
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) {
+		// No response at all, so the request never reached the API. The SDK
+		// treats that as a connection error and retries it.
+		return &agent.RetryableError{Err: err}
+	}
+	if !retryableResponse(apiErr.StatusCode, apiErr.Response) {
 		return err
 	}
 	return &agent.RetryableError{Err: err, After: retryAfter(apiErr.Response)}
+}
+
+// retryableResponse mirrors the judgement the SDK makes when it retries for
+// itself, which we switched off: the same statuses, and the same deference to
+// x-should-retry, which is the API saying so outright and overrules them.
+// Diverging would mean giving up on failures the vendor calls transient.
+func retryableResponse(status int, resp *http.Response) bool {
+	if resp != nil {
+		switch resp.Header.Get("x-should-retry") {
+		case "true":
+			return true
+		case "false":
+			return false
+		}
+	}
+
+	return status == http.StatusRequestTimeout ||
+		status == http.StatusConflict ||
+		status == http.StatusTooManyRequests ||
+		status >= http.StatusInternalServerError
 }
 
 // classifyCode marks a failure reported inside the stream, where there is no

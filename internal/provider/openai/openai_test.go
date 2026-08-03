@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strings"
 	"sync"
@@ -244,6 +245,66 @@ func TestStreamMarksServerErrorsRetryable(t *testing.T) {
 	if retryable.After != 0 {
 		t.Errorf("After = %s, want 0 when the API gave no hint", retryable.After)
 	}
+}
+
+// The set matches what the SDK retries when left to itself. Diverging would
+// mean this build gives up on failures the vendor considers transient.
+func TestStreamMarksEveryStatusTheSDKWouldRetry(t *testing.T) {
+	for _, status := range []int{
+		http.StatusRequestTimeout,
+		http.StatusConflict,
+		http.StatusTooManyRequests,
+		http.StatusInternalServerError,
+		http.StatusBadGateway,
+		http.StatusServiceUnavailable,
+	} {
+		t.Run(http.StatusText(status), func(t *testing.T) {
+			retryableError(t, streamStatus(t, status, nil))
+		})
+	}
+}
+
+// A request that never reached the API is retried too, matching the SDK's own
+// treatment of a connection error. Cancellation is the exception: the user
+// asked for the turn to stop, so there is nothing to recover.
+func TestStreamMarksAConnectionFailureRetryable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	url := server.URL
+	server.Close() // nothing is listening on that port now
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	retryableError(t, collect(t, c.Stream(context.Background(), agent.Request{
+		Model:    agent.Model{ID: "gpt-5"},
+		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	})))
+}
+
+func TestClassifyLeavesCancellationAlone(t *testing.T) {
+	// Shaped like what the SDK returns: the transport error wraps ctx's own.
+	err := &url.Error{Op: "Post", URL: "https://api.openai.com", Err: context.Canceled}
+
+	var retryable *agent.RetryableError
+	if errors.As(classify(err), &retryable) {
+		t.Errorf("classify(%v) marked it retryable, want a cancelled turn left alone", err)
+	}
+}
+
+// x-should-retry is the API telling us directly, and it wins over anything the
+// status implies — in both directions.
+func TestStreamObeysTheShouldRetryHeader(t *testing.T) {
+	t.Run("false on a retryable status", func(t *testing.T) {
+		events := streamStatus(t, http.StatusTooManyRequests, map[string]string{"x-should-retry": "false"})
+
+		last := events[len(events)-1].(agent.ErrorEvent)
+		var retryable *agent.RetryableError
+		if errors.As(last.Err, &retryable) {
+			t.Errorf("err = %v, want the header to veto the retry", last.Err)
+		}
+	})
+
+	t.Run("true on a permanent status", func(t *testing.T) {
+		retryableError(t, streamStatus(t, http.StatusBadRequest, map[string]string{"x-should-retry": "true"}))
+	})
 }
 
 // A rejected request fails the same way however often it is sent, so retrying

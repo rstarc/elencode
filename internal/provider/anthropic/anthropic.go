@@ -258,26 +258,54 @@ var retryableTypes = map[shared.ErrorType]bool{
 }
 
 // classify marks err retryable when the failure was transient.
-//
-// The type is checked before the status because an error the API reported
-// mid-stream carries the 200 the stream opened with, not a failure code: judging
-// by status alone would miss every overload that arrives once a turn is under
-// way. The status is the fallback, for a body naming a type we do not know.
 func classify(err error) error {
-	var apiErr *sdk.Error
-	if !errors.As(err, &apiErr) {
-		// No status or type to judge by. A bare transport failure could well be
-		// transient, but so could a bug, and guessing wrong here means retrying
-		// something that will never work.
+	// Cancellation reaches here as a transport failure, and would otherwise be
+	// read as one worth retrying. The user asked for the turn to stop.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
 
-	if !retryableTypes[apiErr.Type()] &&
-		apiErr.StatusCode != http.StatusTooManyRequests &&
-		apiErr.StatusCode < http.StatusInternalServerError {
+	var apiErr *sdk.Error
+	if !errors.As(err, &apiErr) {
+		// No response at all, so the request never reached the API. The SDK
+		// treats that as a connection error and retries it.
+		return &agent.RetryableError{Err: err}
+	}
+
+	if !retryableResponse(apiErr.Type(), apiErr.StatusCode, apiErr.Response) {
 		return err
 	}
 	return &agent.RetryableError{Err: err, After: retryAfter(apiErr.Response)}
+}
+
+// retryableResponse mirrors the judgement the SDK makes when it retries for
+// itself, which we switched off: the same statuses, and the same deference to
+// x-should-retry, which is the API saying so outright and overrules everything
+// else. Diverging would mean giving up on failures the vendor calls transient.
+//
+// The error type is consulted on top of that, and before the status, because an
+// error the API reported mid-stream carries the 200 the stream opened with
+// rather than a failure code. Judging by status alone would mark none of them,
+// and an overload arriving once a turn is under way is exactly the case the
+// agent cannot otherwise recover from.
+func retryableResponse(errType shared.ErrorType, status int, resp *http.Response) bool {
+	if resp != nil {
+		switch resp.Header.Get("x-should-retry") {
+		case "true":
+			return true
+		case "false":
+			return false
+		}
+	}
+
+	if retryableTypes[errType] {
+		return true
+	}
+
+	return status == http.StatusRequestTimeout ||
+		status == http.StatusConflict ||
+		status == http.StatusTooManyRequests ||
+		status >= http.StatusInternalServerError
 }
 
 // retryAfter reads how long the API asked us to wait. Zero means it said
