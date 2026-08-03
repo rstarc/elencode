@@ -2,6 +2,7 @@ package openai
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/openai/openai-go"
@@ -46,12 +47,38 @@ func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...o
 // store is off and the full input is replayed every turn, so the agent keeps
 // owning the context window rather than handing it to the server.
 func (c *Client) params(req agent.Request, input responses.ResponseInputParam) responses.ResponseNewParams {
-	return responses.ResponseNewParams{
+	p := responses.ResponseNewParams{
 		Model:           shared.ResponsesModel(req.Model.ID),
 		MaxOutputTokens: openai.Int(req.MaxTokens),
 		Store:           openai.Bool(false),
 		Input:           responses.ResponseNewParamsInputUnion{OfInputItemList: input},
 	}
+
+	if len(req.Tools) > 0 {
+		p.Tools = toTools(req.Tools)
+	}
+	return p
+}
+
+// toTools builds the params directly rather than with ToolParamOfFunction,
+// which has no way to carry the description the model picks tools by.
+func toTools(tools []agent.Tool) []responses.ToolUnionParam {
+	out := make([]responses.ToolUnionParam, 0, len(tools))
+
+	for _, tool := range tools {
+		fn := responses.FunctionToolParam{
+			Name:        tool.Name,
+			Description: openai.String(tool.Description),
+			Strict:      openai.Bool(false),
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": tool.InputSchema.Properties,
+				"required":   tool.InputSchema.Required,
+			},
+		}
+		out = append(out, responses.ToolUnionParam{OfFunction: &fn})
+	}
+	return out
 }
 
 // Stream sends every event through a select on ctx.Done. Buffering delays a
@@ -151,6 +178,18 @@ func toInput(msgs []agent.Message) (responses.ResponseInputParam, error) {
 					Role:    role,
 					Content: responses.EasyInputMessageContentUnionParam{OfString: openai.String(block.Text)},
 				}})
+			case agent.ToolUseBlock:
+				items = append(items, responses.ResponseInputItemParamOfFunctionCall(string(block.Input), block.ID, block.Name))
+			case agent.ToolResultBlock:
+				// A tool result is its own input item, detached from the message
+				// carrying it. function_call_output has no error flag, so a
+				// failure is marked in the text: otherwise the model reads it as
+				// a result.
+				output := block.Content
+				if block.IsError {
+					output = "ERROR: " + output
+				}
+				items = append(items, responses.ResponseInputItemParamOfFunctionCallOutput(block.ToolUseID, output))
 			default:
 				return nil, fmt.Errorf("cannot send block of type %T to the API", block)
 			}
@@ -173,12 +212,17 @@ func toBlocks(resp responses.Response) ([]agent.Block, error) {
 				switch content := part.AsAny().(type) {
 				case responses.ResponseOutputText:
 					blocks = append(blocks, agent.TextBlock{Text: content.Text})
+				case responses.ResponseOutputRefusal:
+					// Shown as text so the transcript says why the turn ended.
+					blocks = append(blocks, agent.TextBlock{Text: content.Refusal})
 				default:
 					// Type, not %T: an unrecognised type string makes AsAny
 					// return nil, which would report a useless "<nil>".
 					return nil, fmt.Errorf("unsupported output content part %q", part.Type)
 				}
 			}
+		case responses.ResponseFunctionToolCall:
+			blocks = append(blocks, agent.ToolUseBlock{ID: variant.CallID, Name: variant.Name, Input: json.RawMessage(variant.Arguments)})
 		default:
 			return nil, fmt.Errorf("unsupported output item type %q", item.Type)
 		}
@@ -187,6 +231,38 @@ func toBlocks(resp responses.Response) ([]agent.Block, error) {
 	return blocks, nil
 }
 
+// stopReason derives why the turn ended: the Responses API has no single field
+// for it. The order matters.
 func stopReason(resp responses.Response) agent.StopReason {
+	// Checked before the function-call scan: a response cut off mid tool call
+	// must not hand the agent truncated argument JSON to execute.
+	if resp.Status == responses.ResponseStatusIncomplete && resp.IncompleteDetails.Reason == "max_output_tokens" {
+		return agent.StopReasonMaxTokens
+	}
+
+	for _, item := range resp.Output {
+		if _, ok := item.AsAny().(responses.ResponseFunctionToolCall); ok {
+			return agent.StopReasonToolUse
+		}
+	}
+
+	if hasRefusal(resp) {
+		return agent.StopReasonRefusal
+	}
 	return agent.StopReasonEndTurn
+}
+
+func hasRefusal(resp responses.Response) bool {
+	for _, item := range resp.Output {
+		msg, ok := item.AsAny().(responses.ResponseOutputMessage)
+		if !ok {
+			continue
+		}
+		for _, part := range msg.Content {
+			if _, ok := part.AsAny().(responses.ResponseOutputRefusal); ok {
+				return true
+			}
+		}
+	}
+	return false
 }

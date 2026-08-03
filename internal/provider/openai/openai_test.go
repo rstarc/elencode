@@ -203,3 +203,139 @@ func TestToInputRejectsUnknownRole(t *testing.T) {
 		t.Fatalf("err = %v, want it to name the offending role", err)
 	}
 }
+
+func TestStreamToolUse(t *testing.T) {
+	s, url := newStub(t, sse(
+		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read","arguments":"{\"path\":\"x\"}","id":"fc_1"}]}}`,
+	))
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	req := agent.Request{
+		Model:    agent.Model{ID: "gpt-5"},
+		Tools:    []agent.Tool{{Name: "read", Description: "read a file", InputSchema: agent.InputSchema{Type: "object"}}},
+		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "read x"}})},
+	}
+
+	var resp agent.Response
+	for _, e := range collect(t, c.Stream(context.Background(), req)) {
+		if re, ok := e.(agent.ResponseEvent); ok {
+			resp = re.Response
+		}
+	}
+
+	if resp.StopReason != agent.StopReasonToolUse {
+		t.Fatalf("stop = %q", resp.StopReason)
+	}
+	tu, ok := resp.Message.Content[0].(agent.ToolUseBlock)
+	if !ok || tu.ID != "call_1" || tu.Name != "read" {
+		t.Fatalf("tool use = %+v", resp.Message.Content[0])
+	}
+
+	// The model picks tools by description, so sending it is not optional.
+	// ToolParamOfFunction drops it, which is why toTools builds the param
+	// struct directly.
+	tools, ok := s.body(0)["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %v, want one", s.body(0)["tools"])
+	}
+	tool := tools[0].(map[string]any)
+	if tool["name"] != "read" || tool["description"] != "read a file" {
+		t.Errorf("tool = %v, want name and description carried through", tool)
+	}
+}
+
+func TestToInputExplodesToolResults(t *testing.T) {
+	msgs := []agent.Message{
+		agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "read x"}}),
+		{Role: agent.RoleAssistant, Content: []agent.Block{agent.ToolUseBlock{ID: "call_1", Name: "read", Input: []byte(`{}`)}}},
+		agent.NewUserMessage([]agent.Block{agent.NewToolResultBlock("call_1", "file body", false)}),
+	}
+
+	input, err := toInput(msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Expect: user message, function_call, function_call_output (3 items).
+	if len(input) != 3 {
+		t.Fatalf("items = %d, want 3", len(input))
+	}
+	if input[1].OfFunctionCall == nil || input[1].OfFunctionCall.CallID != "call_1" {
+		t.Fatalf("item[1] not a function_call: %+v", input[1])
+	}
+	if input[2].OfFunctionCallOutput == nil || input[2].OfFunctionCallOutput.CallID != "call_1" {
+		t.Fatalf("item[2] not a function_call_output: %+v", input[2])
+	}
+}
+
+// function_call_output has no error flag, so a failed tool must say so in the
+// output itself — otherwise the model reads the failure text as a result.
+func TestToInputMarksFailedToolResults(t *testing.T) {
+	input, err := toInput([]agent.Message{
+		agent.NewUserMessage([]agent.Block{agent.NewToolResultBlock("call_1", "no such file", true)}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	out := input[0].OfFunctionCallOutput
+	if out == nil || out.Output != "ERROR: no such file" {
+		t.Fatalf("output = %+v, want the failure marked", input[0])
+	}
+}
+
+// decodeResponse builds a responses.Response the way the SDK does. The union
+// accessors read the raw JSON each item was decoded from, so a struct literal
+// would produce empty variants.
+func decodeResponse(t *testing.T, body string) responses.Response {
+	t.Helper()
+
+	var resp responses.Response
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("building test response: %v", err)
+	}
+	return resp
+}
+
+func TestStopReasonDerivation(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want agent.StopReason
+	}{
+		{"end turn",
+			`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}]}`,
+			agent.StopReasonEndTurn},
+		{"tool use",
+			`{"status":"completed","output":[{"type":"function_call","call_id":"c","name":"read","arguments":"{}"}]}`,
+			agent.StopReasonToolUse},
+		{"refusal",
+			`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"no"}]}]}`,
+			agent.StopReasonRefusal},
+		{"max tokens",
+			`{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}`,
+			agent.StopReasonMaxTokens},
+		// A response cut off mid tool call must not report ToolUse: the agent
+		// would execute the tool with truncated arguments.
+		{"truncated tool call",
+			`{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"function_call","call_id":"c","name":"read","arguments":"{\"pa"}]}`,
+			agent.StopReasonMaxTokens},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := stopReason(decodeResponse(t, test.body)); got != test.want {
+				t.Errorf("stopReason = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestToBlocksRejectsUnhandledOutputItem(t *testing.T) {
+	resp := decodeResponse(t, `{"output":[{"type":"web_search_call","id":"ws_1","status":"completed"}]}`)
+
+	_, err := toBlocks(resp)
+
+	if err == nil || !strings.Contains(err.Error(), "web_search_call") {
+		t.Fatalf("err = %v, want it to name the offending item type", err)
+	}
+}
