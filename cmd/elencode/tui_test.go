@@ -406,6 +406,9 @@ func (p *rateLimitedProvider) Stream(ctx context.Context, req agent.Request) <-c
 	events := make(chan agent.Event, 2)
 	if p.calls == 0 {
 		p.calls++
+		// A provider can stream output before discovering that the response must
+		// be retried. The failed attempt must not contaminate the next one.
+		events <- agent.TextDeltaEvent{Text: "stale"}
 		events <- agent.ErrorEvent{Err: &agent.RetryableError{
 			Err:   errors.New("too many requests"),
 			After: time.Millisecond,
@@ -436,7 +439,9 @@ func TestProgramReportsARetryAndCarriesOn(t *testing.T) {
 	// A backoff with nothing on screen is indistinguishable from a hang, so the
 	// notice matters as much as the recovery that follows it.
 	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
-		return bytes.Contains(out, []byte("retrying")) && bytes.Contains(out, []byte("recovered"))
+		return bytes.Contains(out, []byte("retrying")) &&
+			bytes.Contains(out, []byte("recovered")) &&
+			!bytes.Contains(out, []byte("stale"))
 	})
 
 	if err := tm.Quit(); err != nil {

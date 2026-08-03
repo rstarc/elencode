@@ -433,6 +433,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case agent.ErrorEvent:
 			print = m.reportError(event.Err)
 		case agent.RetryEvent:
+			// A retry starts a fresh response. Do not let deltas from the failed
+			// attempt join the successful attempt's stream.
+			m.stream.Reset()
 			print = m.reportRetry(event)
 		}
 		// Sequenced, not batched: batched commands run concurrently, so the next
