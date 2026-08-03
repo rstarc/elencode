@@ -104,6 +104,58 @@ func toTools(tools []agent.Tool) []responses.ToolUnionParam {
 	return out
 }
 
+// chatModelPrefixes are the families the picker offers. /v1/models also lists
+// audio, image, embedding and moderation models, which cannot hold a
+// conversation; showing them would make most of the picker unusable.
+var chatModelPrefixes = []string{"gpt-5", "gpt-4.1", "gpt-4o", "o3", "o4"}
+
+// reasoningModelPrefixes mark ids whose family reasons at an effort level.
+// /v1/models returns no capabilities at all, so unlike the Anthropic provider
+// this has to be a static table rather than something the API tells us.
+var reasoningModelPrefixes = []string{"o1", "o3", "o4", "gpt-5"}
+
+func hasAnyPrefix(id string, prefixes []string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(id, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// modelFor describes a model from its id alone, which is all /v1/models gives.
+func modelFor(id string) agent.Model {
+	model := agent.Model{ID: id, DisplayName: id}
+	if hasAnyPrefix(id, reasoningModelPrefixes) {
+		model.Thinking = agent.ThinkingEffort
+	}
+	return model
+}
+
+// Resolve is a table lookup, not an API call: any id resolves, and one the
+// table does not know simply runs without reasoning, so the config can still
+// name a model this build has not heard of.
+func (c *Client) Resolve(ctx context.Context, modelID string) (agent.Model, error) {
+	return modelFor(modelID), nil
+}
+
+// Models lists the models that can hold a conversation, following pagination so
+// a model past the first page is still selectable.
+func (c *Client) Models(ctx context.Context) ([]agent.Model, error) {
+	var models []agent.Model
+
+	pager := c.client.Models.ListAutoPaging(ctx)
+	for pager.Next() {
+		if id := pager.Current().ID; hasAnyPrefix(id, chatModelPrefixes) {
+			models = append(models, modelFor(id))
+		}
+	}
+	if err := pager.Err(); err != nil {
+		return nil, err
+	}
+	return models, nil
+}
+
 // Stream sends every event through a select on ctx.Done. Buffering delays a
 // blocked send but does not prevent one, so a send that is not cancellable
 // leaks this goroutine whenever the consumer abandons the turn.
