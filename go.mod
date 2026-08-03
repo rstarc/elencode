@@ -9,6 +9,7 @@ require (
 	github.com/anthropics/anthropic-sdk-go v1.57.0
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/charmbracelet/x/exp/teatest/v2 v2.0.0-20260730164118-7e2d3e6c5238
+	github.com/openai/openai-go v1.12.0
 )
 
 require (
