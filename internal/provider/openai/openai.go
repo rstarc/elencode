@@ -43,12 +43,8 @@ func New(apiKey string, thinking bool, effort agent.Effort) *Client {
 
 // newWithOptions is New with extra SDK options, which tests use to point the
 // client at a stub server.
-//
-// Retrying is left to the agent. The SDK does it too, but with a sleep that
-// ignores ctx and no way to say so, which makes ctrl+c look broken and turns
-// each of the agent's attempts into several requests.
 func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...option.RequestOption) *Client {
-	opts = append([]option.RequestOption{option.WithAPIKey(apiKey), option.WithMaxRetries(0)}, opts...)
+	opts = append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
 	return &Client{client: openai.NewClient(opts...), thinking: thinking, effort: effort}
 }
 
@@ -181,7 +177,9 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 			return
 		}
 
-		stream := c.client.Responses.NewStreaming(ctx, c.params(req, input))
+		// noRetry, not a client-wide setting: only inference is retried by the
+		// agent, so this is the one call whose retries would be doubled up.
+		stream := c.client.Responses.NewStreaming(ctx, c.params(req, input), noRetry)
 
 		// Emit only what the UI needs to paint live. Everything else (tool
 		// inputs, status) is recovered from the terminal response, which
@@ -243,6 +241,12 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 
 	return events
 }
+
+// noRetry hands retrying to the agent for the request it is applied to. The SDK
+// retries too, but with a sleep that ignores ctx and no way to tell the UI,
+// which makes ctrl+c look broken and turns each of the agent's own attempts
+// into several requests.
+var noRetry = option.WithMaxRetries(0)
 
 // retryableCodes are the API's names for a failure that another identical
 // request could get past. Everything else — a rejected prompt, a bad request —

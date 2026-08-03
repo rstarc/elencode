@@ -2,12 +2,17 @@ package anthropic
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
+	"time"
 
 	"github.com/rstarc/elencode/internal/agent"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
+	"github.com/anthropics/anthropic-sdk-go/shared"
 )
 
 // eventBuffer is the capacity of the Event channel returned by Stream. It
@@ -168,7 +173,9 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 			return
 		}
 
-		stream := c.client.Messages.NewStreaming(ctx, c.messageParams(req, messages))
+		// noRetry, not a client-wide setting: only inference is retried by the
+		// agent, so this is the one call whose retries would be doubled up.
+		stream := c.client.Messages.NewStreaming(ctx, c.messageParams(req, messages), noRetry)
 
 		// The SDK has no GetFinalMessage; Accumulate folds each event into
 		// message, rebuilding what a non-streaming call would have returned.
@@ -192,8 +199,11 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 			}
 		}
 
+		// The one place a request failure can surface: the SDK turns a mid-stream
+		// error frame into the same API error a rejected request produces, so
+		// both arrive here rather than needing separate handling.
 		if err := stream.Err(); err != nil {
-			emit(ctx, events, agent.ErrorEvent{Err: err})
+			emit(ctx, events, agent.ErrorEvent{Err: classify(err)})
 			return
 		}
 
@@ -230,6 +240,60 @@ func deltaEvent(delta sdk.ContentBlockDeltaEvent) (agent.Event, bool) {
 	default:
 		return nil, false
 	}
+}
+
+// noRetry hands retrying to the agent for the request it is applied to. The SDK
+// retries too, but with a sleep that ignores ctx and no way to tell the UI,
+// which makes ctrl+c look broken and turns each of the agent's own attempts
+// into several requests.
+var noRetry = option.WithMaxRetries(0)
+
+// retryableTypes are the API's names for a failure another identical request
+// could get past. Everything else — a rejected request, a bad key — would fail
+// the same way again, and retrying only delays the explanation.
+var retryableTypes = map[shared.ErrorType]bool{
+	shared.ErrorTypeRateLimitError:  true,
+	shared.ErrorTypeOverloadedError: true,
+	shared.ErrorTypeAPIError:        true,
+}
+
+// classify marks err retryable when the failure was transient.
+//
+// The type is checked before the status because an error the API reported
+// mid-stream carries the 200 the stream opened with, not a failure code: judging
+// by status alone would miss every overload that arrives once a turn is under
+// way. The status is the fallback, for a body naming a type we do not know.
+func classify(err error) error {
+	var apiErr *sdk.Error
+	if !errors.As(err, &apiErr) {
+		// No status or type to judge by. A bare transport failure could well be
+		// transient, but so could a bug, and guessing wrong here means retrying
+		// something that will never work.
+		return err
+	}
+
+	if !retryableTypes[apiErr.Type()] &&
+		apiErr.StatusCode != http.StatusTooManyRequests &&
+		apiErr.StatusCode < http.StatusInternalServerError {
+		return err
+	}
+	return &agent.RetryableError{Err: err, After: retryAfter(apiErr.Response)}
+}
+
+// retryAfter reads how long the API asked us to wait. Zero means it said
+// nothing and the agent should fall back to its own backoff.
+func retryAfter(resp *http.Response) time.Duration {
+	if resp == nil {
+		return 0
+	}
+	// Milliseconds first: it is the more precise of the two when both are sent.
+	if ms, err := strconv.Atoi(resp.Header.Get("Retry-After-Ms")); err == nil && ms > 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	return 0
 }
 
 // emit sends ev unless the consumer has abandoned the turn. It reports whether

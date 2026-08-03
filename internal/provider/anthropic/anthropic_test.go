@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -580,6 +582,154 @@ func TestStreamAssemblesAResponseFromSSE(t *testing.T) {
 	want := agent.TextBlock{Text: "Hello"}
 	if len(resp.Response.Message.Content) != 1 || resp.Response.Message.Content[0] != want {
 		t.Errorf("content = %#v, want [%#v]", resp.Response.Message.Content, want)
+	}
+}
+
+// streamAgainst runs one request against handler and drains the events.
+func streamAgainst(t *testing.T, handler http.HandlerFunc) []agent.Event {
+	t.Helper()
+
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	return collectEvents(t, c.Stream(context.Background(), agent.Request{
+		Model:     agent.Model{ID: "claude-x"},
+		MaxTokens: 100,
+		Messages:  []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+}
+
+// errorStatus answers with an API error envelope, which is what the SDK reads
+// the error type out of.
+func errorStatus(status int, errType string, hdr map[string]string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		for k, v := range hdr {
+			w.Header().Set(k, v)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		fmt.Fprintf(w, `{"type":"error","error":{"type":%q,"message":"boom"}}`, errType)
+	}
+}
+
+// retryableError returns the RetryableError the stream ended with, failing if
+// the last event was not one.
+func retryableError(t *testing.T, events []agent.Event) *agent.RetryableError {
+	t.Helper()
+
+	if len(events) == 0 {
+		t.Fatal("no events, want a terminal ErrorEvent")
+	}
+	last, ok := events[len(events)-1].(agent.ErrorEvent)
+	if !ok {
+		t.Fatalf("last event = %#v, want an ErrorEvent", events[len(events)-1])
+	}
+	var retryable *agent.RetryableError
+	if !errors.As(last.Err, &retryable) {
+		t.Fatalf("err = %v (%T), want it marked retryable", last.Err, last.Err)
+	}
+	return retryable
+}
+
+func TestStreamMarksTransientFailuresRetryable(t *testing.T) {
+	tests := []struct {
+		name    string
+		status  int
+		errType string
+	}{
+		{name: "rate limit", status: http.StatusTooManyRequests, errType: "rate_limit_error"},
+		// 529: the API's own "busy, come back" signal, and the one most worth
+		// riding out rather than reporting.
+		{name: "overloaded", status: 529, errType: "overloaded_error"},
+		{name: "api error", status: http.StatusInternalServerError, errType: "api_error"},
+		// A 5xx with no type the SDK recognises still has its status to go on
+		{name: "untyped 5xx", status: http.StatusBadGateway, errType: "something_new"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			retryableError(t, streamAgainst(t, errorStatus(test.status, test.errType, nil)))
+		})
+	}
+}
+
+func TestStreamReadsRetryAfter(t *testing.T) {
+	retryable := retryableError(t, streamAgainst(t, errorStatus(
+		http.StatusTooManyRequests, "rate_limit_error", map[string]string{"Retry-After": "9"},
+	)))
+
+	if retryable.After != 9*time.Second {
+		t.Errorf("After = %s, want 9s from the Retry-After header", retryable.After)
+	}
+}
+
+func TestStreamPrefersRetryAfterMs(t *testing.T) {
+	retryable := retryableError(t, streamAgainst(t, errorStatus(
+		http.StatusTooManyRequests, "rate_limit_error",
+		map[string]string{"Retry-After-Ms": "2500", "Retry-After": "9"},
+	)))
+
+	if retryable.After != 2500*time.Millisecond {
+		t.Errorf("After = %s, want the finer-grained header to win", retryable.After)
+	}
+}
+
+// A rejected request fails the same way however often it is sent, so retrying
+// only delays telling the user what is wrong.
+func TestStreamLeavesPermanentFailuresUnmarked(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		status  int
+		errType string
+	}{
+		{name: "invalid request", status: http.StatusBadRequest, errType: "invalid_request_error"},
+		{name: "authentication", status: http.StatusUnauthorized, errType: "authentication_error"},
+		{name: "not found", status: http.StatusNotFound, errType: "not_found_error"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			events := streamAgainst(t, errorStatus(test.status, test.errType, nil))
+
+			last, ok := events[len(events)-1].(agent.ErrorEvent)
+			if !ok {
+				t.Fatalf("last event = %#v, want an ErrorEvent", events[len(events)-1])
+			}
+			var retryable *agent.RetryableError
+			if errors.As(last.Err, &retryable) {
+				t.Errorf("err = %v, want it left unmarked", last.Err)
+			}
+		})
+	}
+}
+
+// An overload can also arrive mid-stream, after the request was accepted. The
+// SDK turns that SSE frame into a real API error, but one whose StatusCode is
+// the 200 the stream opened with — so only the error type identifies it, and
+// judging by status alone would miss every one of these.
+func TestStreamMarksAMidStreamOverloadRetryable(t *testing.T) {
+	events := streamAgainst(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-x\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+		fmt.Fprint(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n")
+	})
+
+	if retryable := retryableError(t, events); !strings.Contains(retryable.Error(), "overloaded") {
+		t.Errorf("err = %v, want it to carry the API's explanation", retryable)
+	}
+}
+
+// The SDK retries itself, with an uninterruptible sleep and no way to tell the
+// UI. Leaving it on would multiply the agent's own attempts and make ctrl+c do
+// nothing for seconds at a time.
+func TestClientLeavesRetryingToTheAgent(t *testing.T) {
+	var calls int
+	streamAgainst(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		errorStatus(http.StatusTooManyRequests, "rate_limit_error", nil)(w, r)
+	})
+
+	if calls != 1 {
+		t.Errorf("requests = %d, want 1: the SDK must not retry behind the agent", calls)
 	}
 }
 
