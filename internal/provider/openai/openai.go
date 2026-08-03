@@ -205,6 +205,22 @@ func toInput(msgs []agent.Message) (responses.ResponseInputParam, error) {
 					Role:    role,
 					Content: responses.EasyInputMessageContentUnionParam{OfString: openai.String(block.Text)},
 				}})
+			case agent.ThinkingBlock:
+				// Assistant blocks arrive in the order the model produced them,
+				// so a reasoning item lands before the function call it led to,
+				// which is the order the API demands on resubmission.
+				//
+				// Summary is a required field: always a non-nil slice, or
+				// omitzero drops it and the API rejects the item.
+				summary := []responses.ResponseReasoningItemSummaryParam{}
+				if block.Thinking != "" {
+					summary = append(summary, responses.ResponseReasoningItemSummaryParam{Text: block.Thinking})
+				}
+				items = append(items, responses.ResponseInputItemUnionParam{OfReasoning: &responses.ResponseReasoningItemParam{
+					ID:               block.ID,
+					EncryptedContent: openai.String(block.Signature),
+					Summary:          summary,
+				}})
 			case agent.ToolUseBlock:
 				items = append(items, responses.ResponseInputItemParamOfFunctionCall(string(block.Input), block.ID, block.Name))
 			case agent.ToolResultBlock:

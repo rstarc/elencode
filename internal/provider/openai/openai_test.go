@@ -423,3 +423,55 @@ func TestToOpenAIEffortClampsToKnownLevels(t *testing.T) {
 		}
 	}
 }
+
+func TestToInputResubmitsReasoning(t *testing.T) {
+	msgs := []agent.Message{
+		agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}}),
+		{Role: agent.RoleAssistant, Content: []agent.Block{
+			agent.ThinkingBlock{Thinking: "plan", Signature: "ENC", ID: "rs_1"},
+			agent.ToolUseBlock{ID: "call_1", Name: "read", Input: []byte(`{}`)},
+		}},
+		agent.NewUserMessage([]agent.Block{agent.NewToolResultBlock("call_1", "body", false)}),
+	}
+
+	input, err := toInput(msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// user, reasoning, function_call, function_call_output
+	if len(input) != 4 {
+		t.Fatalf("items = %d, want 4", len(input))
+	}
+	r := input[1].OfReasoning
+	if r == nil || r.ID != "rs_1" || r.EncryptedContent.Value != "ENC" {
+		t.Fatalf("item[1] not a reasoning item with encrypted content: %+v", input[1])
+	}
+	if input[2].OfFunctionCall == nil {
+		t.Fatalf("reasoning must precede its function_call; got %+v", input[2])
+	}
+}
+
+// Summary is tagged omitzero,required in the SDK: a nil slice is dropped from
+// the JSON and the API rejects the resubmitted item. Assert on the marshalled
+// bytes, not the struct — that is where omitzero bites.
+func TestResubmittedReasoningMarshalsAnEmptySummary(t *testing.T) {
+	input, err := toInput([]agent.Message{{Role: agent.RoleAssistant, Content: []agent.Block{
+		agent.ThinkingBlock{Signature: "ENC", ID: "rs_2"}, // no summary text
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := json.Marshal(input[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !strings.Contains(string(body), `"summary":[]`) {
+		t.Errorf("marshalled reasoning item = %s, want an explicit empty summary", body)
+	}
+	if !strings.Contains(string(body), `"encrypted_content":"ENC"`) {
+		t.Errorf("marshalled reasoning item = %s, want the encrypted content", body)
+	}
+}
