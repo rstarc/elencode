@@ -582,3 +582,173 @@ func TestStreamAssemblesAResponseFromSSE(t *testing.T) {
 		t.Errorf("content = %#v, want [%#v]", resp.Response.Message.Content, want)
 	}
 }
+
+// The model picks tools by description, so sending it is not optional. Nothing
+// otherwise exercises the tool params at all.
+func TestToolParamsCarryNameDescriptionAndSchema(t *testing.T) {
+	tools := toolParams([]agent.Tool{{
+		Name:        "read",
+		Description: "read a file",
+		InputSchema: agent.InputSchema{
+			Type:       "object",
+			Properties: map[string]agent.Property{"path": {Type: "string", Description: "the path"}},
+			Required:   []string{"path"},
+		},
+	}})
+
+	if len(tools) != 1 || tools[0].OfTool == nil {
+		t.Fatalf("tools = %#v, want one function tool", tools)
+	}
+	got := tools[0].OfTool
+	if got.Name != "read" {
+		t.Errorf("name = %q, want read", got.Name)
+	}
+	if got.Description.Value != "read a file" {
+		t.Errorf("description = %q, want it carried through", got.Description.Value)
+	}
+	if _, ok := got.InputSchema.Properties.(map[string]agent.Property); !ok {
+		t.Errorf("properties = %#v, want the tool's own schema", got.InputSchema.Properties)
+	}
+	if len(got.InputSchema.Required) != 1 || got.InputSchema.Required[0] != "path" {
+		t.Errorf("required = %v, want [path]", got.InputSchema.Required)
+	}
+}
+
+// Tools reach the API, asserted on the request body rather than the params
+// struct: the SDK decides the wire shape, and that is what the model reads.
+func TestStreamSendsToolsWithDescriptions(t *testing.T) {
+	var body map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("request body did not decode: %v", err)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+		fmt.Fprint(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n")
+		fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+	}))
+	defer server.Close()
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	collectEvents(t, c.Stream(context.Background(), agent.Request{
+		Model:     agent.Model{ID: "claude-x"},
+		MaxTokens: 10,
+		Tools:     []agent.Tool{{Name: "read", Description: "read a file"}},
+		Messages:  []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+
+	tools, ok := body["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("tools = %v, want one", body["tools"])
+	}
+	tool := tools[0].(map[string]any)
+	if tool["name"] != "read" || tool["description"] != "read a file" {
+		t.Errorf("tool = %v, want name and description carried through", tool)
+	}
+}
+
+func TestToStopReasonMapsEveryKnownReason(t *testing.T) {
+	tests := map[sdk.StopReason]agent.StopReason{
+		sdk.StopReasonEndTurn:      agent.StopReasonEndTurn,
+		sdk.StopReasonMaxTokens:    agent.StopReasonMaxTokens,
+		sdk.StopReasonStopSequence: agent.StopReasonStopSequence,
+		sdk.StopReasonToolUse:      agent.StopReasonToolUse,
+		sdk.StopReasonPauseTurn:    agent.StopReasonPauseTurn,
+		sdk.StopReasonRefusal:      agent.StopReasonRefusal,
+	}
+	for in, want := range tests {
+		got, err := toStopReason(in)
+		if err != nil {
+			t.Errorf("toStopReason(%q): %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("toStopReason(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestToSdkRoleMapsSystem(t *testing.T) {
+	got, err := toSdkRole(agent.RoleSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != sdk.MessageParamRoleSystem {
+		t.Fatalf("role = %q, want system", got)
+	}
+}
+
+// toMessages has a default branch for an unhandled block, but no test can
+// reach it: agent.Block's marker method is unexported, so only the agent
+// package can add a variant and toMessages handles every one that exists. The
+// branch stays as a guard for whenever a new block type is added.
+
+// Stream must turn a conversion failure into an ErrorEvent rather than hanging
+// or reporting a turn that never happened.
+func TestStreamSurfacesAConversionError(t *testing.T) {
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL("http://127.0.0.1:0"))
+
+	events := collectEvents(t, c.Stream(context.Background(), agent.Request{
+		Model:     agent.Model{ID: "claude-x"},
+		MaxTokens: 10,
+		Messages:  []agent.Message{{Role: "wizard", Content: []agent.Block{agent.TextBlock{Text: "x"}}}},
+	}))
+
+	if len(events) != 1 {
+		t.Fatalf("events = %#v, want just the ErrorEvent", events)
+	}
+	if _, ok := events[0].(agent.ErrorEvent); !ok {
+		t.Fatalf("event = %#v, want an ErrorEvent", events[0])
+	}
+}
+
+// A stream that ends before the message is complete must fail the turn: the
+// stop reason is still unset, and reporting it as a finished turn would drop
+// whatever the model was in the middle of saying.
+func TestStreamSurfacesATruncatedStream(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+	}))
+	defer server.Close()
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	events := collectEvents(t, c.Stream(context.Background(), agent.Request{
+		Model:     agent.Model{ID: "claude-x"},
+		MaxTokens: 10,
+		Messages:  []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+
+	if _, ok := events[len(events)-1].(agent.ErrorEvent); !ok {
+		t.Fatalf("last event = %#v, want an ErrorEvent", events[len(events)-1])
+	}
+}
+
+// The Stream goroutine must exit and close its channel when the consumer
+// abandons the turn; -race plus the collect timeout make a leak loud.
+func TestStreamStopsWhenContextCancelled(t *testing.T) {
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+		w.(http.Flusher).Flush()
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	events := c.Stream(ctx, agent.Request{
+		Model:     agent.Model{ID: "claude-x"},
+		MaxTokens: 10,
+		Messages:  []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	})
+
+	<-started
+	cancel()
+
+	// collectEvents returning at all is the assertion: a Stream that ignored
+	// cancellation would leave the channel open and time out here.
+	collectEvents(t, events)
+}

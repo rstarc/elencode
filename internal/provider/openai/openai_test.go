@@ -708,3 +708,89 @@ func TestStreamReportsIncompleteAsMaxTokens(t *testing.T) {
 		t.Errorf("content = %#v, want the partial output kept", last.Response.Message.Content)
 	}
 }
+
+// A refusal carries the reason the turn ended, so it has to reach the
+// transcript as text rather than being counted and discarded.
+func TestToBlocksKeepsRefusalText(t *testing.T) {
+	resp := decodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"I cannot help with that"}]}]}`)
+
+	blocks, err := toBlocks(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	want := agent.TextBlock{Text: "I cannot help with that"}
+	if len(blocks) != 1 || blocks[0] != want {
+		t.Fatalf("blocks = %#v, want [%#v]", blocks, want)
+	}
+}
+
+func TestToBlocksRejectsUnhandledContentPart(t *testing.T) {
+	resp := decodeResponse(t, `{"output":[{"type":"message","role":"assistant","content":[{"type":"output_audio","transcript":"hi"}]}]}`)
+
+	_, err := toBlocks(resp)
+
+	if err == nil || !strings.Contains(err.Error(), "output_audio") {
+		t.Fatalf("err = %v, want it to name the offending content part", err)
+	}
+}
+
+// A block the API cannot take must be rejected rather than dropped: sending a
+// turn with part of its history missing is worse than failing the turn.
+func TestToInputRejectsUnsupportedBlock(t *testing.T) {
+	_, err := toInput([]agent.Message{{Role: agent.RoleAssistant, Content: []agent.Block{
+		agent.RedactedThinkingBlock{Data: "opaque"},
+	}}})
+
+	if err == nil || !strings.Contains(err.Error(), "RedactedThinkingBlock") {
+		t.Fatalf("err = %v, want it to name the offending block type", err)
+	}
+}
+
+// Stream must turn a conversion failure into an ErrorEvent. The converters are
+// tested directly, but nothing otherwise proves Stream surfaces their errors
+// rather than hanging or reporting an empty turn.
+func TestStreamSurfacesAConversionError(t *testing.T) {
+	s, url := newStub(t, sse(
+		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]}}`,
+	))
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	events := collect(t, c.Stream(context.Background(), agent.Request{
+		Model:    agent.Model{ID: "gpt-5"},
+		Messages: []agent.Message{{Role: "wizard", Content: []agent.Block{agent.TextBlock{Text: "x"}}}},
+	}))
+
+	if len(events) != 1 {
+		t.Fatalf("events = %#v, want just the ErrorEvent", events)
+	}
+	if _, ok := events[0].(agent.ErrorEvent); !ok {
+		t.Fatalf("event = %#v, want an ErrorEvent", events[0])
+	}
+	// The request must not have been sent at all: the conversion runs first.
+	if s.requests() != 0 {
+		t.Errorf("requests = %d, want the turn abandoned before calling the API", s.requests())
+	}
+}
+
+// An output item we cannot convert must fail the turn, not be silently
+// dropped from the assembled response.
+func TestStreamSurfacesAnUnsupportedOutputItem(t *testing.T) {
+	_, url := newStub(t, sse(
+		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"web_search_call","id":"ws_1","status":"completed"}]}}`,
+	))
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	events := collect(t, c.Stream(context.Background(), agent.Request{
+		Model:    agent.Model{ID: "gpt-5"},
+		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+
+	last, ok := events[len(events)-1].(agent.ErrorEvent)
+	if !ok {
+		t.Fatalf("last event = %#v, want an ErrorEvent", events[len(events)-1])
+	}
+	if !strings.Contains(last.Err.Error(), "web_search_call") {
+		t.Errorf("err = %v, want it to name the offending item", last.Err)
+	}
+}
