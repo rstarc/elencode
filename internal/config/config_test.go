@@ -440,3 +440,50 @@ func TestLoadRejectsUnknownThinkingEffort(t *testing.T) {
 		t.Fatal("Load accepted an unknown thinking_effort")
 	}
 }
+
+// TestLoadNormalizesExplicitlyEmptySettings: the file is unmarshalled over the
+// defaults, so a key written as "" overwrites the default with nothing rather
+// than leaving it alone. Both settings have to be put back, or an empty
+// provider fails validation and an empty effort reaches the provider.
+func TestLoadNormalizesExplicitlyEmptySettings(t *testing.T) {
+	writeConfig(t, `{"anthropic_api_key":"`+realKey+`","provider":"","thinking_effort":""}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Provider != ProviderAnthropic {
+		t.Errorf("provider = %q, want the anthropic default", cfg.Provider)
+	}
+	if cfg.ThinkingEffort != "medium" {
+		t.Errorf("thinking_effort = %q, want the medium default", cfg.ThinkingEffort)
+	}
+}
+
+// TestSaveCreatesTheFileWhenItDoesNotExist covers the first-ever save: reading
+// the existing settings to merge into must treat a missing file as empty
+// rather than failing.
+func TestSaveCreatesTheFileWhenItDoesNotExist(t *testing.T) {
+	dir := t.TempDir()
+	file := path.Join(dir, "config.json")
+
+	cfg := Config{Path: file, AnthropicAPIKey: realKey, Model: "claude-opus-4-5"}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	saved := readConfig(t, file)
+	if saved["model"] != "claude-opus-4-5" {
+		t.Errorf("model = %v, want it written", saved["model"])
+	}
+	info, err := os.Stat(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The file holds an API key, so it must not be readable by anyone else.
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("mode = %o, want 600", perm)
+	}
+}
