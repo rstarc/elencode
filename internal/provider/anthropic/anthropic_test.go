@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -499,5 +500,85 @@ func TestEffortModelsStillAskForThinking(t *testing.T) {
 
 	if params.Thinking.OfAdaptive == nil {
 		t.Fatalf("thinking = %+v, want the adaptive summarized param alongside effort", params.Thinking)
+	}
+}
+
+// collectEvents drains a Stream until it closes, failing if it hangs. A bare
+// range over the channel would hang the whole test binary on a misframed stub
+// or a leaked goroutine instead of failing this one test.
+func collectEvents(t *testing.T, ch <-chan agent.Event) []agent.Event {
+	t.Helper()
+
+	var out []agent.Event
+	timeout := time.After(2 * time.Second)
+	for {
+		select {
+		case e, ok := <-ch:
+			if !ok {
+				return out
+			}
+			out = append(out, e)
+		case <-timeout:
+			t.Fatalf("stream did not end, got %d events so far", len(out))
+		}
+	}
+}
+
+// TestStreamAssemblesAResponseFromSSE drives Stream end-to-end through the SDK
+// against a scripted server — the only test that exercises the streaming path
+// itself rather than the converters it is built from.
+func TestStreamAssemblesAResponseFromSSE(t *testing.T) {
+	events := []string{
+		`{"type":"message_start","message":{"id":"msg_1","type":"message","role":"assistant","model":"claude-x","content":[],"usage":{"input_tokens":1,"output_tokens":1}}}`,
+		`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}`,
+		`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}`,
+		`{"type":"content_block_stop","index":0}`,
+		`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":2}}`,
+		`{"type":"message_stop"}`,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		for _, e := range events {
+			var typed struct {
+				Type string `json:"type"`
+			}
+			if err := json.Unmarshal([]byte(e), &typed); err != nil {
+				t.Errorf("bad scripted event %s: %v", e, err)
+			}
+			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", typed.Type, e)
+		}
+	}))
+	defer server.Close()
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	got := collectEvents(t, c.Stream(context.Background(), agent.Request{
+		Model:     agent.Model{ID: "claude-x"},
+		MaxTokens: 100,
+		Messages:  []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+
+	var text string
+	var resp *agent.ResponseEvent
+	for _, e := range got {
+		switch e := e.(type) {
+		case agent.TextDeltaEvent:
+			text += e.Text
+		case agent.ResponseEvent:
+			r := e
+			resp = &r
+		case agent.ErrorEvent:
+			t.Fatalf("unexpected error: %v", e.Err)
+		}
+	}
+	if text != "Hello" {
+		t.Errorf("streamed text = %q, want Hello", text)
+	}
+	if resp == nil || resp.Response.StopReason != agent.StopReasonEndTurn {
+		t.Fatalf("resp = %+v, want an end_turn ResponseEvent", resp)
+	}
+	want := agent.TextBlock{Text: "Hello"}
+	if len(resp.Response.Message.Content) != 1 || resp.Response.Message.Content[0] != want {
+		t.Errorf("content = %#v, want [%#v]", resp.Response.Message.Content, want)
 	}
 }
