@@ -13,6 +13,7 @@ import (
 
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/responses"
+	"github.com/openai/openai-go/shared"
 	"github.com/rstarc/elencode/internal/agent"
 )
 
@@ -337,5 +338,88 @@ func TestToBlocksRejectsUnhandledOutputItem(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), "web_search_call") {
 		t.Fatalf("err = %v, want it to name the offending item type", err)
+	}
+}
+
+func TestStreamReasoning(t *testing.T) {
+	s, url := newStub(t, sse(
+		`{"type":"response.reasoning_summary_text.delta","delta":"thinking..."}`,
+		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"thinking..."}],"encrypted_content":"ENC"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}`,
+	))
+
+	c := newWithOptions("key", true, agent.EffortMedium, option.WithBaseURL(url))
+	req := agent.Request{
+		Model:    agent.Model{ID: "gpt-5", Thinking: agent.ThinkingEffort},
+		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}
+
+	var think string
+	var resp agent.Response
+	for _, e := range collect(t, c.Stream(context.Background(), req)) {
+		switch e := e.(type) {
+		case agent.ThinkingDeltaEvent:
+			think += e.Text
+		case agent.ResponseEvent:
+			resp = e.Response
+		}
+	}
+
+	if think != "thinking..." {
+		t.Fatalf("thinking = %q", think)
+	}
+	tb, ok := resp.Message.Content[0].(agent.ThinkingBlock)
+	if !ok || tb.Signature != "ENC" || tb.ID != "rs_1" {
+		t.Fatalf("thinking block = %+v", resp.Message.Content[0])
+	}
+
+	// Reasoning must be requested with a summary and the encrypted content
+	// included, or nothing comes back to render or round-trip.
+	body := s.body(0)
+	reasoning, ok := body["reasoning"].(map[string]any)
+	if !ok || reasoning["effort"] != "medium" || reasoning["summary"] != "auto" {
+		t.Errorf("reasoning = %v, want effort medium and summary auto", body["reasoning"])
+	}
+	include, ok := body["include"].([]any)
+	if !ok || len(include) != 1 || include[0] != "reasoning.encrypted_content" {
+		t.Errorf("include = %v, want [reasoning.encrypted_content]", body["include"])
+	}
+}
+
+// Reasoning params are gated twice: the config's thinking switch and the
+// model's own mode. Either alone must not trigger them.
+func TestParamsRequestsReasoningOnlyForEffortModelsWithThinkingOn(t *testing.T) {
+	req := func(mode agent.ThinkingMode) agent.Request {
+		return agent.Request{Model: agent.Model{ID: "gpt-5", Thinking: mode}, MaxTokens: 10}
+	}
+
+	off := newWithOptions("key", false, agent.EffortHigh)
+	if p := off.params(req(agent.ThinkingEffort), nil); p.Reasoning.Effort != "" || len(p.Include) != 0 {
+		t.Errorf("thinking off: reasoning = %+v, include = %v, want neither", p.Reasoning, p.Include)
+	}
+
+	on := newWithOptions("key", true, agent.EffortHigh)
+	if p := on.params(req(agent.ThinkingNone), nil); p.Reasoning.Effort != "" || len(p.Include) != 0 {
+		t.Errorf("non-effort model: reasoning = %+v, include = %v, want neither", p.Reasoning, p.Include)
+	}
+	if p := on.params(req(agent.ThinkingEffort), nil); p.Reasoning.Effort != shared.ReasoningEffortHigh {
+		t.Errorf("effort = %q, want high", p.Reasoning.Effort)
+	}
+}
+
+func TestToOpenAIEffortClampsToKnownLevels(t *testing.T) {
+	tests := map[agent.Effort]shared.ReasoningEffort{
+		agent.EffortNone:   shared.ReasoningEffortMedium,
+		agent.EffortLow:    shared.ReasoningEffortLow,
+		agent.EffortMedium: shared.ReasoningEffortMedium,
+		agent.EffortHigh:   shared.ReasoningEffortHigh,
+		// The SDK has no level above high, so the two Anthropic-only levels
+		// clamp rather than letting the API reject the request.
+		agent.EffortXHigh: shared.ReasoningEffortHigh,
+		agent.EffortMax:   shared.ReasoningEffortHigh,
+	}
+	for in, want := range tests {
+		if got := toOpenAIEffort(in); got != want {
+			t.Errorf("toOpenAIEffort(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -57,7 +58,29 @@ func (c *Client) params(req agent.Request, input responses.ResponseInputParam) r
 	if len(req.Tools) > 0 {
 		p.Tools = toTools(req.Tools)
 	}
+
+	// Gated twice: the config's switch and what the model itself accepts.
+	// Include is what makes the reasoning re-submittable — without it the items
+	// come back with no encrypted content and the next turn cannot replay them.
+	if c.thinking && req.Model.Thinking == agent.ThinkingEffort {
+		p.Reasoning = shared.ReasoningParam{Effort: toOpenAIEffort(c.effort), Summary: shared.ReasoningSummaryAuto}
+		p.Include = []responses.ResponseIncludable{responses.ResponseIncludableReasoningEncryptedContent}
+	}
 	return p
+}
+
+// toOpenAIEffort clamps to the levels this API accepts: it has no xhigh or max,
+// so those become high rather than letting the request be rejected. The zero
+// value falls to the API's own default, medium.
+func toOpenAIEffort(e agent.Effort) shared.ReasoningEffort {
+	switch e {
+	case agent.EffortLow:
+		return shared.ReasoningEffortLow
+	case agent.EffortHigh, agent.EffortXHigh, agent.EffortMax:
+		return shared.ReasoningEffortHigh
+	default:
+		return shared.ReasoningEffortMedium
+	}
 }
 
 // toTools builds the params directly rather than with ToolParamOfFunction,
@@ -108,6 +131,10 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 			switch event := stream.Current().AsAny().(type) {
 			case responses.ResponseTextDeltaEvent:
 				if !emit(ctx, events, agent.TextDeltaEvent{Text: event.Delta}) {
+					return
+				}
+			case responses.ResponseReasoningSummaryTextDeltaEvent:
+				if !emit(ctx, events, agent.ThinkingDeltaEvent{Text: event.Delta}) {
 					return
 				}
 			case responses.ResponseCompletedEvent:
@@ -223,6 +250,14 @@ func toBlocks(resp responses.Response) ([]agent.Block, error) {
 			}
 		case responses.ResponseFunctionToolCall:
 			blocks = append(blocks, agent.ToolUseBlock{ID: variant.CallID, Name: variant.Name, Input: json.RawMessage(variant.Arguments)})
+		case responses.ResponseReasoningItem:
+			// Both the id and the encrypted content are kept: re-sending the
+			// item needs each, and the summary is all there is to render.
+			blocks = append(blocks, agent.ThinkingBlock{
+				Thinking:  joinSummary(variant.Summary),
+				Signature: variant.EncryptedContent,
+				ID:        variant.ID,
+			})
 		default:
 			return nil, fmt.Errorf("unsupported output item type %q", item.Type)
 		}
@@ -250,6 +285,16 @@ func stopReason(resp responses.Response) agent.StopReason {
 		return agent.StopReasonRefusal
 	}
 	return agent.StopReasonEndTurn
+}
+
+// joinSummary flattens the reasoning summary parts into the one string a
+// ThinkingBlock holds.
+func joinSummary(parts []responses.ResponseReasoningItemSummary) string {
+	var b strings.Builder
+	for _, part := range parts {
+		b.WriteString(part.Text)
+	}
+	return b.String()
 }
 
 func hasRefusal(resp responses.Response) bool {
