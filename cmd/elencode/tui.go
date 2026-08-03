@@ -199,6 +199,16 @@ func (m model) reportError(err error) tea.Cmd {
 	return printAbove(transcript.Error(err, m.width))
 }
 
+// reportRetry says why the turn has gone quiet. Drawn as a notice rather than an
+// error: the turn has not failed, and the wait would otherwise be
+// indistinguishable from a hang. Printed once per attempt instead of counting
+// down in the frame, which would need a ticker for a wait of a few seconds.
+func (m model) reportRetry(event agent.RetryEvent) tea.Cmd {
+	notice := fmt.Sprintf("%v — retrying in %s (%d/%d)",
+		event.Err, event.In.Round(time.Second), event.Attempt, event.Of)
+	return printAbove(transcript.Notice(notice, m.width))
+}
+
 // modelsMsg carries the result of a /model lookup. choose is the model the user
 // named on the command line, empty when they asked for the picker instead.
 type modelsMsg struct {
@@ -422,6 +432,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			print = printAbove(m.stream.Landed(event.Message))
 		case agent.ErrorEvent:
 			print = m.reportError(event.Err)
+		case agent.RetryEvent:
+			print = m.reportRetry(event)
 		}
 		// Sequenced, not batched: batched commands run concurrently, so the next
 		// event could be printed before this one. Waiting for the next event is

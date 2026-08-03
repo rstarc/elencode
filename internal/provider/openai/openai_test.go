@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -171,6 +172,152 @@ func TestStreamSurfacesHTTPError(t *testing.T) {
 	}
 	if _, ok := events[len(events)-1].(agent.ErrorEvent); !ok {
 		t.Fatalf("last event = %#v, want an ErrorEvent", events[len(events)-1])
+	}
+}
+
+// retryableError returns the RetryableError the stream ended with, failing if
+// the last event was not one.
+func retryableError(t *testing.T, events []agent.Event) *agent.RetryableError {
+	t.Helper()
+
+	if len(events) == 0 {
+		t.Fatal("no events, want a terminal ErrorEvent")
+	}
+	last, ok := events[len(events)-1].(agent.ErrorEvent)
+	if !ok {
+		t.Fatalf("last event = %#v, want an ErrorEvent", events[len(events)-1])
+	}
+	var retryable *agent.RetryableError
+	if !errors.As(last.Err, &retryable) {
+		t.Fatalf("err = %v (%T), want it marked retryable", last.Err, last.Err)
+	}
+	return retryable
+}
+
+// streamStatus runs one request against a server answering with status and hdr.
+func streamStatus(t *testing.T, status int, hdr map[string]string) []agent.Event {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for k, v := range hdr {
+			w.Header().Set(k, v)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		fmt.Fprint(w, `{"error":{"message":"boom","type":"rate_limit_error"}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	return collect(t, c.Stream(context.Background(), agent.Request{
+		Model:    agent.Model{ID: "gpt-5"},
+		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+}
+
+// A rate limit is the case worth recovering from: the agent retries it, so the
+// turn survives what is almost always a few seconds of backpressure.
+func TestStreamMarksRateLimitsRetryable(t *testing.T) {
+	retryable := retryableError(t, streamStatus(t, http.StatusTooManyRequests, map[string]string{"Retry-After": "7"}))
+
+	// The API knows when it will let us back in; guessing would be worse.
+	if retryable.After != 7*time.Second {
+		t.Errorf("After = %s, want 7s from the Retry-After header", retryable.After)
+	}
+}
+
+func TestStreamPrefersRetryAfterMs(t *testing.T) {
+	retryable := retryableError(t, streamStatus(t, http.StatusTooManyRequests, map[string]string{
+		"Retry-After-Ms": "1500",
+		"Retry-After":    "7",
+	}))
+
+	if retryable.After != 1500*time.Millisecond {
+		t.Errorf("After = %s, want the finer-grained header to win", retryable.After)
+	}
+}
+
+func TestStreamMarksServerErrorsRetryable(t *testing.T) {
+	retryable := retryableError(t, streamStatus(t, http.StatusInternalServerError, nil))
+
+	// No header, so the agent falls back to its own backoff
+	if retryable.After != 0 {
+		t.Errorf("After = %s, want 0 when the API gave no hint", retryable.After)
+	}
+}
+
+// A rejected request fails the same way however often it is sent, so retrying
+// only delays telling the user what is wrong.
+func TestStreamDoesNotMarkBadRequestsRetryable(t *testing.T) {
+	events := streamStatus(t, http.StatusBadRequest, nil)
+
+	last, ok := events[len(events)-1].(agent.ErrorEvent)
+	if !ok {
+		t.Fatalf("last event = %#v, want an ErrorEvent", events[len(events)-1])
+	}
+	var retryable *agent.RetryableError
+	if errors.As(last.Err, &retryable) {
+		t.Errorf("err = %v, want a 400 left unmarked", last.Err)
+	}
+}
+
+// A rate limit can also arrive mid-stream, over a 200 the SDK already accepted.
+// Nothing below the agent can retry that, so it has to be marked here.
+func TestStreamMarksAMidStreamRateLimitRetryable(t *testing.T) {
+	_, url := newStub(t, sse(
+		`{"type":"response.output_text.delta","delta":"partial"}`,
+		`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"rate_limit_exceeded","message":"slow down"},"output":[]}}`,
+	))
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	events := collect(t, c.Stream(context.Background(), agent.Request{
+		Model:    agent.Model{ID: "gpt-5"},
+		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+
+	if retryable := retryableError(t, events); !strings.Contains(retryable.Error(), "slow down") {
+		t.Errorf("err = %v, want it to carry the API's explanation", retryable)
+	}
+}
+
+func TestStreamDoesNotMarkAMidStreamRefusalRetryable(t *testing.T) {
+	_, url := newStub(t, sse(
+		`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"invalid_prompt","message":"not allowed"},"output":[]}}`,
+	))
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	events := collect(t, c.Stream(context.Background(), agent.Request{
+		Model:    agent.Model{ID: "gpt-5"},
+		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+
+	last := events[len(events)-1].(agent.ErrorEvent)
+	var retryable *agent.RetryableError
+	if errors.As(last.Err, &retryable) {
+		t.Errorf("err = %v, want a refused prompt left unmarked", last.Err)
+	}
+}
+
+// The SDK retries 429s itself, with an uninterruptible sleep and no way to tell
+// the UI. Leaving it on would multiply the agent's own attempts and make ctrl+c
+// do nothing for seconds at a time.
+func TestClientLeavesRetryingToTheAgent(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusTooManyRequests)
+		fmt.Fprint(w, `{"error":{"message":"boom"}}`)
+	}))
+	t.Cleanup(server.Close)
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	collect(t, c.Stream(context.Background(), agent.Request{
+		Model:    agent.Model{ID: "gpt-5"},
+		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+
+	if calls != 1 {
+		t.Errorf("requests = %d, want 1: the SDK must not retry behind the agent", calls)
 	}
 }
 
@@ -610,6 +757,87 @@ func TestAgentLoopRoundTripsReasoningAndTools(t *testing.T) {
 	output := input[3].(map[string]any)
 	if output["call_id"] != "call_1" || output["output"] != "module elencode" {
 		t.Errorf("function_call_output = %v, want the tool result under its call id", output)
+	}
+}
+
+// TestAgentLoopSurvivesARateLimitedRound is the case the retry exists for: a
+// turn several rounds deep is rate limited, and both the tool work already done
+// and the turn itself have to survive it.
+func TestAgentLoopSurvivesARateLimitedRound(t *testing.T) {
+	var mu sync.Mutex
+	var calls int
+	var inputs [][]any
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		body := map[string]any{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("request body did not decode: %v", err)
+		}
+		items, _ := body["input"].([]any)
+		inputs = append(inputs, items)
+		round := calls
+		calls++
+		mu.Unlock()
+
+		switch round {
+		case 0: // a tool call, which succeeds
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, sse(
+				`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read","arguments":"{\"path\":\"go.mod\"}","id":"fc_1"}]}}`,
+			))
+		case 1: // the round that follows it is rate limited
+			w.Header().Set("Retry-After-Ms", "1")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			fmt.Fprint(w, `{"error":{"message":"Rate limit reached","type":"rate_limit_error"}}`)
+		default: // and succeeds on the retry
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprint(w, sse(
+				`{"type":"response.output_text.delta","delta":"go.mod reads"}`,
+				`{"type":"response.completed","response":{"id":"resp_3","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"go.mod reads"}]}]}}`,
+			))
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	read := agent.Tool{
+		Name:        "read",
+		Description: "read a file",
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+			return "module elencode", nil
+		},
+	}
+	a := agent.New(c, []agent.Tool{read})
+	a.SetModel(agent.Model{ID: "gpt-5"})
+
+	var last agent.Message
+	for _, event := range collect(t, a.Run(context.Background(), "read go.mod")) {
+		if err, ok := event.(agent.ErrorEvent); ok {
+			t.Fatalf("turn failed with %v, want the rate limit retried away", err.Err)
+		}
+		if msg, ok := event.(agent.MessageEvent); ok {
+			last = msg.Message
+		}
+	}
+
+	if len(last.Content) != 1 || last.Content[0] != (agent.TextBlock{Text: "go.mod reads"}) {
+		t.Fatalf("last message = %#v, want the answer the retry recovered", last)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 3 {
+		t.Fatalf("requests = %d, want 3 (tool call, rate limit, retry)", calls)
+	}
+	// The retry must resend the turn as it stood, not restart it: losing the
+	// tool call and its result is what made a rate limit cost the whole turn.
+	if got, want := len(inputs[2]), 3; got != want {
+		t.Errorf("retry sent %d input items, want %d (prompt, function_call, output)", got, want)
+	}
+	if !reflect.DeepEqual(inputs[1], inputs[2]) {
+		t.Errorf("retry input =\n\t%v\ndiffers from the request it retried\n\t%v", inputs[2], inputs[1])
 	}
 }
 

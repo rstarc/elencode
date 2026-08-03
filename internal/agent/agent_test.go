@@ -243,14 +243,22 @@ func TestRunForwardsProviderError(t *testing.T) {
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("events = %#v, want %#v", got, want)
 	}
-	// A failed turn is rolled back whole. Leaving the prompt behind would make
-	// the next turn send two user messages in a row, which the API rejects.
-	if len(a.contextWindow) != 0 {
-		t.Errorf("context window = %#v, want it rolled back to empty", a.contextWindow)
+	// An error that is not retryable is tried once and no more
+	if provider.calls != 1 {
+		t.Errorf("rounds of inference = %d, want 1", provider.calls)
+	}
+	// The prompt survives: inference only ever fails at a point where the window
+	// is still sendable, so there is nothing to undo and the user keeps their turn.
+	wantWindow := []Message{NewUserMessage([]Block{TextBlock{Text: "hi"}})}
+	if !reflect.DeepEqual(a.contextWindow, wantWindow) {
+		t.Errorf("context window =\n\t%#v\nwant\n\t%#v", a.contextWindow, wantWindow)
 	}
 }
 
-func TestRunRollsBackFailedToolRound(t *testing.T) {
+// TestRunKeepsCompletedRoundsWhenALaterRoundFails is the point of the
+// round-level rollback: a failure deep into a turn must not throw away the tool
+// work that already succeeded.
+func TestRunKeepsCompletedRoundsWhenALaterRoundFails(t *testing.T) {
 	toolUse := ToolUseBlock{ID: "toolu_1", Name: "read", Input: json.RawMessage(`{}`)}
 	provider := &scriptedProvider{turns: [][]Event{
 		{ResponseEvent{Response: Response{
@@ -269,10 +277,126 @@ func TestRunRollsBackFailedToolRound(t *testing.T) {
 
 	collect(t, a.Run(context.Background(), "read a.txt"))
 
-	// The rollback must reach past the tool round too: a tool_use block left in
-	// the window with no matching tool_result is permanently unsendable.
-	if len(a.contextWindow) != 0 {
-		t.Errorf("context window = %#v, want it rolled back to empty", a.contextWindow)
+	wantWindow := []Message{
+		NewUserMessage([]Block{TextBlock{Text: "read a.txt"}}),
+		assistantMessage(toolUse),
+		NewUserMessage([]Block{NewToolResultBlock("toolu_1", "file contents", false)}),
+	}
+	if !reflect.DeepEqual(a.contextWindow, wantWindow) {
+		t.Errorf("context window =\n\t%#v\nwant\n\t%#v", a.contextWindow, wantWindow)
+	}
+}
+
+func TestRunRetriesRetryableErrors(t *testing.T) {
+	assistant := assistantMessage(TextBlock{Text: "hello"})
+	provider := &scriptedProvider{turns: [][]Event{
+		{ErrorEvent{Err: &RetryableError{Err: errors.New("rate limited"), After: time.Millisecond}}},
+		{ErrorEvent{Err: &RetryableError{Err: errors.New("rate limited"), After: time.Millisecond}}},
+		{ResponseEvent{Response: Response{Message: assistant, StopReason: StopReasonEndTurn}}},
+	}}
+	a := New(provider, nil)
+
+	got := collect(t, a.Run(context.Background(), "hi"))
+
+	if provider.calls != 3 {
+		t.Fatalf("rounds of inference = %d, want 3 (two retries then success)", provider.calls)
+	}
+
+	var retries []RetryEvent
+	for _, event := range got {
+		if retry, ok := event.(RetryEvent); ok {
+			retries = append(retries, retry)
+		}
+		if err, ok := event.(ErrorEvent); ok {
+			t.Errorf("turn reported %v, want the retry to have recovered it", err.Err)
+		}
+	}
+	if len(retries) != 2 {
+		t.Fatalf("retry events = %d, want 2", len(retries))
+	}
+	if retries[0].Attempt != 1 || retries[1].Attempt != 2 {
+		t.Errorf("retry attempts = %d, %d, want 1, 2", retries[0].Attempt, retries[1].Attempt)
+	}
+	if retries[0].Of != maxAttempts {
+		t.Errorf("retry Of = %d, want %d", retries[0].Of, maxAttempts)
+	}
+
+	// The turn carries on as if nothing happened
+	wantWindow := []Message{NewUserMessage([]Block{TextBlock{Text: "hi"}}), assistant}
+	if !reflect.DeepEqual(a.contextWindow, wantWindow) {
+		t.Errorf("context window =\n\t%#v\nwant\n\t%#v", a.contextWindow, wantWindow)
+	}
+}
+
+func TestRunGivesUpAfterMaxAttempts(t *testing.T) {
+	round := []Event{ErrorEvent{Err: &RetryableError{Err: errors.New("rate limited"), After: time.Millisecond}}}
+	turns := make([][]Event, maxAttempts)
+	for i := range turns {
+		turns[i] = round
+	}
+	provider := &scriptedProvider{turns: turns}
+	a := New(provider, nil)
+
+	got := collect(t, a.Run(context.Background(), "hi"))
+
+	if provider.calls != maxAttempts {
+		t.Fatalf("rounds of inference = %d, want %d", provider.calls, maxAttempts)
+	}
+	// The last attempt reports rather than announcing a retry that never comes
+	last, ok := got[len(got)-1].(ErrorEvent)
+	if !ok {
+		t.Fatalf("last event = %#v, want an ErrorEvent", got[len(got)-1])
+	}
+	if !strings.Contains(last.Err.Error(), "rate limited") {
+		t.Errorf("error = %q, want it to carry the provider's message", last.Err)
+	}
+}
+
+// TestRunAbandonsARetryWhenCancelled covers ctrl+c during the backoff: the wait
+// must be interruptible, or the UI stays stuck for the length of the delay.
+func TestRunAbandonsARetryWhenCancelled(t *testing.T) {
+	provider := &scriptedProvider{turns: [][]Event{
+		{ErrorEvent{Err: &RetryableError{Err: errors.New("rate limited"), After: time.Hour}}},
+	}}
+	a := New(provider, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	events := a.Run(ctx, "hi")
+
+	// Drain until the retry is announced, which means the sleep has begun
+	for event := range events {
+		if _, ok := event.(RetryEvent); ok {
+			break
+		}
+	}
+	cancel()
+
+	// collect returning at all is the assertion: a sleep that ignored ctx would
+	// hold the turn open for an hour and time out here.
+	collect(t, events)
+}
+
+func TestBackoffGrowsAndStaysCapped(t *testing.T) {
+	tests := []struct {
+		attempt int
+		after   time.Duration
+		want    time.Duration
+	}{
+		{attempt: 1, want: initialDelay},
+		{attempt: 2, want: 2 * initialDelay},
+		{attempt: 3, want: 4 * initialDelay},
+		// Doubling would overshoot; the cap holds it
+		{attempt: 9, want: maxDelay},
+		// A hint from the provider wins, but is capped too: an outsized
+		// Retry-After would otherwise park the turn for hours.
+		{attempt: 1, after: 5 * time.Second, want: 5 * time.Second},
+		{attempt: 1, after: time.Hour, want: maxDelay},
+	}
+
+	for _, test := range tests {
+		if got := backoff(test.attempt, test.after); got != test.want {
+			t.Errorf("backoff(%d, %s) = %s, want %s", test.attempt, test.after, got, test.want)
+		}
 	}
 }
 
@@ -287,10 +411,11 @@ func TestRunRollsBackOnlyItsOwnTurn(t *testing.T) {
 	collect(t, a.Run(context.Background(), "hi"))
 	collect(t, a.Run(context.Background(), "hi again"))
 
-	// The first turn succeeded, so it survives; only the second is undone.
+	// The first turn survives untouched, and the second keeps its prompt
 	wantWindow := []Message{
 		NewUserMessage([]Block{TextBlock{Text: "hi"}}),
 		assistant,
+		NewUserMessage([]Block{TextBlock{Text: "hi again"}}),
 	}
 	if !reflect.DeepEqual(a.contextWindow, wantWindow) {
 		t.Errorf("context window =\n\t%#v\nwant\n\t%#v", a.contextWindow, wantWindow)

@@ -3,8 +3,10 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
+	"time"
 )
 
 // eventBuffer is the capacity of the Event channel returned by Run. It
@@ -84,7 +86,9 @@ func (a *Agent) Run(ctx context.Context, userInput string) <-chan Event {
 		for {
 			response, ok := a.infer(ctx, events, mark.model)
 			if !ok {
-				a.rollback(mark)
+				// No rollback: inference is only ever reached with the window in
+				// a sendable shape, so a failure here leaves nothing to undo and
+				// the completed rounds stay available to the next turn.
 				return
 			}
 
@@ -115,10 +119,49 @@ func (a *Agent) Run(ctx context.Context, userInput string) <-chan Event {
 	return events
 }
 
-// infer runs one round of inference, forwarding Events to the caller and
-// returning the assembled Response. ok is false if the turn should stop, which
-// covers provider errors and cancellation.
+// Retry bounds. A rate limit usually clears in seconds, so the aim is to ride
+// out a short one, not to wait out a spent quota: five attempts spend at most
+// half a minute before the turn reports and hands control back to the user.
+const (
+	maxAttempts  = 5
+	initialDelay = 2 * time.Second
+	maxDelay     = 30 * time.Second
+)
+
+// infer runs one round of inference, retrying while the provider says the
+// failure was transient. ok is false if the turn should stop, which covers
+// cancellation and any error the retries did not clear.
 func (a *Agent) infer(ctx context.Context, events chan<- Event, model Model) (Response, bool) {
+	for attempt := 1; ; attempt++ {
+		response, err, ok := a.inferOnce(ctx, events, model)
+		if ok {
+			return response, true
+		}
+		// No error means the consumer went away rather than the request failing
+		if err == nil {
+			return Response{}, false
+		}
+
+		var retryable *RetryableError
+		if !errors.As(err, &retryable) || attempt == maxAttempts {
+			send(ctx, events, ErrorEvent{Err: err})
+			return Response{}, false
+		}
+
+		delay := backoff(attempt, retryable.After)
+		if !send(ctx, events, RetryEvent{Attempt: attempt, Of: maxAttempts, In: delay, Err: err}) {
+			return Response{}, false
+		}
+		if !sleep(ctx, delay) {
+			return Response{}, false
+		}
+	}
+}
+
+// inferOnce runs a single request, forwarding Events to the caller and
+// returning the assembled Response. A failure is returned rather than emitted,
+// so infer can decide whether the caller ever needs to hear about it.
+func (a *Agent) inferOnce(ctx context.Context, events chan<- Event, model Model) (Response, error, bool) {
 	a.mu.Lock()
 	req := Request{
 		Model:     model,
@@ -133,18 +176,48 @@ func (a *Agent) infer(ctx context.Context, events chan<- Event, model Model) (Re
 		case ResponseEvent:
 			// Terminal, and not forwarded: the caller sees the Message once it
 			// has actually been appended, as a MessageEvent.
-			return event.Response, true
+			return event.Response, nil, true
 		case ErrorEvent:
-			send(ctx, events, event)
-			return Response{}, false
+			return Response{}, event.Err, false
 		default:
 			if !send(ctx, events, event) {
-				return Response{}, false
+				return Response{}, nil, false
 			}
 		}
 	}
 
-	return Response{}, false
+	return Response{}, nil, false
+}
+
+// backoff is how long to wait before the next attempt. after is the provider's
+// own hint and wins when it gave one, but is capped like everything else: an
+// outsized Retry-After would otherwise park the turn for hours with no way out
+// but ctrl+c.
+func backoff(attempt int, after time.Duration) time.Duration {
+	if after > 0 {
+		return min(after, maxDelay)
+	}
+	// Shifting rather than multiplying keeps an absurd attempt count from
+	// overflowing into a negative delay; the cap makes the result the same.
+	if attempt > 8 {
+		return maxDelay
+	}
+	return min(initialDelay<<(attempt-1), maxDelay)
+}
+
+// sleep waits out the backoff, reporting false if the turn was abandoned first.
+// Without the ctx arm a ctrl+c during a 30 second wait would appear to do
+// nothing until the wait ended.
+func sleep(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-timer.C:
+		return true
+	case <-ctx.Done():
+		return false
+	}
 }
 
 // runTools executes every ToolUseBlock in the response, returning the matching
@@ -217,13 +290,17 @@ func (a *Agent) appendMessage(generation int, msg Message) bool {
 	return true
 }
 
-// rollback discards everything a failed turn added, back to mark.
+// rollback discards everything a turn added, back to mark.
 //
-// A turn that stops partway leaves the context window in a shape the API
-// rejects: a prompt with no reply would make the next turn send two user
-// messages in a row, and a tool_use block with no matching tool_result is
-// unsendable outright. Either way every later turn fails too, so a failed turn
-// undoes itself rather than poisoning the conversation.
+// Reserved for the turn abandoning itself mid-round — a panic, or a consumer
+// that stopped reading — which is the only way the window is left holding a
+// tool_use block with no matching tool_result. That shape is unsendable, so
+// every later turn would fail too.
+//
+// A prompt with no reply needs no such undoing: both APIs combine consecutive
+// user messages, so the unanswered prompt simply stays in the conversation and
+// the next turn can carry on from it.
+//
 // A stale mark is ignored: SetModel clears the window while a turn is still
 // running, and its later cleanup must not affect the new model's context.
 func (a *Agent) rollback(mark turnMark) {

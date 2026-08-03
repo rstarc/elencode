@@ -396,6 +396,54 @@ func TestProgramFitsErrorToTerminal(t *testing.T) {
 	}
 }
 
+// rateLimitedProvider is rate limited once and answers on the retry, which is
+// the whole point of the retry: the user gets a notice and then their reply.
+type rateLimitedProvider struct{ calls int }
+
+func (p *rateLimitedProvider) Models(ctx context.Context) ([]agent.Model, error) { return nil, nil }
+
+func (p *rateLimitedProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
+	events := make(chan agent.Event, 2)
+	if p.calls == 0 {
+		p.calls++
+		events <- agent.ErrorEvent{Err: &agent.RetryableError{
+			Err:   errors.New("too many requests"),
+			After: time.Millisecond,
+		}}
+	} else {
+		// The delta as well as the response: assistant text reaches the screen as
+		// it streams, and Landed skips it on the assumption that it already has.
+		events <- agent.TextDeltaEvent{Text: "recovered"}
+		events <- agent.ResponseEvent{Response: agent.Response{
+			Message:    agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{agent.TextBlock{Text: "recovered"}}},
+			StopReason: agent.StopReasonEndTurn,
+		}}
+	}
+	close(events)
+	return events
+}
+
+func TestProgramReportsARetryAndCarriesOn(t *testing.T) {
+	a := agent.New(&rateLimitedProvider{}, nil)
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands()), teatest.WithInitialTermSize(80, 20))
+
+	tm.Type("hi")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	// Both in one wait: WaitFor consumes the output as it reads, so a second call
+	// would start after the bytes the first one already took.
+	//
+	// A backoff with nothing on screen is indistinguishable from a hang, so the
+	// notice matters as much as the recovery that follows it.
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return bytes.Contains(out, []byte("retrying")) && bytes.Contains(out, []byte("recovered"))
+	})
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("quitting the program: %v", err)
+	}
+}
+
 func TestConfigCommandOpensTheView(t *testing.T) {
 	m := typeText(t, newSizedModel(t), "/config")
 

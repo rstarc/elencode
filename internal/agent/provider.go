@@ -1,6 +1,9 @@
 package agent
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 type Provider interface {
 	// Stream starts a turn and returns a channel of incremental Events.
@@ -82,6 +85,32 @@ func (e MessageEvent) event() {}
 type ErrorEvent struct{ Err error }
 
 func (e ErrorEvent) event() {}
+
+// RetryEvent reports that a round of inference failed with something transient
+// and is about to be tried again. Unlike ErrorEvent it is not terminal: the turn
+// is still alive, and the UI shows this so a backoff does not look like a hang.
+type RetryEvent struct {
+	Attempt int // which attempt just failed, from 1
+	Of      int // how many attempts the agent will make in total
+	In      time.Duration
+	Err     error
+}
+
+func (e RetryEvent) event() {}
+
+// RetryableError marks a failure the same request could survive, such as a rate
+// limit or a server error. Providers wrap what they emit, since deciding this
+// needs the vendor's error types; the agent only asks whether the mark is there.
+//
+// After carries the provider's own hint, from a Retry-After header or the like.
+// Zero means it gave none and the agent should fall back to its own backoff.
+type RetryableError struct {
+	Err   error
+	After time.Duration
+}
+
+func (e *RetryableError) Error() string { return e.Err.Error() }
+func (e *RetryableError) Unwrap() error { return e.Err }
 
 // Request represents a single Request we send to the provider's API
 type Request struct {

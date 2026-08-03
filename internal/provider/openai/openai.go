@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -40,8 +43,12 @@ func New(apiKey string, thinking bool, effort agent.Effort) *Client {
 
 // newWithOptions is New with extra SDK options, which tests use to point the
 // client at a stub server.
+//
+// Retrying is left to the agent. The SDK does it too, but with a sleep that
+// ignores ctx and no way to say so, which makes ctrl+c look broken and turns
+// each of the agent's attempts into several requests.
 func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...option.RequestOption) *Client {
-	opts = append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
+	opts = append([]option.RequestOption{option.WithAPIKey(apiKey), option.WithMaxRetries(0)}, opts...)
 	return &Client{client: openai.NewClient(opts...), thinking: thinking, effort: effort}
 }
 
@@ -199,16 +206,18 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 				// stopReason reads it as max_tokens.
 				final, haveFinal = event.Response, true
 			case responses.ResponseFailedEvent:
-				emit(ctx, events, agent.ErrorEvent{Err: fmt.Errorf("response failed: %s (%s)", event.Response.Error.Message, event.Response.Error.Code)})
+				err := fmt.Errorf("response failed: %s (%s)", event.Response.Error.Message, event.Response.Error.Code)
+				emit(ctx, events, agent.ErrorEvent{Err: classifyCode(string(event.Response.Error.Code), err)})
 				return
 			case responses.ResponseErrorEvent:
-				emit(ctx, events, agent.ErrorEvent{Err: fmt.Errorf("stream error: %s (%s)", event.Message, event.Code)})
+				err := fmt.Errorf("stream error: %s (%s)", event.Message, event.Code)
+				emit(ctx, events, agent.ErrorEvent{Err: classifyCode(event.Code, err)})
 				return
 			}
 		}
 
 		if err := stream.Err(); err != nil {
-			emit(ctx, events, agent.ErrorEvent{Err: err})
+			emit(ctx, events, agent.ErrorEvent{Err: classify(err)})
 			return
 		}
 
@@ -233,6 +242,56 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 	}()
 
 	return events
+}
+
+// retryableCodes are the API's names for a failure that another identical
+// request could get past. Everything else — a rejected prompt, a bad request —
+// would fail the same way again, and retrying only delays the explanation.
+var retryableCodes = map[string]bool{
+	"rate_limit_exceeded": true,
+	"server_error":        true,
+}
+
+// classify marks err retryable when the failure was transient. A 429 or 5xx is
+// the usual shape; the agent decides what to do about it.
+func classify(err error) error {
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) {
+		// No status to judge by. A bare transport failure could well be
+		// transient, but so could a bug, and guessing wrong here means retrying
+		// something that will never work.
+		return err
+	}
+	if apiErr.StatusCode != http.StatusTooManyRequests && apiErr.StatusCode < http.StatusInternalServerError {
+		return err
+	}
+	return &agent.RetryableError{Err: err, After: retryAfter(apiErr.Response)}
+}
+
+// classifyCode marks a failure reported inside the stream, where there is no
+// status code to read and the API names the reason instead. These arrive over a
+// 200 the SDK already accepted, so nothing below the agent can retry them.
+func classifyCode(code string, err error) error {
+	if !retryableCodes[code] {
+		return err
+	}
+	return &agent.RetryableError{Err: err}
+}
+
+// retryAfter reads how long the API asked us to wait. Zero means it said
+// nothing and the agent should fall back to its own backoff.
+func retryAfter(resp *http.Response) time.Duration {
+	if resp == nil {
+		return 0
+	}
+	// Milliseconds first: it is the more precise of the two when both are sent.
+	if ms, err := strconv.Atoi(resp.Header.Get("Retry-After-Ms")); err == nil && ms > 0 {
+		return time.Duration(ms) * time.Millisecond
+	}
+	if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && s > 0 {
+		return time.Duration(s) * time.Second
+	}
+	return 0
 }
 
 // emit sends ev unless the consumer has abandoned the turn. It reports whether
