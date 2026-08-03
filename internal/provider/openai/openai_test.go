@@ -640,3 +640,71 @@ func TestStreamStopsWhenContextCancelled(t *testing.T) {
 	// cancellation would leave the channel open and time out here.
 	collect(t, events)
 }
+
+// A turn the API gives up on must fail loudly. Reporting it as an empty
+// end_turn response would make the reply vanish with no explanation, and the
+// agent loop would treat the turn as finished.
+func TestStreamSurfacesAFailedResponse(t *testing.T) {
+	_, url := newStub(t, sse(
+		`{"type":"response.output_text.delta","delta":"partial"}`,
+		`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"server_error","message":"upstream exploded"},"output":[]}}`,
+	))
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	events := collect(t, c.Stream(context.Background(), agent.Request{
+		Model:    agent.Model{ID: "gpt-5"},
+		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+
+	last, ok := events[len(events)-1].(agent.ErrorEvent)
+	if !ok {
+		t.Fatalf("last event = %#v, want an ErrorEvent", events[len(events)-1])
+	}
+	if !strings.Contains(last.Err.Error(), "upstream exploded") {
+		t.Errorf("err = %v, want it to carry the API's explanation", last.Err)
+	}
+}
+
+// A stream that stops before any terminal event is a failure too: without one
+// there is no output to report, and claiming end_turn would silently drop the
+// turn.
+func TestStreamSurfacesATruncatedStream(t *testing.T) {
+	_, url := newStub(t, sse(`{"type":"response.output_text.delta","delta":"partial"}`))
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	events := collect(t, c.Stream(context.Background(), agent.Request{
+		Model:    agent.Model{ID: "gpt-5"},
+		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+
+	if _, ok := events[len(events)-1].(agent.ErrorEvent); !ok {
+		t.Fatalf("last event = %#v, want an ErrorEvent", events[len(events)-1])
+	}
+}
+
+// Hitting the token limit is a legitimate ending, not a failure: the API ends
+// the stream with response.incomplete rather than response.completed, and the
+// partial output still has to reach the transcript.
+func TestStreamReportsIncompleteAsMaxTokens(t *testing.T) {
+	_, url := newStub(t, sse(
+		`{"type":"response.output_text.delta","delta":"cut off"}`,
+		`{"type":"response.incomplete","response":{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"cut off"}]}]}}`,
+	))
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	events := collect(t, c.Stream(context.Background(), agent.Request{
+		Model:    agent.Model{ID: "gpt-5"},
+		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+
+	last, ok := events[len(events)-1].(agent.ResponseEvent)
+	if !ok {
+		t.Fatalf("last event = %#v, want a ResponseEvent", events[len(events)-1])
+	}
+	if last.Response.StopReason != agent.StopReasonMaxTokens {
+		t.Errorf("stop = %q, want max_tokens", last.Response.StopReason)
+	}
+	if len(last.Response.Message.Content) != 1 || last.Response.Message.Content[0] != (agent.TextBlock{Text: "cut off"}) {
+		t.Errorf("content = %#v, want the partial output kept", last.Response.Message.Content)
+	}
+}

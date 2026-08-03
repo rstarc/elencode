@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -176,9 +177,10 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 		stream := c.client.Responses.NewStreaming(ctx, c.params(req, input))
 
 		// Emit only what the UI needs to paint live. Everything else (tool
-		// inputs, status) is recovered from the completed response, which
+		// inputs, status) is recovered from the terminal response, which
 		// carries the full output.
 		var final responses.Response
+		var haveFinal bool
 		for stream.Next() {
 			switch event := stream.Current().AsAny().(type) {
 			case responses.ResponseTextDeltaEvent:
@@ -190,12 +192,31 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 					return
 				}
 			case responses.ResponseCompletedEvent:
-				final = event.Response
+				final, haveFinal = event.Response, true
+			case responses.ResponseIncompleteEvent:
+				// A legitimate ending, not a failure: this is what hitting the
+				// token limit looks like, and the partial output still counts.
+				// stopReason reads it as max_tokens.
+				final, haveFinal = event.Response, true
+			case responses.ResponseFailedEvent:
+				emit(ctx, events, agent.ErrorEvent{Err: fmt.Errorf("response failed: %s (%s)", event.Response.Error.Message, event.Response.Error.Code)})
+				return
+			case responses.ResponseErrorEvent:
+				emit(ctx, events, agent.ErrorEvent{Err: fmt.Errorf("stream error: %s (%s)", event.Message, event.Code)})
+				return
 			}
 		}
 
 		if err := stream.Err(); err != nil {
 			emit(ctx, events, agent.ErrorEvent{Err: err})
+			return
+		}
+
+		// Without a terminal event there is no output to report. Reporting an
+		// empty end_turn instead would make the reply vanish with no
+		// explanation, and the agent loop would treat the turn as finished.
+		if !haveFinal {
+			emit(ctx, events, agent.ErrorEvent{Err: errors.New("stream ended without a terminal response")})
 			return
 		}
 
