@@ -13,7 +13,7 @@ import (
 // through Secret.String, so the value cannot reach the screen.
 func renderConfig(cfg config.Config, width int) string {
 	source := "from config file"
-	if cfg.APIKeyFromEnv {
+	if cfg.AnthropicKeyFromEnv {
 		source = "from " + config.ANTHROPIC_API_KEY_ENV_VAR_NAME
 	}
 

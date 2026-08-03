@@ -101,8 +101,8 @@ func TestLoadRecordsFileAsTheSource(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if cfg.APIKeyFromEnv {
-		t.Error("APIKeyFromEnv is true, want false when only the file sets the key")
+	if cfg.AnthropicKeyFromEnv {
+		t.Error("AnthropicKeyFromEnv is true, want false when only the file sets the key")
 	}
 	if cfg.Path != file {
 		t.Errorf("Path = %q, want %q", cfg.Path, file)
@@ -123,8 +123,8 @@ func TestLoadRecordsEnvironmentAsTheSource(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if !cfg.APIKeyFromEnv {
-		t.Error("APIKeyFromEnv is false, want true when the environment overrides the file")
+	if !cfg.AnthropicKeyFromEnv {
+		t.Error("AnthropicKeyFromEnv is false, want true when the environment overrides the file")
 	}
 	if cfg.AnthropicAPIKey.Reveal() != realKey {
 		t.Error("AnthropicAPIKey is not the value from the environment")
@@ -329,5 +329,114 @@ func TestSaveKeepsThinkingOff(t *testing.T) {
 
 	if saved := readConfig(t, file); saved["thinking_enabled"] != false {
 		t.Errorf("thinking_enabled = %v after saving, want it still off", saved["thinking_enabled"])
+	}
+}
+
+func TestLoadReadsTheOpenAIProviderSettings(t *testing.T) {
+	writeConfig(t, `{"provider":"openai","openai_api_key":"sk-oai","thinking_effort":"high"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Provider != ProviderOpenAI || cfg.OpenAIAPIKey.Reveal() != "sk-oai" || cfg.ThinkingEffort != "high" {
+		t.Fatalf("provider = %q, thinking_effort = %q, openai key set = %t", cfg.Provider, cfg.ThinkingEffort, cfg.OpenAIAPIKey != "")
+	}
+}
+
+// TestLoadValidatesTheSelectedProvidersKey: an anthropic key on file must not
+// satisfy the check when openai is the selected provider.
+func TestLoadValidatesTheSelectedProvidersKey(t *testing.T) {
+	writeConfig(t, `{"provider":"openai","anthropic_api_key":"`+realKey+`"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load succeeded without the selected provider's key")
+	}
+	if !strings.Contains(err.Error(), OPENAI_API_KEY_ENV_VAR_NAME) {
+		t.Errorf("err = %q, want it to name the openai key", err)
+	}
+}
+
+func TestLoadDefaultsProviderToAnthropic(t *testing.T) {
+	writeConfig(t, `{"anthropic_api_key":"`+realKey+`"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Provider != ProviderAnthropic {
+		t.Fatalf("provider = %q, want anthropic", cfg.Provider)
+	}
+	if cfg.ThinkingEffort != "medium" {
+		t.Fatalf("thinking_effort = %q, want the medium default", cfg.ThinkingEffort)
+	}
+}
+
+func TestLoadAppliesTheOpenAIKeyFromTheEnvironment(t *testing.T) {
+	writeConfig(t, `{"provider":"openai","openai_api_key":"from-file"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "sk-oai-env")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.OpenAIAPIKey.Reveal() != "sk-oai-env" {
+		t.Error("OpenAIAPIKey is not the value from the environment")
+	}
+	if !cfg.OpenAIKeyFromEnv {
+		t.Error("OpenAIKeyFromEnv is false, want true")
+	}
+}
+
+// TestSaveWritesNeitherEnvironmentKey: with openai selected and BOTH env vars
+// set, Save must not persist either environment secret — including the key of
+// the provider that is not selected. One shared provenance bool cannot express
+// this, which is why each key tracks its own.
+func TestSaveWritesNeitherEnvironmentKey(t *testing.T) {
+	file := writeConfig(t, `{"provider":"openai","anthropic_api_key":"ant-file","openai_api_key":"oai-file"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "ant-env")
+	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "oai-env")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	saved := readConfig(t, file)
+	if saved["anthropic_api_key"] != "ant-file" {
+		t.Errorf("anthropic_api_key = %v, want the file's own value kept", saved["anthropic_api_key"])
+	}
+	if saved["openai_api_key"] != "oai-file" {
+		t.Errorf("openai_api_key = %v, want the file's own value kept", saved["openai_api_key"])
+	}
+}
+
+func TestLoadRejectsUnknownProvider(t *testing.T) {
+	writeConfig(t, `{"provider":"nope","anthropic_api_key":"`+realKey+`"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load accepted an unknown provider")
+	}
+}
+
+// TestLoadRejectsUnknownThinkingEffort: a typo like "hihg" must fail loudly
+// rather than silently clamping to medium.
+func TestLoadRejectsUnknownThinkingEffort(t *testing.T) {
+	writeConfig(t, `{"anthropic_api_key":"`+realKey+`","thinking_effort":"turbo"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("Load accepted an unknown thinking_effort")
 	}
 }

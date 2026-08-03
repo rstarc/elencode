@@ -13,6 +13,10 @@ type Config struct {
 	// Every field is omitempty so Save can merge into the file: an unset value
 	// leaves whatever the file already said in place, rather than blanking it.
 	AnthropicAPIKey Secret `json:"anthropic_api_key,omitempty"`
+	OpenAIAPIKey    Secret `json:"openai_api_key,omitempty"`
+	// Provider names which API a session talks to. Fixed for the process: it is
+	// chosen at startup like the key is, not switched mid-session.
+	Provider string `json:"provider,omitempty"`
 	// Model the provider should use. Empty means the provider's own default.
 	Model string `json:"model,omitempty"`
 	// ThinkingEnabled asks the provider for the model's reasoning. Not
@@ -20,10 +24,17 @@ type Config struct {
 	// would make turning thinking off indistinguishable from never setting it,
 	// and a save would drop it back to the default.
 	ThinkingEnabled bool `json:"thinking_enabled"`
+	// ThinkingEffort is how hard an effort-based model reasons, used when
+	// ThinkingEnabled is on. Validated by Load: a typo must fail at startup
+	// rather than silently run at some other level.
+	ThinkingEffort string `json:"thinking_effort,omitempty"`
 	// Provenance, filled in by Load and never read from the file, so the config
-	// view can say where a value came from.
-	Path          string `json:"-"` // config file Load read
-	APIKeyFromEnv bool   `json:"-"` // the environment overrode the file value
+	// view can say where a value came from. One flag per key: a single bool
+	// cannot say *which* key the environment supplied, and Save has to blank
+	// exactly those.
+	Path                string `json:"-"` // config file Load read
+	AnthropicKeyFromEnv bool   `json:"-"` // the environment overrode the file value
+	OpenAIKeyFromEnv    bool   `json:"-"`
 }
 
 // Save writes the configuration back to c.Path.
@@ -34,8 +45,11 @@ type Config struct {
 // the file the user never chose to store there, and pin it even after the
 // environment moved on.
 func (c Config) Save() error {
-	if c.APIKeyFromEnv {
+	if c.AnthropicKeyFromEnv {
 		c.AnthropicAPIKey = ""
+	}
+	if c.OpenAIKeyFromEnv {
+		c.OpenAIAPIKey = ""
 	}
 
 	updates, err := json.Marshal(c)
@@ -87,12 +101,24 @@ const configDirectoryName = "elencode"
 
 const ANTHROPIC_API_KEY_ENV_VAR_NAME = "ANTHROPIC_API_KEY"
 
+const OPENAI_API_KEY_ENV_VAR_NAME = "OPENAI_API_KEY"
+
+// The providers a session can be pointed at.
+const (
+	ProviderAnthropic = "anthropic"
+	ProviderOpenAI    = "openai"
+)
+
+// defaultEffort is the level an effort-based model reasons at when the file
+// names none. Medium is what both APIs use as their own default.
+const defaultEffort = "medium"
+
 // Load loads the configuration file ($XDG_CONFIG_HOME/elencode/config.json) from disk
 // and unmarshals the contents into a Config, then reads any environment variables to check if they override any of the values
 func Load() (Config, error) {
 	// Defaults first: the file is unmarshalled over them, so a setting it does
 	// not mention keeps the value here rather than a zero one.
-	cfg := Config{ThinkingEnabled: true}
+	cfg := Config{ThinkingEnabled: true, ThinkingEffort: defaultEffort, Provider: ProviderAnthropic}
 
 	userConfigDir, err := os.UserConfigDir()
 	if err != nil {
@@ -116,14 +142,43 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 
-	// Apply environment variable overrides
-	if val, ok := os.LookupEnv(ANTHROPIC_API_KEY_ENV_VAR_NAME); ok && val != "" {
-		cfg.AnthropicAPIKey = Secret(val)
-		cfg.APIKeyFromEnv = true
+	// A key written as an explicit empty string means "unset", not "override the
+	// default with nothing".
+	if cfg.Provider == "" {
+		cfg.Provider = ProviderAnthropic
+	}
+	if cfg.ThinkingEffort == "" {
+		cfg.ThinkingEffort = defaultEffort
 	}
 
-	if cfg.AnthropicAPIKey == "" {
-		return cfg, fmt.Errorf("API key not set: provide %q in the environment or %q in %q", ANTHROPIC_API_KEY_ENV_VAR_NAME, "anthropic_api_key", configFilePath)
+	// Both overrides are applied whichever provider is selected: the value is
+	// real either way, and what matters is that Save never writes it back.
+	if val, ok := os.LookupEnv(ANTHROPIC_API_KEY_ENV_VAR_NAME); ok && val != "" {
+		cfg.AnthropicAPIKey = Secret(val)
+		cfg.AnthropicKeyFromEnv = true
+	}
+	if val, ok := os.LookupEnv(OPENAI_API_KEY_ENV_VAR_NAME); ok && val != "" {
+		cfg.OpenAIAPIKey = Secret(val)
+		cfg.OpenAIKeyFromEnv = true
+	}
+
+	switch cfg.Provider {
+	case ProviderAnthropic:
+		if cfg.AnthropicAPIKey == "" {
+			return cfg, fmt.Errorf("API key not set: provide %q in the environment or %q in %q", ANTHROPIC_API_KEY_ENV_VAR_NAME, "anthropic_api_key", configFilePath)
+		}
+	case ProviderOpenAI:
+		if cfg.OpenAIAPIKey == "" {
+			return cfg, fmt.Errorf("API key not set: provide %q in the environment or %q in %q", OPENAI_API_KEY_ENV_VAR_NAME, "openai_api_key", configFilePath)
+		}
+	default:
+		return cfg, fmt.Errorf("unknown provider %q in %q (valid: %q, %q)", cfg.Provider, configFilePath, ProviderAnthropic, ProviderOpenAI)
+	}
+
+	switch cfg.ThinkingEffort {
+	case "low", "medium", "high", "xhigh", "max":
+	default:
+		return cfg, fmt.Errorf("unknown thinking_effort %q in %q (valid: low, medium, high, xhigh, max)", cfg.ThinkingEffort, configFilePath)
 	}
 
 	return cfg, nil

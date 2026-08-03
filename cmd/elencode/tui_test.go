@@ -416,9 +416,9 @@ func TestConfigViewShowsLoadedConfigWithoutTheKey(t *testing.T) {
 	const key = "sk-ant-do-not-print-me"
 
 	m := newModel(agent.New(nil, nil), config.Config{
-		AnthropicAPIKey: config.Secret(key),
-		Path:            "/tmp/elencode/config.json",
-		APIKeyFromEnv:   true,
+		AnthropicAPIKey:     config.Secret(key),
+		Path:                "/tmp/elencode/config.json",
+		AnthropicKeyFromEnv: true,
 	}, defaultCommands())
 	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	m.configVisible = true

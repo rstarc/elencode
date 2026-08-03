@@ -43,7 +43,7 @@ func TestRenderConfigNamesTheSource(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			cfg := config.Config{AnthropicAPIKey: "x", APIKeyFromEnv: test.fromEnv, Path: "/tmp/c.json"}
+			cfg := config.Config{AnthropicAPIKey: "x", AnthropicKeyFromEnv: test.fromEnv, Path: "/tmp/c.json"}
 
 			if view := renderConfig(cfg, 80); !strings.Contains(view, test.wantMatch) {
 				t.Errorf("config view does not name %q as the source:\n%s", test.wantMatch, view)
