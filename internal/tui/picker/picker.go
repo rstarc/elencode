@@ -28,6 +28,10 @@ type Config[T any] struct {
 	// Render draws one entry. Its Name is also what the entry is matched and
 	// previewed by, so it is what the user types to reach it.
 	Render func(T) menu.Item
+	// Match reports whether an entry survives the query. How a list is searched
+	// is the list's own business: what reads well over three short command names
+	// reads badly over twenty model ids.
+	Match func(query, name string) bool
 	// Trigger opens the picker for as long as the query starts with it, the way
 	// a slash opens the command menu. Empty means the picker opens on Show
 	// instead, and stays open until it is closed.
@@ -115,10 +119,9 @@ func (m Model[T]) Matches() []T {
 		return nil
 	}
 
-	query := strings.ToLower(m.query)
 	var matches []T
 	for _, item := range m.items {
-		if isSubsequence(query, strings.ToLower(m.cfg.Render(item).Name)) {
+		if m.cfg.Match(m.query, m.cfg.Render(item).Name) {
 			matches = append(matches, item)
 		}
 	}
@@ -187,18 +190,4 @@ func (m Model[T]) View() string {
 		items = menu.Align(items)
 	}
 	return menu.Render(items, m.index, m.width, m.cfg.Empty)
-}
-
-// isSubsequence reports whether every rune of query appears in name, in order
-// but not necessarily adjacent, so "/qt" finds "/quit".
-func isSubsequence(query, name string) bool {
-	rest := name
-	for _, r := range query {
-		i := strings.IndexRune(rest, r)
-		if i < 0 {
-			return false
-		}
-		rest = rest[i+len(string(r)):]
-	}
-	return true
 }

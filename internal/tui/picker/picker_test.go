@@ -16,6 +16,17 @@ type entry struct{ name, description string }
 
 func render(e entry) menu.Item { return menu.Item{Name: e.name, Description: e.description} }
 
+// Which entries a query matches is the caller's business now, so the fixtures
+// use the two matchers the real lists do: a prefix for commands, a substring
+// for ids.
+func matchPrefix(query, name string) bool {
+	return strings.HasPrefix(strings.ToLower(name), strings.ToLower(query))
+}
+
+func matchSubstring(query, name string) bool {
+	return strings.Contains(strings.ToLower(name), strings.ToLower(query))
+}
+
 var commands = []entry{
 	{"/config", "the first one"},
 	{"/model", "the second one"},
@@ -30,7 +41,7 @@ var models = []entry{
 // triggered is a picker that opens as the user types, the way the command menu
 // does. Its entries carry the trigger, as a command name does.
 func triggered() Model[entry] {
-	p := New(Config[entry]{Render: render, Trigger: "/", Empty: "no matching command"}, commands...)
+	p := New(Config[entry]{Render: render, Match: matchPrefix, Trigger: "/", Empty: "no matching command"}, commands...)
 	p.SetWidth(80)
 	return p
 }
@@ -42,7 +53,7 @@ func opened(query string) Model[entry] { return triggered().SetQuery(query) }
 // closedList is a picker whoever owns it opens, the way /model opens the model
 // list
 func closedList(items ...entry) Model[entry] {
-	p := New(Config[entry]{Render: render, Align: true, Empty: "no matching model"}, items...)
+	p := New(Config[entry]{Render: render, Match: matchSubstring, Align: true, Empty: "no matching model"}, items...)
 	p.SetWidth(80)
 	return p
 }
@@ -109,11 +120,8 @@ func TestQueryNarrowsTheMatches(t *testing.T) {
 		{"the trigger alone lists everything", "/", []string{"/config", "/model", "/quit"}},
 		{"exact name", "/quit", []string{"/quit"}},
 		{"prefix", "/qu", []string{"/quit"}},
-		{"subsequence", "/qt", []string{"/quit"}},
 		{"case insensitive", "/QUIT", []string{"/quit"}},
-		{"a shared letter matches several", "/i", []string{"/config", "/quit"}},
 		{"no match", "/zzz", nil},
-		{"out of order is not a subsequence", "/tq", nil},
 	}
 
 	for _, test := range tests {
@@ -123,6 +131,23 @@ func TestQueryNarrowsTheMatches(t *testing.T) {
 				t.Errorf("matches = %v, want %v", got, test.want)
 			}
 		})
+	}
+}
+
+// TestTheConfiguredMatcherDecidesTheMatchSet covers the picker holding no
+// opinion of its own: the two lists are searched differently, and neither rule
+// belongs here.
+func TestTheConfiguredMatcherDecidesTheMatchSet(t *testing.T) {
+	never := func(string, string) bool { return false }
+	p := New(Config[entry]{Render: render, Match: never, Trigger: "/"}, commands...)
+	if got := len(p.SetQuery("/").Matches()); got != 0 {
+		t.Errorf("%d matches, want the matcher to have the last word", got)
+	}
+
+	always := func(string, string) bool { return true }
+	p = New(Config[entry]{Render: render, Match: always, Trigger: "/"}, commands...)
+	if got := len(p.SetQuery("/zzz").Matches()); got != len(commands) {
+		t.Errorf("%d matches, want all %d", got, len(commands))
 	}
 }
 
@@ -302,7 +327,7 @@ func TestViewShowsOnlyTheMatches(t *testing.T) {
 func TestViewFitsItsWidth(t *testing.T) {
 	const width = 30
 
-	p := New(Config[entry]{Render: render, Trigger: "/"}, commands...)
+	p := New(Config[entry]{Render: render, Match: matchPrefix, Trigger: "/"}, commands...)
 	p.SetWidth(width)
 
 	for i, line := range strings.Split(p.SetQuery("/").View(), "\n") {
