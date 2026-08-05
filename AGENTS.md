@@ -34,6 +34,10 @@ Do not call `go build`/`go test` directly; use the Makefile targets.
   terminal owns it. The frame holds only what can still change — the row being
   streamed into, the spinner, the menus, the input. Printed output cannot be changed
   afterwards, so anything still in flight stays in the frame until it is final.
+- Nothing may be printed before the first frame is flushed. bubbletea sizes its screen
+  buffer on that first flush, so an earlier `tea.Println` is measured against the whole
+  terminal and lands at the top of the screen, over what the user already had there. The
+  session header is written by `main` before the program starts for that reason.
 - Commands run concurrently, so prints issued from separate updates can arrive in
   either order. Chain anything ordered with `tea.Sequence`, not `tea.Batch`.
 - `tea.Sequence` and `tea.Batch` return their only non-nil command directly rather

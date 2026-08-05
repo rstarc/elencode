@@ -988,14 +988,13 @@ func TestSelectingAModelSaysSo(t *testing.T) {
 	}
 }
 
-// TestHeaderSpansTheTerminal covers why the header cannot be printed from Init:
-// the terminal width is not known until the first WindowSizeMsg arrives.
 func TestHeaderSpansTheTerminal(t *testing.T) {
 	const width = 72
 
-	_, cmd := updateCmd(t, newTestModel(), tea.WindowSizeMsg{Width: width, Height: 20})
+	var out bytes.Buffer
+	printHeader(&out, width)
 
-	got := printed(t, cmd)
+	got := strings.TrimSuffix(out.String(), "\n")
 	if lipgloss.Width(got) != width {
 		t.Errorf("header is %d columns wide, want the full %d:\n%s", lipgloss.Width(got), width, got)
 	}
@@ -1004,14 +1003,16 @@ func TestHeaderSpansTheTerminal(t *testing.T) {
 	}
 }
 
-func TestHeaderIsPrintedOnce(t *testing.T) {
-	m := newSizedModel(t)
-
-	// A resize is not a new session, so it must not print a second header
-	_, cmd := updateCmd(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+// TestNothingIsPrintedBeforeTheFirstFrame guards the reason the header is
+// printed from main rather than through tea.Println: bubbletea sizes its screen
+// buffer on the first flush, so anything printed before then is measured against
+// the whole terminal and lands at the top of the screen, over whatever the user
+// already had there.
+func TestNothingIsPrintedBeforeTheFirstFrame(t *testing.T) {
+	_, cmd := updateCmd(t, newTestModel(), tea.WindowSizeMsg{Width: 72, Height: 20})
 
 	if cmd != nil {
-		t.Errorf("resizing printed %q, want the header printed only at startup", printed(t, cmd))
+		t.Errorf("the first size message printed %q, want nothing printed before the first frame", printed(t, cmd))
 	}
 }
 

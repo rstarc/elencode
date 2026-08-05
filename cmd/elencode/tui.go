@@ -20,7 +20,8 @@ import (
 	"github.com/rstarc/elencode/internal/tui/transcript"
 )
 
-// banner titles the session, printed once the terminal width is known
+// banner titles the session. Printed by main before the program starts, not
+// from here: see printHeader.
 const banner = "elencode"
 
 // inputPrompt mirrors transcript.UserPromptMarker, which marks user messages in
@@ -61,7 +62,6 @@ type model struct {
 	picker   modelpicker.Model // the model list /model opens
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
-	headerPrinted bool // the session title has been printed
 	// modelsLoading drives the spinner while the list is fetched, which happens
 	// here rather than in the picker: it is an API call and needs the agent.
 	modelsLoading bool
@@ -330,15 +330,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.picker.SetWidth(msg.Width)
 		// Only the frame follows the new width. What is already printed keeps
 		// the width it was printed at, as the terminal owns those lines now.
-
-		// The header is printed rather than drawn, so it scrolls away with the
-		// rest of the session instead of sitting above every frame. It waits
-		// for this message because it spans the terminal, and until now there
-		// was no width to span. A resize is not a new session.
-		if !m.headerPrinted {
-			m.headerPrinted = true
-			return m, printAbove(transcript.Header(banner, m.width))
-		}
 		return m, print
 	case tea.KeyPressMsg:
 		// The config view owns the whole frame, so it takes the keyboard with it:
