@@ -988,14 +988,16 @@ func TestSelectingAModelSaysSo(t *testing.T) {
 	}
 }
 
-// TestHeaderSpansTheTerminal covers why the header cannot be printed from Init:
-// the terminal width is not known until the first WindowSizeMsg arrives.
-func TestHeaderSpansTheTerminal(t *testing.T) {
+// TestOpeningDocumentSpansTheTerminal covers the session opening: main writes
+// the document as it stands before the program starts, so the terminal keeps
+// whatever it already held and the session begins underneath.
+func TestOpeningDocumentSpansTheTerminal(t *testing.T) {
 	const width = 72
 
-	_, cmd := updateCmd(t, newTestModel(), tea.WindowSizeMsg{Width: width, Height: 20})
+	var out bytes.Buffer
+	openDocument(&out, newTestModel().doc, width)
 
-	got := printed(t, cmd)
+	got := strings.TrimSuffix(out.String(), "\n")
 	if lipgloss.Width(got) != width {
 		t.Errorf("header is %d columns wide, want the full %d:\n%s", lipgloss.Width(got), width, got)
 	}
@@ -1004,14 +1006,83 @@ func TestHeaderSpansTheTerminal(t *testing.T) {
 	}
 }
 
-func TestHeaderIsPrintedOnce(t *testing.T) {
+// TestWidthChangeReprintsTheDocument covers what owning the document is for:
+// the session is laid out again at the new width instead of keeping the shape
+// it was printed at.
+func TestWidthChangeReprintsTheDocument(t *testing.T) {
+	m := newSizedModel(t)
+	m.doc.Append(transcript.NoticeEntry{Text: "switched to a model"})
+
+	_, cmd := updateCmd(t, m, tea.WindowSizeMsg{Width: 100, Height: 20})
+
+	got := printed(t, cmd)
+	if !strings.HasPrefix(got, clearAll) {
+		t.Errorf("reprint does not begin by clearing the screen and scrollback:\n%q", got[:min(40, len(got))])
+	}
+	stripped := ansi.Strip(strings.TrimPrefix(got, clearAll))
+	for _, want := range []string{banner, "switched to a model"} {
+		if !strings.Contains(stripped, want) {
+			t.Errorf("reprint is missing %q:\n%s", want, stripped)
+		}
+	}
+}
+
+// TestReprintFollowsTheNewWidth is the reason the document holds entries rather
+// than the strings they rendered to.
+func TestReprintFollowsTheNewWidth(t *testing.T) {
+	const width = 100
 	m := newSizedModel(t)
 
-	// A resize is not a new session, so it must not print a second header
-	_, cmd := updateCmd(t, m, tea.WindowSizeMsg{Width: 100, Height: 30})
+	_, cmd := updateCmd(t, m, tea.WindowSizeMsg{Width: width, Height: 20})
+
+	// The header is a rule spanning the terminal, so its width is the document's
+	header := strings.SplitN(strings.TrimPrefix(printed(t, cmd), clearAll), "\n", 2)[0]
+	if lipgloss.Width(header) != width {
+		t.Errorf("reprinted header is %d columns wide, want the new %d:\n%s", lipgloss.Width(header), width, header)
+	}
+}
+
+// TestResizeWithoutAWidthChangePrintsNothing keeps a taller or shorter terminal
+// from redrawing the session: only the width decides how a block wraps.
+func TestResizeWithoutAWidthChangePrintsNothing(t *testing.T) {
+	m := newSizedModel(t)
+
+	_, cmd := updateCmd(t, m, tea.WindowSizeMsg{Width: 80, Height: 40})
 
 	if cmd != nil {
-		t.Errorf("resizing printed %q, want the header printed only at startup", printed(t, cmd))
+		t.Errorf("a height-only resize printed %q, want nothing", printed(t, cmd))
+	}
+}
+
+// TestReprintSettlesTheStreamedBlockOnce covers the block in flight during a
+// resize: it has to enter the document so the reprint carries it, and it must
+// not also be left in the frame or printed twice.
+func TestReprintSettlesTheStreamedBlockOnce(t *testing.T) {
+	m := newSizedModel(t)
+	m.state = uiStateProcessing
+	m = update(t, m, streamEventMsg{event: agent.TextDeltaEvent{Text: "the answer"}})
+
+	next, cmd := updateCmd(t, m, tea.WindowSizeMsg{Width: 100, Height: 20})
+
+	got := ansi.Strip(printed(t, cmd))
+	if count := strings.Count(got, "the answer"); count != 1 {
+		t.Errorf("reprint carries the streamed block %d times, want once:\n%s", count, got)
+	}
+	if view := ansi.Strip(next.View().Content); strings.Contains(view, "the answer") {
+		t.Errorf("frame still shows the streamed block after the reprint:\n%s", view)
+	}
+}
+
+// TestNothingIsPrintedBeforeTheFirstFrame guards the reason the header is
+// printed from main rather than through tea.Println: bubbletea sizes its screen
+// buffer on the first flush, so anything printed before then is measured against
+// the whole terminal and lands at the top of the screen, over whatever the user
+// already had there.
+func TestNothingIsPrintedBeforeTheFirstFrame(t *testing.T) {
+	_, cmd := updateCmd(t, newTestModel(), tea.WindowSizeMsg{Width: 72, Height: 20})
+
+	if cmd != nil {
+		t.Errorf("the first size message printed %q, want nothing printed before the first frame", printed(t, cmd))
 	}
 }
 
@@ -1049,5 +1120,62 @@ func TestAnswerAfterThinkingFinishesTheThinkingBlock(t *testing.T) {
 	}
 	if !strings.Contains(ansi.Strip(view), "It is in internal/agent.") {
 		t.Errorf("frame does not show the answer:\n%s", view)
+	}
+}
+
+// TestDocumentHoldsAStreamedReplyOnce covers the seam between the stream and
+// the document: the reply settles as its own entry while it streams, and the
+// message that follows carries the same text. Only one of them may be recorded,
+// or a reprint shows the answer twice.
+func TestDocumentHoldsAStreamedReplyOnce(t *testing.T) {
+	m := newSizedModel(t)
+	m.state = uiStateProcessing
+
+	m = update(t, m, streamEventMsg{event: agent.TextDeltaEvent{Text: "the answer"}})
+	m = update(t, m, streamEventMsg{event: agent.MessageEvent{Message: agent.Message{
+		Role:    agent.RoleAssistant,
+		Content: []agent.Block{agent.TextBlock{Text: "the answer"}},
+	}}})
+
+	got := ansi.Strip(m.doc.Render(80))
+	if count := strings.Count(got, "the answer"); count != 1 {
+		t.Errorf("document holds the reply %d times, want once:\n%s", count, got)
+	}
+}
+
+// TestDocumentHoldsReasoningAndTheAnswerItLedTo covers the switch from
+// reasoning to answer: the stream ends the reasoning block silently, so the
+// document only keeps it if the switch is settled deliberately.
+func TestDocumentHoldsReasoningAndTheAnswerItLedTo(t *testing.T) {
+	m := newSizedModel(t)
+	m.state = uiStateProcessing
+
+	m = update(t, m, streamEventMsg{event: agent.ThinkingDeltaEvent{Text: "let me check"}})
+	m = update(t, m, streamEventMsg{event: agent.TextDeltaEvent{Text: "it is in internal/agent"}})
+	m = update(t, m, streamEventMsg{event: agent.MessageEvent{Message: agent.Message{
+		Role: agent.RoleAssistant,
+		Content: []agent.Block{
+			agent.ThinkingBlock{Thinking: "let me check", Signature: "sig"},
+			agent.TextBlock{Text: "it is in internal/agent"},
+			agent.ToolUseBlock{ID: "toolu_1", Name: "read", Input: []byte(`{"path":"a.txt"}`)},
+		},
+	}}})
+
+	got := ansi.Strip(m.doc.Render(80))
+	for _, want := range []string{"let me check", "it is in internal/agent", "read"} {
+		if count := strings.Count(got, want); count != 1 {
+			t.Errorf("document holds %q %d times, want once:\n%s", want, count, got)
+		}
+	}
+}
+
+// TestDocumentRecordsWhatTheUserSaid keeps the prompt in the transcript: it
+// never comes back from the agent, so nothing else would record it.
+func TestDocumentRecordsWhatTheUserSaid(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "where is the agent loop")
+	m, _ = updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if got := ansi.Strip(m.doc.Render(80)); !strings.Contains(got, "where is the agent loop") {
+		t.Errorf("document does not hold the prompt:\n%s", got)
 	}
 }
