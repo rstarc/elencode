@@ -284,6 +284,10 @@ func (m model) showModels(msg modelsMsg) (model, tea.Cmd) {
 		return m, m.reportError(fmt.Errorf("unknown model: %s", msg.choose))
 	}
 
+	// The list borrows the input to filter with, so it starts on an empty one:
+	// whatever was typed while it loaded belongs to the command line it replaces.
+	m.input.Reset()
+	m.menu = m.menu.SetQuery("")
 	m.models = m.models.Show(msg.models, func(candidate agent.Model) bool {
 		return candidate.ID == m.config.Model
 	})

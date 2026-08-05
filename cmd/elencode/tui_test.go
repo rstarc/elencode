@@ -18,6 +18,7 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
+	"github.com/rstarc/elencode/internal/tui/menu"
 	"github.com/rstarc/elencode/internal/tui/transcript"
 )
 
@@ -629,6 +630,34 @@ func TestProgramQuitsOnQuitCommand(t *testing.T) {
 	tm.WaitFinished(t, teatest.WithFinalTimeout(3*time.Second))
 }
 
+// TestProgramPicksACommandWithTheArrowKeys drives the whole program: the
+// highlight travels to the input as a message, so only the real event loop
+// shows a command being completed without its name being typed.
+func TestProgramPicksACommandWithTheArrowKeys(t *testing.T) {
+	a := agent.New(failingProvider{err: errors.New("never asked")}, nil)
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands()), teatest.WithInitialTermSize(80, 20))
+
+	tm.Type("/")
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return bytes.Contains(out, []byte("exit elencode"))
+	})
+
+	// Down the list to /quit, the last of the three
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyDown})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyDown})
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return strings.Contains(ansi.Strip(string(out)), menu.MarkerSelected+" /quit")
+	})
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("quitting the program: %v", err)
+	}
+	final := tm.FinalModel(t).(model)
+	if want := "/quit"; final.input.Value() != want {
+		t.Errorf("input = %q, want %q: the arrows must complete into it", final.input.Value(), want)
+	}
+}
+
 // TestProgramQuitsOnSecondCtrlC drives the whole program: the first press must
 // not end the event loop and the second must.
 func TestProgramQuitsOnSecondCtrlC(t *testing.T) {
@@ -868,6 +897,22 @@ func TestEscClosesTheModelPicker(t *testing.T) {
 	}
 	if m.input.Value() != "" {
 		t.Errorf("input = %q, want it cleared with the list", m.input.Value())
+	}
+}
+
+// TestOpeningTheModelListTakesTheInputOver covers anything typed while the
+// list was still loading: it belongs to the command line the list replaces, and
+// leaving it there would leave the command menu open behind the list.
+func TestOpeningTheModelListTakesTheInputOver(t *testing.T) {
+	m := typeText(t, newPickerModel(t, &modelProvider{models: testModels}), commands.Prefix)
+
+	m = update(t, m, modelsMsg{models: testModels})
+
+	if m.menu.Open() {
+		t.Error("the command menu is still open behind the model list")
+	}
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want the list to start on an empty one", m.input.Value())
 	}
 }
 
