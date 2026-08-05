@@ -54,28 +54,33 @@ func main() {
 	agentConfig := agent.New(provider, tools)
 	agentConfig.SetModel(selectedModel)
 
-	// Printed before the program starts, so the terminal is left exactly as it
+	tui := newModel(agentConfig, cfg, defaultCommands())
+
+	// Written before the program starts, so the terminal is left exactly as it
 	// was: everything above stays put, and the session opens on the next line.
 	width, _, err := term.GetSize(os.Stdout.Fd())
 	if err != nil {
-		width = 0 // not a terminal; the header falls back to its minimum width
+		width = 0 // not a terminal; the document falls back to its minimum width
 	}
-	printHeader(os.Stdout, width)
+	openDocument(os.Stdout, tui.doc, width)
 
-	tui := tea.NewProgram(newModel(agentConfig, cfg, defaultCommands()))
-	if _, err := tui.Run(); err != nil {
+	program := tea.NewProgram(tui)
+	if _, err := program.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
 		os.Exit(1)
 	}
 
 }
 
-// printHeader writes the session title straight to the terminal rather than
-// through tea.Println. bubbletea sizes its screen buffer on the first flush, so
-// a print issued before that is measured against the whole terminal instead of
-// the frame, and lands at the top of the screen on top of whatever was there.
-func printHeader(w io.Writer, width int) {
-	fmt.Fprintln(w, transcript.Header(banner, width))
+// openDocument writes the session's opening straight to the terminal rather
+// than through tea.Println. bubbletea sizes its screen buffer on the first
+// flush, so a print issued before that is measured against the whole terminal
+// instead of the frame, and lands at the top of the screen on top of whatever
+// was already there. Nothing is cleared: the terminal keeps what it held.
+func openDocument(w io.Writer, doc transcript.Document, width int) {
+	if rendered := doc.Render(width); rendered != "" {
+		fmt.Fprintln(w, rendered)
+	}
 }
 
 // defaultCommands is the set of slash commands a session offers. Assembled here

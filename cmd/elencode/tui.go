@@ -20,8 +20,8 @@ import (
 	"github.com/rstarc/elencode/internal/tui/transcript"
 )
 
-// banner titles the session. Printed by main before the program starts, not
-// from here: see printHeader.
+// banner titles the session. It is the document's first entry, written out by
+// main before the program starts: see openDocument.
 const banner = "elencode"
 
 // inputPrompt mirrors transcript.UserPromptMarker, which marks user messages in
@@ -46,10 +46,11 @@ type model struct {
 	events <-chan agent.Event
 	cancel context.CancelFunc
 	turnID int // identifies the active turn to reject messages from an older one
-	// TUI state. The transcript is not held here: it is printed above the frame
-	// as it happens and belongs to the terminal's scrollback from then on. The
-	// one exception is the block still being generated, which the stream holds
-	// until it settles.
+	// TUI state. doc is everything the session has settled, held as entries
+	// rather than as the rows they rendered to so a width change can lay the
+	// whole thing out again. The block still being generated is not in it yet:
+	// the stream holds that until it settles.
+	doc     transcript.Document
 	stream  transcript.Stream
 	input   textinput.Model // user input field
 	spinner spinner.Model   // shown above input while state is uiStateProcessing
@@ -106,7 +107,10 @@ func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry)
 	input.CharLimit = 0
 
 	return model{
-		agent:    agent,
+		agent: agent,
+		// The session opens with its title. main writes the document out before
+		// the program starts; from then on it is this model's to extend.
+		doc:      transcript.Document{transcript.HeaderEntry{Title: banner}},
 		config:   cfg,
 		commands: registry,
 		menu:     commandmenu.New(registry),
@@ -132,9 +136,8 @@ func (m model) busy() bool {
 	return m.state == uiStateProcessing || m.modelsLoading
 }
 
-// printAbove inserts rendered above the frame, where it stays: the terminal
-// owns it from then on, which is what makes scrolling back through a long
-// session the terminal's job rather than this program's.
+// printAbove inserts rendered above the frame, where it stays until the next
+// reprint lays the document out again.
 //
 // Ordering is the caller's responsibility. Commands run concurrently, so two
 // prints issued from separate updates can arrive in either order; anything that
@@ -144,6 +147,65 @@ func printAbove(rendered string) tea.Cmd {
 		return nil
 	}
 	return tea.Println(rendered)
+}
+
+// append records an entry in the document and prints it above the frame. The
+// two go together: what is on screen is only ever a drawing of the document.
+func (m *model) append(entry transcript.Entry) tea.Cmd {
+	m.doc.Append(entry)
+	return printAbove(entry.Render(m.width))
+}
+
+// settle moves the block in flight into the document and returns whatever of it
+// is not on screen yet. The rows printed as it streamed are provisional: they
+// are not in the document, so only the entry survives a reprint.
+func (m *model) settle() string {
+	partial := m.stream.Partial()
+	if partial == nil {
+		return ""
+	}
+	rest := m.stream.End()
+	m.doc.Append(transcript.BlockEntry{Block: partial, Role: agent.RoleAssistant})
+	return rest
+}
+
+// delta adds a fragment to the block in flight and prints whatever that
+// settles. Reasoning and the answer are separate blocks, so a fragment of one
+// ends the other: the stream would end it silently, so it is settled here
+// instead, where it can reach the document.
+func (m *model) delta(text string, thinking bool) tea.Cmd {
+	var settled tea.Cmd
+	if m.stream.Partial() != nil && m.stream.Thinking() != thinking {
+		settled = printAbove(m.settle())
+	}
+	return tea.Sequence(settled, printAbove(m.stream.Delta(text, thinking)))
+}
+
+// landed records what a message adds when it arrives: what is left of the block
+// in flight, then the blocks that never stream. What already streamed is in the
+// document as its own entry, so the message is not recorded whole.
+func (m *model) landed(msg agent.Message) tea.Cmd {
+	cmds := []tea.Cmd{printAbove(m.settle())}
+	for _, entry := range transcript.LandedBlocks(msg) {
+		cmds = append(cmds, m.append(entry))
+	}
+	return tea.Sequence(cmds...)
+}
+
+// clearAll erases the screen, homes the cursor and drops the scrollback. It
+// leads every reprint: the old layout is at the wrong width and there is no way
+// to reach the part of it that has scrolled away.
+const clearAll = "\x1b[2J\x1b[H\x1b[3J"
+
+// reprint lays the whole document out again at the current width.
+//
+// It goes out as one tea.Println rather than a raw write plus a print because
+// insertAbove ends by telling the renderer its frame starts at the cursor. The
+// clear homes the cursor, the document is written from there, and the frame
+// lands directly underneath — so the renderer's idea of where it is stays true
+// without any resynchronizing.
+func (m model) reprint() tea.Cmd {
+	return tea.Println(clearAll + m.doc.Render(m.width))
 }
 
 // streamEventMsg carries one Event from the in-flight turn
@@ -193,11 +255,10 @@ func (m model) runCommand() (model, tea.Cmd) {
 	return m, cmd
 }
 
-// reportError prints a failure into the transcript, where it stays: the user
-// keeps whatever scrolled past, rather than watching it vanish on the next
-// repaint.
-func (m model) reportError(err error) tea.Cmd {
-	return printAbove(transcript.Error(err, m.width))
+// reportError settles a failure into the document, so it survives a reprint
+// rather than vanishing the next time the session is laid out.
+func (m *model) reportError(err error) tea.Cmd {
+	return m.append(transcript.ErrorEntry{Err: err})
 }
 
 // modelsMsg carries the result of a /model lookup. choose is the model the user
@@ -229,7 +290,10 @@ func (m model) showModels(msg modelsMsg) (model, tea.Cmd) {
 	m.modelsLoading = false
 
 	if msg.err != nil {
-		return m, m.reportError(fmt.Errorf("listing models: %w", msg.err))
+		// Bound before returning: reportError records the entry on m, and a
+		// return operand evaluated first would carry the document without it.
+		failed := m.reportError(fmt.Errorf("listing models: %w", msg.err))
+		return m, failed
 	}
 
 	if msg.choose != "" {
@@ -240,7 +304,8 @@ func (m model) showModels(msg modelsMsg) (model, tea.Cmd) {
 		}
 		// The list was just fetched, so an unknown id is the user's typo rather
 		// than a stale cache
-		return m, m.reportError(fmt.Errorf("unknown model: %s", msg.choose))
+		failed := m.reportError(fmt.Errorf("unknown model: %s", msg.choose))
+		return m, failed
 	}
 
 	m.picker = m.picker.Show(msg.models, m.config.Model)
@@ -252,28 +317,29 @@ func (m model) showModels(msg modelsMsg) (model, tea.Cmd) {
 func (m model) selectModel(chosen agent.Model) (model, tea.Cmd) {
 	// The turn in flight was started on the old model and is about to lose the
 	// context window it belongs to, so it is abandoned rather than left running.
-	var interrupted string
+	var interrupted tea.Cmd
 	if m.state == uiStateProcessing {
-		interrupted = m.stream.End()
+		interrupted = printAbove(m.settle())
 		m = m.endTurn()
 	}
 
 	m.agent.SetModel(chosen)
 	m.config.Model = chosen.ID
 
-	// Reported but not fatal: the model is switched for this session either way
+	// The switch changes nothing on screen by itself: the transcript stays as it
+	// is, and the conversation above is no longer sent to anyone. The notice is
+	// the only thing that says so.
+	notice := m.append(transcript.NoticeEntry{Text: "switched to " + chosen.ID + " (context cleared)"})
+
+	// Reported but not fatal: the model is switched for this session either way.
+	// Appended after the notice so the document reads in the order it printed.
 	var failed tea.Cmd
 	if err := m.config.Save(); err != nil {
 		failed = m.reportError(fmt.Errorf("saving the model to %s: %w", m.config.Path, err))
 	}
 
-	// The switch changes nothing on screen by itself: what is printed stays
-	// printed, and the conversation above is no longer sent to anyone. The
-	// notice is the only thing that says so.
-	notice := transcript.Notice("switched to "+chosen.ID+" (context cleared)", m.width)
-
-	// Sequenced, not batched: these have to reach the scrollback in this order
-	return m, tea.Sequence(printAbove(interrupted), printAbove(notice), failed)
+	// Sequenced, not batched: these have to reach the screen in this order
+	return m, tea.Sequence(interrupted, notice, failed)
 }
 
 // startTurn hands userInput to the agent and begins receiving its Events
@@ -289,8 +355,10 @@ func (m model) startTurn(userInput string) (model, tea.Cmd) {
 	// because it never comes back: Run appends it to the context window without
 	// announcing it. Sequenced ahead of the turn so it cannot land after the
 	// reply it asked for.
-	prompt := transcript.Message(agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: userInput}}), m.width)
-	return m, tea.Sequence(printAbove(prompt), tea.Batch(waitForEvent(m.events, m.turnID), m.spinner.Tick))
+	prompt := m.append(transcript.MessageEntry{
+		Message: agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: userInput}}),
+	})
+	return m, tea.Sequence(prompt, tea.Batch(waitForEvent(m.events, m.turnID), m.spinner.Tick))
 }
 
 // endTurn releases the finished turn's resources and returns to idle
@@ -313,11 +381,16 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		var print tea.Cmd
-		if m.state == uiStateProcessing && m.width > 0 && m.width != msg.Width {
-			// Rendered row indexes are not stable across widths, so settle the
-			// current segment before the frame starts using the new width.
-			print = printAbove(m.stream.End())
+		// A new width means every block wraps differently, so the session is laid
+		// out again from the document. Height does not affect wrapping, and the
+		// first size message is not a change: there was no layout before it.
+		reflow := m.width > 0 && m.width != msg.Width
+		if reflow {
+			// Rendered row indexes are not stable across widths, so the block in
+			// flight has to settle into the document before it is laid out again.
+			// What settle hands back is dropped rather than printed: the reprint
+			// below is about to draw the whole document anyway.
+			m.settle()
 		}
 		m.width = msg.Width
 		// textinput draws the prompt before, and a cursor cell after, the width
@@ -328,9 +401,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stream.SetWidth(msg.Width)
 		m.menu.SetWidth(msg.Width)
 		m.picker.SetWidth(msg.Width)
-		// Only the frame follows the new width. What is already printed keeps
-		// the width it was printed at, as the terminal owns those lines now.
-		return m, print
+		if !reflow {
+			return m, nil
+		}
+		return m, m.reprint()
 	case tea.KeyPressMsg:
 		// The config view owns the whole frame, so it takes the keyboard with it:
 		// the input is off screen and would otherwise be typed into blind.
@@ -407,11 +481,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var print tea.Cmd
 		switch event := msg.event.(type) {
 		case agent.TextDeltaEvent:
-			print = printAbove(m.stream.Delta(event.Text, false))
+			print = m.delta(event.Text, false)
 		case agent.ThinkingDeltaEvent:
-			print = printAbove(m.stream.Delta(event.Text, true))
+			print = m.delta(event.Text, true)
 		case agent.MessageEvent:
-			print = printAbove(m.stream.Landed(event.Message))
+			print = m.landed(event.Message)
 		case agent.ErrorEvent:
 			print = m.reportError(event.Err)
 		}
@@ -465,7 +539,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// A turn cut short leaves its last row in the frame, where nothing will
 		// print it once the frame stops showing it.
-		rest := m.stream.End()
+		rest := m.settle()
 		return m.endTurn(), printAbove(rest)
 
 	case cursor.BlinkMsg:

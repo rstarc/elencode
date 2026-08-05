@@ -136,48 +136,74 @@ func TestResetForgetsTheStream(t *testing.T) {
 	}
 }
 
-// TestLandedLeavesOutTextAlreadyStreamed guards against the reply landing on
-// screen twice: it was printed as it streamed, and the message that follows
-// carries the same text.
-func TestLandedLeavesOutTextAlreadyStreamed(t *testing.T) {
-	s := newStream()
-	s.Delta("Hello", false)
-
+// TestLandedBlocksLeavesOutTextAlreadyStreamed guards against the reply landing
+// in the document twice: the stream settled it as its own entry, and the
+// message that follows carries the same text.
+func TestLandedBlocksLeavesOutTextAlreadyStreamed(t *testing.T) {
 	landed := agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{agent.TextBlock{Text: "Hello"}}}
-	got := s.Landed(landed)
 
-	if strings.Count(stripANSI(got), "Hello") > 1 {
-		t.Errorf("message printed the streamed text again:\n%s", got)
+	if entries := LandedBlocks(landed); len(entries) != 0 {
+		t.Errorf("LandedBlocks kept %d streamed block(s), want none", len(entries))
 	}
 }
 
-// TestLandedLeavesOutThinkingAlreadyStreamed is the thinking twin of the text
-// case: reasoning reaches the scrollback as it streams, so the landed message
-// must not repeat it.
-func TestLandedLeavesOutThinkingAlreadyStreamed(t *testing.T) {
-	s := newStream()
-	s.Delta("let me check", true)
-
+// TestLandedBlocksLeavesOutThinkingAlreadyStreamed is the thinking twin of the
+// text case: reasoning settles as it streams, so the landed message must not
+// carry it again.
+func TestLandedBlocksLeavesOutThinkingAlreadyStreamed(t *testing.T) {
 	landed := agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{
 		agent.ThinkingBlock{Thinking: "let me check", Signature: "sig"},
 	}}
-	got := s.Landed(landed)
 
-	if strings.Count(stripANSI(got), "let me check") > 1 {
-		t.Errorf("the landed message printed the reasoning again:\n%s", got)
+	if entries := LandedBlocks(landed); len(entries) != 0 {
+		t.Errorf("LandedBlocks kept %d streamed block(s), want none", len(entries))
 	}
 }
 
-// TestLandedPrintsBlocksThatNeverStream covers tool calls: no delta carries
-// them, so the landed message is the only chance to show them.
-func TestLandedPrintsBlocksThatNeverStream(t *testing.T) {
-	s := newStream()
-
+// TestLandedBlocksKeepsBlocksThatNeverStream covers tool calls: no delta carries
+// them, so the landed message is the only chance to record them.
+func TestLandedBlocksKeepsBlocksThatNeverStream(t *testing.T) {
 	landed := agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{
 		agent.ToolUseBlock{ID: "toolu_1", Name: "read", Input: []byte(`{"path":"a.txt"}`)},
 	}}
 
-	if got := s.Landed(landed); !strings.Contains(stripANSI(got), "read") {
-		t.Errorf("landed message did not print the tool use:\n%s", got)
+	entries := LandedBlocks(landed)
+	if len(entries) != 1 {
+		t.Fatalf("LandedBlocks returned %d entries, want the tool use", len(entries))
+	}
+	if got := stripANSI(entries[0].Render(80)); !strings.Contains(got, "read") {
+		t.Errorf("landed tool use rendered as %q, want it to name the tool", got)
+	}
+}
+
+// TestLandedBlocksKeepsEverythingAUserSaid covers the other role: nothing a user
+// message carries ever streams, so all of it lands.
+func TestLandedBlocksKeepsEverythingAUserSaid(t *testing.T) {
+	landed := agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hello"}})
+
+	if entries := LandedBlocks(landed); len(entries) != 1 {
+		t.Errorf("LandedBlocks returned %d entries for a user message, want 1", len(entries))
+	}
+}
+
+// TestPartialIsTheBlockInFlight covers what a width change needs: the block
+// being streamed has to become a transcript entry before the document is laid
+// out again, and only the stream knows what it is.
+func TestPartialIsTheBlockInFlight(t *testing.T) {
+	s := newStream()
+
+	if block := s.Partial(); block != nil {
+		t.Errorf("an idle stream has a partial block %#v, want none", block)
+	}
+
+	s.Delta("the answer", false)
+	if block, ok := s.Partial().(agent.TextBlock); !ok || block.Text != "the answer" {
+		t.Errorf("Partial() = %#v, want the text streamed so far", s.Partial())
+	}
+
+	s.Reset()
+	s.Delta("let me check", true)
+	if block, ok := s.Partial().(agent.ThinkingBlock); !ok || block.Thinking != "let me check" {
+		t.Errorf("Partial() = %#v, want the reasoning streamed so far", s.Partial())
 	}
 }

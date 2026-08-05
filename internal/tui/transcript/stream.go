@@ -72,11 +72,25 @@ func (s Stream) rows() []string {
 		return nil
 	}
 
-	var block agent.Block = agent.TextBlock{Text: s.partial}
-	if s.thinking {
-		block = agent.ThinkingBlock{Thinking: s.partial}
-	}
+	block := s.Partial()
 	return strings.Split(Block(block, agent.RoleAssistant, s.width), "\n")
+}
+
+// Thinking reports whether the block in flight is reasoning rather than the
+// answer. A fragment of the other kind ends it, which is when it settles.
+func (s Stream) Thinking() bool { return s.thinking }
+
+// Partial is the block being streamed, or nil when nothing is in flight. A
+// width change settles it into the document, which holds blocks rather than the
+// rows they rendered to.
+func (s Stream) Partial() agent.Block {
+	if s.partial == "" {
+		return nil
+	}
+	if s.thinking {
+		return agent.ThinkingBlock{Thinking: s.partial}
+	}
+	return agent.TextBlock{Text: s.partial}
 }
 
 // flush returns the rows that have settled since the last one, and records them
@@ -104,25 +118,19 @@ func joinRows(rows ...string) string {
 	return strings.Join(present, "\n")
 }
 
-// Landed returns what a message adds to the transcript once it arrives: what is
-// left of the stream, and the blocks that never stream — tool uses, and
-// reasoning the API only ever returns encrypted. Text and reasoning are already
-// on screen by now, so repeating them would show them twice.
-func (s *Stream) Landed(msg agent.Message) string {
-	rendered := []string{}
-	if rest := s.End(); rest != "" {
-		rendered = append(rendered, rest)
-	}
-
+// LandedBlocks returns the entries a message adds when it arrives: the blocks
+// that never stream — tool uses, and reasoning the API only ever returns
+// encrypted. Text and reasoning reached the document as the stream settled
+// them, so including them here would hold them twice.
+func LandedBlocks(msg agent.Message) []Entry {
+	var entries []Entry
 	for _, block := range msg.Content {
 		if msg.Role == agent.RoleAssistant && streams(block) {
 			continue
 		}
-		if row := Block(block, msg.Role, s.width); row != "" {
-			rendered = append(rendered, row)
-		}
+		entries = append(entries, BlockEntry{Block: block, Role: msg.Role})
 	}
-	return joinRows(rendered...)
+	return entries
 }
 
 // streams reports whether a block reaches the screen as it is generated
