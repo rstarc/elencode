@@ -153,7 +153,14 @@ func (m Model[T]) Update(msg tea.Msg) (Model[T], tea.Cmd) {
 		if key.String() == "up" {
 			delta = -1
 		}
-		m.index = menu.MoveHighlight(m.index, delta, len(m.Matches()))
+		moved := menu.MoveHighlight(m.index, delta, len(m.Matches()))
+		if moved == m.index {
+			// Nowhere to go: at either end, or on a list of one. Previewing anyway
+			// would overwrite the line the row was matched by, which on "/model
+			// some-id" is the argument.
+			return m, nil
+		}
+		m.index = moved
 		return m, m.preview()
 	case "tab":
 		return m, m.preview()

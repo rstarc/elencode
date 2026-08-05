@@ -326,6 +326,19 @@ func TestACommandLineWithAnArgumentKeepsItsCommand(t *testing.T) {
 	}
 }
 
+// TestArrowsLeaveATypedArgumentAlone is what the guard above is for, seen from
+// the outside: /model is the only match once an argument is being typed, so an
+// arrow key has nowhere to go and must not rewrite the line.
+func TestArrowsLeaveATypedArgumentAlone(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/model some-id")
+
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+
+	if want := "/model some-id"; m.input.Value() != want {
+		t.Errorf("input = %q, want %q", m.input.Value(), want)
+	}
+}
+
 // TestEnterPassesTheArgument covers "/model   some-id": the argument is the
 // command's input rather than part of its name, and the spacing between the two
 // is the user's business. It uses a registry of its own, since the real

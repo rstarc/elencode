@@ -231,6 +231,30 @@ func TestArrowsDoNotNarrowTheMatches(t *testing.T) {
 	}
 }
 
+// TestArrowsWithNowhereToMoveLeaveTheInputAlone guards a line still being
+// typed: a one-row list, or the end of a longer one, has nowhere to go, and
+// previewing anyway would overwrite what the row was matched by. "/model
+// some-id" would lose its argument to a stray arrow key.
+func TestArrowsWithNowhereToMoveLeaveTheInputAlone(t *testing.T) {
+	single := opened("/qu")
+	if _, cmd := single.Update(tea.KeyPressMsg{Code: tea.KeyDown}); cmd != nil {
+		t.Errorf("a single match previewed %T on down, want nothing", cmd())
+	}
+
+	top := opened("/")
+	if _, cmd := top.Update(tea.KeyPressMsg{Code: tea.KeyUp}); cmd != nil {
+		t.Errorf("the first row previewed %T on up, want nothing", cmd())
+	}
+
+	bottom := opened("/")
+	for range len(commands) - 1 {
+		bottom, _ = bottom.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	if _, cmd := bottom.Update(tea.KeyPressMsg{Code: tea.KeyDown}); cmd != nil {
+		t.Errorf("the last row previewed %T on down, want nothing", cmd())
+	}
+}
+
 func TestTabPreviewsWithoutMoving(t *testing.T) {
 	p := opened("/qu")
 
