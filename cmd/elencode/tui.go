@@ -14,9 +14,9 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
-	"github.com/rstarc/elencode/internal/tui/commandmenu"
 	"github.com/rstarc/elencode/internal/tui/menu"
 	"github.com/rstarc/elencode/internal/tui/modelpicker"
+	"github.com/rstarc/elencode/internal/tui/picker"
 	"github.com/rstarc/elencode/internal/tui/transcript"
 )
 
@@ -56,9 +56,9 @@ type model struct {
 	state   uiState
 	// Sub-components. Each owns its own state and reports what the user did as
 	// a message, which Update handles below.
-	commands commands.Registry // the slash commands this session knows
-	menu     commandmenu.Model // the command menu under the input
-	picker   modelpicker.Model // the model list /model opens
+	commands commands.Registry              // the slash commands this session knows
+	menu     picker.Model[commands.Command] // the command menu under the input
+	picker   modelpicker.Model              // the model list /model opens
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
 	headerPrinted bool // the session title has been printed
@@ -109,12 +109,25 @@ func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry)
 		agent:    agent,
 		config:   cfg,
 		commands: registry,
-		menu:     commandmenu.New(registry),
+		menu:     newCommandMenu(registry),
 		picker:   modelpicker.New(),
 		input:    input,
 		spinner:  spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
 		state:    uiStateIdle,
 	}
+}
+
+// newCommandMenu is the list of slash commands that opens under the input as
+// the user types one. The slash is part of the name rather than stripped off,
+// so a command is matched and completed as it is typed.
+func newCommandMenu(registry commands.Registry) picker.Model[commands.Command] {
+	return picker.New(picker.Config[commands.Command]{
+		Render: func(c commands.Command) menu.Item {
+			return menu.Item{Name: commands.Prefix + c.Name, Description: c.Description}
+		},
+		Trigger: commands.Prefix,
+		Empty:   "no matching command",
+	}, registry.Commands()...)
 }
 
 // spinnerLine renders the "processing..." indicator shown above the input
@@ -191,6 +204,15 @@ func (m model) runCommand() (model, tea.Cmd) {
 	m.input.Reset()
 	m.menu = m.menu.SetQuery("")
 	return m, cmd
+}
+
+// runHighlighted runs the command the menu is pointing at. It takes no
+// argument: an argument is typed out in full, and a line with one matches no
+// command name, so it goes through runCommand instead.
+func (m model) runHighlighted(highlighted commands.Command) (model, tea.Cmd) {
+	m.input.Reset()
+	m.menu = m.menu.SetQuery("")
+	return m, highlighted.Execute("")
 }
 
 // reportError prints a failure into the transcript, where it stays: the user
@@ -387,15 +409,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "esc", "up", "down", "tab":
 			// These belong to the menu while it is showing, and to the input
 			// otherwise: an arrow key still has to move the cursor.
-			if !m.menu.Visible() {
+			if !m.menu.Open() {
 				return m.forwardToInput(msg)
 			}
 			var cmd tea.Cmd
 			m.menu, cmd = m.menu.Update(msg)
 			return m, cmd
 		case "enter":
+			// What the menu points at is what the user sees Enter aimed at, so
+			// that is what runs, rather than what they have finished typing.
+			if highlighted, ok := m.menu.Highlighted(); ok {
+				return m.runHighlighted(highlighted)
+			}
 			// A command line never reaches the agent, in either UI state: /quit
 			// is an escape hatch, so it must work while a turn is in flight.
+			// Nothing is highlighted by the time we get here, so this is a line no
+			// command matches — including "/model some-id", whose argument the menu
+			// cannot match but Run must still receive.
 			if strings.HasPrefix(m.input.Value(), commands.Prefix) {
 				return m.runCommand()
 			}
@@ -444,10 +474,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 
-	case commandmenu.CompleteMsg:
-		m.input.SetValue(msg.Input)
+	case picker.PreviewMsg:
+		// Only the input follows the highlight. The query behind the list stays
+		// as the user typed it, so the input can read "/quit" while the list is
+		// still the one "/q" matched — filtering by the name under the highlight
+		// would narrow it to that row and leave nowhere to move.
+		m.input.SetValue(msg.Text)
 		m.input.CursorEnd()
-		m.menu = m.menu.SetQuery(msg.Input)
+		return m, nil
+
+	case picker.ClosedMsg:
+		// The list closed itself and forgot its query; clearing the input is what
+		// keeps the two saying the same thing.
+		m.input.Reset()
 		return m, nil
 
 	case modelpicker.SelectedMsg:

@@ -228,34 +228,30 @@ func TestPlainTextDoesNotOpenTheCommandMenu(t *testing.T) {
 	}
 }
 
-func TestEscDismissesTheMenuForTheRestOfTheLine(t *testing.T) {
-	m := typeText(t, newSizedModel(t), commands.Prefix)
+// TestEscClearsTheCommandLine covers leaving a menu the user has changed their
+// mind about: the half-typed command goes with it, rather than being left for
+// them to delete.
+func TestEscClearsTheCommandLine(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/qu")
 
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
-	if m.menu.Visible() {
-		t.Error("menu still visible after Esc")
-	}
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 
-	// Typing on must not revive it, or Esc only hides the menu for one keystroke
-	m = typeText(t, m, "q")
-	if m.menu.Visible() {
-		t.Errorf("menu came back after typing, input = %q", m.input.Value())
+	if m.menu.Open() {
+		t.Error("menu still open after Esc")
 	}
-	if m.input.Value() != "/q" {
-		t.Errorf("input = %q, want %q: Esc must not swallow later keystrokes", m.input.Value(), "/q")
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want it cleared with the menu", m.input.Value())
 	}
 }
 
 func TestMenuReopensOnANewCommandLine(t *testing.T) {
 	m := typeText(t, newSizedModel(t), commands.Prefix)
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 
-	// Backspacing away the slash ends the dismissed line; the next one starts fresh
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	m = typeText(t, m, commands.Prefix)
 
-	if !m.menu.Visible() {
-		t.Error("menu stayed dismissed on a new command line")
+	if !m.menu.Open() {
+		t.Error("menu stayed closed on a new command line")
 	}
 }
 
@@ -269,14 +265,35 @@ func TestTabCompletesTheHighlightedCommand(t *testing.T) {
 	}
 }
 
-func TestArrowKeysDoNotReachTheInputWhileTheMenuIsOpen(t *testing.T) {
+// TestArrowsCompleteIntoTheInput is the point of the arrow keys: a slash and a
+// walk down the list is enough to type a command.
+func TestArrowsCompleteIntoTheInput(t *testing.T) {
 	m := typeText(t, newSizedModel(t), commands.Prefix)
 
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
 
-	if m.input.Value() != commands.Prefix {
-		t.Errorf("input = %q, want %q: arrows must drive the menu, not the input", m.input.Value(), commands.Prefix)
+	if want := commands.Prefix + "model"; m.input.Value() != want {
+		t.Errorf("input = %q, want %q", m.input.Value(), want)
+	}
+	// The list is filtered by what was typed, not by what the arrows wrote, or
+	// there would be one row left and nowhere to move
+	if got := len(m.menu.Matches()); got != 3 {
+		t.Errorf("%d commands left after arrowing, want all 3", got)
+	}
+}
+
+// TestEnterRunsTheHighlightedCommand covers picking a command without spelling
+// it out: what the menu is pointing at is what Enter runs.
+func TestEnterRunsTheHighlightedCommand(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/q")
+
+	m, cmd := enter(t, m)
+
+	if !quits(cmd) {
+		t.Error("Enter did not run the highlighted /quit")
+	}
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want it cleared once the command ran", m.input.Value())
 	}
 }
 
@@ -290,12 +307,14 @@ func TestEnterRunsQuitCommand(t *testing.T) {
 	}
 }
 
+// TestEnterOnUnknownCommandShowsAnError uses a line the menu cannot match at
+// all: with nothing highlighted, Enter falls back to running what was typed.
 func TestEnterOnUnknownCommandShowsAnError(t *testing.T) {
-	m := typeText(t, newSizedModel(t), "/qut")
+	m := typeText(t, newSizedModel(t), "/zzz")
 
 	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if got := printed(t, cmd); !strings.Contains(got, "unknown command: /qut") {
+	if got := printed(t, cmd); !strings.Contains(got, "unknown command: /zzz") {
 		t.Errorf("printed %q, want it to name the unknown command", got)
 	}
 	if m.input.Value() != "" {
@@ -313,7 +332,7 @@ func TestQuitCommandWorksWhileProcessing(t *testing.T) {
 	m.state = uiStateProcessing
 	m = typeText(t, m, "/quit")
 
-	if !m.menu.Visible() {
+	if !m.menu.Open() {
 		t.Error("menu does not open while a turn is in flight")
 	}
 

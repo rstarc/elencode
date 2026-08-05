@@ -23,44 +23,25 @@ func fixture(ran *string) Registry {
 	)
 }
 
-// names reduces a match set to command names, so tests can compare them without
-// restating descriptions that are free to change.
-func names(matches []Command) []string {
-	got := make([]string, len(matches))
-	for i, c := range matches {
+// names reduces a set of commands to their names, so tests can compare them
+// without restating descriptions that are free to change.
+func names(commands []Command) []string {
+	got := make([]string, len(commands))
+	for i, c := range commands {
 		got[i] = c.Name
 	}
 	return got
 }
 
-func TestMatch(t *testing.T) {
-	tests := []struct {
-		name  string
-		input string
-		want  []string
-	}{
-		{"slash alone lists everything", "/", []string{"config", "model", "quit"}},
-		{"exact name", "/quit", []string{"quit"}},
-		{"prefix", "/qu", []string{"quit"}},
-		{"subsequence", "/qt", []string{"quit"}},
-		{"case insensitive", "/QUIT", []string{"quit"}},
-		{"narrows to one command", "/co", []string{"config"}},
-		{"a shared letter matches both", "/i", []string{"config", "quit"}},
-		{"no match", "/zzz", nil},
-		{"out of order is not a subsequence", "/tq", nil},
-		{"missing slash", "quit", nil},
-		{"empty", "", nil},
-	}
-
+// TestCommandsKeepsTheOrderItWasBuiltIn matters because that order is the one
+// the menu offers them in, and it is chosen where the registry is assembled.
+func TestCommandsKeepsTheOrderItWasBuiltIn(t *testing.T) {
 	var ran string
-	registry := fixture(&ran)
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			got := names(registry.Match(test.input))
-			if strings.Join(got, ",") != strings.Join(test.want, ",") {
-				t.Errorf("Match(%q) = %v, want %v", test.input, got, test.want)
-			}
-		})
+
+	got := names(fixture(&ran).Commands())
+
+	if want := "config,model,quit"; strings.Join(got, ",") != want {
+		t.Errorf("Commands() = %v, want %v", got, want)
 	}
 }
 
