@@ -37,12 +37,16 @@ func newModelList() picker.Model[agent.Model] {
 	})
 }
 
-// matchCommand narrows the menu to the commands the line could still become.
+// matchCommand narrows the menu to the commands the line could still become,
+// on the command word alone: "/model some-id" is still the /model command line,
+// and a menu that said nothing matched would be lying about it.
+//
 // Prefix rather than fuzzy: there are few names and they are short, so a looser
 // match buys nothing and makes the highlighted row harder to predict — and the
 // highlight is what Enter runs.
 func matchCommand(query, name string) bool {
-	return strings.HasPrefix(strings.ToLower(name), strings.ToLower(query))
+	word, _, _ := strings.Cut(query, " ")
+	return strings.HasPrefix(strings.ToLower(name), strings.ToLower(word))
 }
 
 // matchModel narrows on any part of the id, which is how a model is

@@ -308,6 +308,76 @@ func TestEnterRunsQuitCommand(t *testing.T) {
 	}
 }
 
+// TestACommandLineWithAnArgumentKeepsItsCommand covers the menu telling the
+// truth while an argument is typed: "/model some-id" is still the /model
+// command line, and saying nothing matches would be a lie.
+func TestACommandLineWithAnArgumentKeepsItsCommand(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/model some-id")
+
+	highlighted, ok := m.menu.Highlighted()
+	if !ok {
+		t.Fatal("nothing highlighted, want the command the line names")
+	}
+	if highlighted.Name != "model" {
+		t.Errorf("highlighted %q, want %q", highlighted.Name, "model")
+	}
+	if view := m.View().Content; strings.Contains(view, "no matching command") {
+		t.Errorf("menu says nothing matches a valid command line:\n%s", view)
+	}
+}
+
+// TestEnterPassesTheArgument covers "/model   some-id": the argument is the
+// command's input rather than part of its name, and the spacing between the two
+// is the user's business. It uses a registry of its own, since the real
+// commands do more than record what they were given.
+func TestEnterPassesTheArgument(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"no argument", "/echo", ""},
+		{"argument", "/echo some-id", "some-id"},
+		{"extra spaces", "/echo   some-id  ", "some-id"},
+		{"trailing space alone", "/echo ", ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var got string
+			registry := commands.NewRegistry(commands.Command{
+				Name:        "echo",
+				Description: "records its argument",
+				Execute:     func(arg string) tea.Cmd { got = arg; return nil },
+			})
+			m := newModel(agent.New(nil, nil), config.Config{}, registry)
+			m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
+			m = typeText(t, m, test.line)
+
+			updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+			if got != test.want {
+				t.Errorf("argument = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+// TestEnterOnATypoDoesNotRunTheNearestCommand is the point of matching on a
+// prefix: what Enter runs is spelled out far enough to be recognised.
+func TestEnterOnATypoDoesNotRunTheNearestCommand(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/qut")
+
+	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if quits(cmd) {
+		t.Fatal("Enter on /qut quit the program, want the typo reported")
+	}
+	if got := printed(t, cmd); !strings.Contains(got, "unknown command: /qut") {
+		t.Errorf("printed %q, want it to name the typo", got)
+	}
+}
+
 // TestEnterOnUnknownCommandShowsAnError uses a line the menu cannot match at
 // all: with nothing highlighted, Enter falls back to running what was typed.
 func TestEnterOnUnknownCommandShowsAnError(t *testing.T) {

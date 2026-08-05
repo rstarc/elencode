@@ -18,6 +18,8 @@ func TestMatchCommand(t *testing.T) {
 		{"a typo is not a prefix", "/qut", "/quit", false},
 		{"a subsequence is not a prefix", "/qt", "/quit", false},
 		{"another command", "/qu", "/config", false},
+		{"an argument still names its command", "/model some-id", "/model", true},
+		{"an argument does not make other commands match", "/model some-id", "/quit", false},
 		{"longer than the name", "/quits", "/quit", false},
 	}
 

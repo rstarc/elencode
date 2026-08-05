@@ -184,28 +184,28 @@ func (m model) forwardToInput(msg tea.Msg) (model, tea.Cmd) {
 	return m, cmd
 }
 
-// runCommand handles Enter on a command line: it runs the command the input
-// names exactly, or reports that there is no such command. What the command
-// does arrives back as a message, so the effect is handled in Update alongside
-// every other one rather than here.
+// runCommand handles Enter on a command line: it runs the command the menu is
+// pointing at, passing the rest of the line as its argument, or reports that
+// the line names no command. Resolving through the menu rather than looking the
+// name up again is what keeps Enter to one rule — what is highlighted is what
+// runs, and the user can see it.
+//
+// What the command does arrives back as a message, so the effect is handled in
+// Update alongside every other one rather than here.
 func (m model) runCommand() (model, tea.Cmd) {
-	cmd, ok := m.commands.Run(m.input.Value())
+	line := m.input.Value()
+	highlighted, ok := m.menu.Highlighted()
+
+	m.input.Reset()
+	m.menu = m.menu.SetQuery("")
+
 	if !ok {
-		cmd = m.reportError(fmt.Errorf("unknown command: %s", m.input.Value()))
+		return m, m.reportError(fmt.Errorf("unknown command: %s", line))
 	}
-
-	m.input.Reset()
-	m.menu = m.menu.SetQuery("")
-	return m, cmd
-}
-
-// runHighlighted runs the command the menu is pointing at. It takes no
-// argument: an argument is typed out in full, and a line with one matches no
-// command name, so it goes through runCommand instead.
-func (m model) runHighlighted(highlighted commands.Command) (model, tea.Cmd) {
-	m.input.Reset()
-	m.menu = m.menu.SetQuery("")
-	return m, highlighted.Execute("")
+	// "/model   some-id" runs /model with some-id rather than being looked up
+	// whole
+	_, arg, _ := strings.Cut(strings.TrimSpace(line), " ")
+	return m, highlighted.Execute(strings.TrimSpace(arg))
 }
 
 // reportError prints a failure into the transcript, where it stays: the user
@@ -431,17 +431,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.models.Open() {
 				return m.chooseModel()
 			}
-			// What the menu points at is what the user sees Enter aimed at, so
-			// that is what runs, rather than what they have finished typing.
-			if highlighted, ok := m.menu.Highlighted(); ok {
-				return m.runHighlighted(highlighted)
-			}
 			// A command line never reaches the agent, in either UI state: /quit
-			// is an escape hatch, so it must work while a turn is in flight.
-			// Nothing is highlighted by the time we get here, so this is a line no
-			// command matches — including "/model some-id", whose argument the menu
-			// cannot match but Run must still receive.
-			if strings.HasPrefix(m.input.Value(), commands.Prefix) {
+			// is an escape hatch, so it must work while a turn is in flight. The
+			// menu being open is that test — it is open exactly while the input
+			// holds a command line.
+			if m.menu.Open() {
 				return m.runCommand()
 			}
 			// only actually do anything if we are not currently waiting and there is actual input
