@@ -42,7 +42,7 @@ func opened(query string) Model[entry] { return triggered().SetQuery(query) }
 // closedList is a picker whoever owns it opens, the way /model opens the model
 // list
 func closedList(items ...entry) Model[entry] {
-	p := New(Config[entry]{Render: render, Align: true, Empty: "the API offered no models"}, items...)
+	p := New(Config[entry]{Render: render, Align: true, Empty: "no matching model"}, items...)
 	p.SetWidth(80)
 	return p
 }
@@ -330,7 +330,7 @@ func TestViewReportsAnEmptyMatchSet(t *testing.T) {
 	if view := opened("/zzz").View(); !strings.Contains(view, "no matching command") {
 		t.Errorf("view does not say nothing matched:\n%s", view)
 	}
-	if view := closedList().Show(nil, nil).View(); !strings.Contains(view, "no models") {
+	if view := closedList().Show(nil, nil).View(); !strings.Contains(view, "no matching model") {
 		t.Errorf("view does not report an empty list:\n%s", view)
 	}
 }

@@ -754,9 +754,9 @@ func TestModelPickerStartsOnTheCurrentModel(t *testing.T) {
 
 	m = update(t, m, modelsMsg{models: testModels})
 
-	// Where the highlight starts is the picker's own business; what it means
+	// Where the highlight starts is the list's own business; what it means
 	// here is that Enter, pressed without arrowing, keeps the model in use.
-	m, _ = enter(t, m)
+	m, _ = updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.config.Model != "model-two" {
 		t.Errorf("config model = %q, want the picker to open on the model in use", m.config.Model)
 	}
@@ -771,9 +771,9 @@ func TestEffectiveDefaultModelIsShownAndSelected(t *testing.T) {
 	}
 
 	m = update(t, m, modelsMsg{models: testModels})
-	m, _ = enter(t, m)
+	m, _ = updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if m.config.Model != "model-two" {
-		t.Errorf("config model = %q, want the picker to open on the effective default", m.config.Model)
+		t.Errorf("config model = %q, want the list to open on the effective default", m.config.Model)
 	}
 }
 
@@ -781,16 +781,19 @@ func TestEnterSelectsTheHighlightedModel(t *testing.T) {
 	provider := &modelProvider{models: testModels}
 	m := update(t, newPickerModel(t, provider), modelsMsg{models: testModels})
 
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m, _ = enter(t, m)
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if m.config.Model != "model-two" {
 		t.Errorf("config model = %q, want %q", m.config.Model, "model-two")
 	}
-	if m.picker.Focused() {
-		t.Error("picker still open after a choice")
+	if m.models.Open() {
+		t.Error("list still open after a choice")
 	}
-
+	// The arrow keys put the id there; the choice is made, so it goes
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want it cleared once the model was chosen", m.input.Value())
+	}
 }
 
 // TestSelectingAModelPersistsIt covers the choice outliving the session: the
@@ -798,7 +801,7 @@ func TestEnterSelectsTheHighlightedModel(t *testing.T) {
 func TestSelectingAModelPersistsIt(t *testing.T) {
 	m := update(t, newPickerModel(t, &modelProvider{models: testModels}), modelsMsg{models: testModels})
 
-	m, _ = enter(t, m)
+	m, _ = updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	body, err := os.ReadFile(m.config.Path)
 	if err != nil {
@@ -819,8 +822,8 @@ func TestModelArgumentSelectsWithoutOpeningThePicker(t *testing.T) {
 	m, cmd := enter(t, m)
 	m = update(t, m, modelsFrom(t, cmd))
 
-	if m.picker.Focused() {
-		t.Error("picker opened for a model named on the command line")
+	if m.models.Open() {
+		t.Error("list opened for a model named on the command line")
 	}
 }
 
@@ -844,8 +847,8 @@ func TestFailureToListModelsIsReported(t *testing.T) {
 	if m.modelsLoading {
 		t.Error("still loading after the request failed")
 	}
-	if m.picker.Focused() {
-		t.Error("picker opened with no models to show")
+	if m.models.Open() {
+		t.Error("list opened with no models to show")
 	}
 	if got := printed(t, cmd); !strings.Contains(got, "503 overloaded") {
 		t.Errorf("printed %q, want it to say why the model list failed", got)
@@ -855,26 +858,60 @@ func TestFailureToListModelsIsReported(t *testing.T) {
 func TestEscClosesTheModelPicker(t *testing.T) {
 	provider := &modelProvider{models: testModels}
 	m := update(t, newPickerModel(t, provider), modelsMsg{models: testModels})
+	// Arrowing first, so there is something left in the input to clear
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
 
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 
-	if m.picker.Focused() {
-		t.Error("picker still open after Esc")
+	if m.models.Open() {
+		t.Error("list still open after Esc")
+	}
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want it cleared with the list", m.input.Value())
 	}
 }
 
-// TestModelPickerSwallowsTypedKeys keeps the picker's keyboard to itself: a
-// keystroke that reached the input would open the command menu underneath it.
-func TestModelPickerSwallowsTypedKeys(t *testing.T) {
+// TestTypingNarrowsTheModelList is what the input is for while the list is up:
+// the API offers more models than the arrow keys are worth.
+func TestTypingNarrowsTheModelList(t *testing.T) {
 	m := update(t, newPickerModel(t, &modelProvider{models: testModels}), modelsMsg{models: testModels})
 
-	m = typeText(t, m, "/")
+	m = typeText(t, m, "two")
 
-	if m.input.Value() != "" {
-		t.Errorf("input = %q, want keystrokes swallowed while the picker is open", m.input.Value())
+	view := m.View().Content
+	if !strings.Contains(view, "model-two") {
+		t.Errorf("list does not show the model typed for:\n%s", view)
 	}
-	if !m.picker.Focused() {
-		t.Error("typing closed the picker")
+	if strings.Contains(view, "model-one") {
+		t.Errorf("list still shows a model the query rules out:\n%s", view)
+	}
+}
+
+// TestNarrowingTheModelListToNothingSaysSo covers the empty message doing
+// double duty now that there is a filter: an empty list is usually the query's
+// doing rather than the API's.
+func TestNarrowingTheModelListToNothingSaysSo(t *testing.T) {
+	m := update(t, newPickerModel(t, &modelProvider{models: testModels}), modelsMsg{models: testModels})
+
+	m = typeText(t, m, "zzz")
+
+	if view := m.View().Content; !strings.Contains(view, "no matching model") {
+		t.Errorf("list does not say nothing matched:\n%s", view)
+	}
+}
+
+// TestSlashDoesNotOpenTheMenuBehindTheModelList covers the cost of letting
+// keystrokes reach the input: the input is also what opens the command menu.
+func TestSlashDoesNotOpenTheMenuBehindTheModelList(t *testing.T) {
+	m := update(t, newPickerModel(t, &modelProvider{models: testModels}), modelsMsg{models: testModels})
+
+	m = typeText(t, m, commands.Prefix)
+
+	if m.menu.Open() {
+		t.Error("the command menu opened behind the model list")
+	}
+	if !m.models.Open() {
+		t.Error("typing closed the model list")
 	}
 }
 
@@ -994,7 +1031,7 @@ func TestProgramPrintsThePromptAndTheReply(t *testing.T) {
 func TestSelectingAModelSaysSo(t *testing.T) {
 	m := update(t, newPickerModel(t, &modelProvider{models: testModels}), modelsMsg{models: testModels})
 
-	_, cmd := enter(t, m)
+	_, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	got := printed(t, cmd)
 	if !strings.Contains(got, "model-one") {

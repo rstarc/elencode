@@ -15,7 +15,6 @@ import (
 	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
 	"github.com/rstarc/elencode/internal/tui/menu"
-	"github.com/rstarc/elencode/internal/tui/modelpicker"
 	"github.com/rstarc/elencode/internal/tui/picker"
 	"github.com/rstarc/elencode/internal/tui/transcript"
 )
@@ -58,7 +57,7 @@ type model struct {
 	// a message, which Update handles below.
 	commands commands.Registry              // the slash commands this session knows
 	menu     picker.Model[commands.Command] // the command menu under the input
-	picker   modelpicker.Model              // the model list /model opens
+	models   picker.Model[agent.Model]      // the model list /model opens
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
 	headerPrinted bool // the session title has been printed
@@ -110,7 +109,7 @@ func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry)
 		config:   cfg,
 		commands: registry,
 		menu:     newCommandMenu(registry),
-		picker:   modelpicker.New(),
+		models:   newModelList(),
 		input:    input,
 		spinner:  spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
 		state:    uiStateIdle,
@@ -128,6 +127,19 @@ func newCommandMenu(registry commands.Registry) picker.Model[commands.Command] {
 		Trigger: commands.Prefix,
 		Empty:   "no matching command",
 	}, registry.Commands()...)
+}
+
+// newModelList is the list of models /model opens. The id is shown first
+// because it is what the user types after /model and what narrows the list;
+// the display name is only there to recognise it by.
+func newModelList() picker.Model[agent.Model] {
+	return picker.New(picker.Config[agent.Model]{
+		Render: func(model agent.Model) menu.Item {
+			return menu.Item{Name: model.ID, Description: model.DisplayName}
+		},
+		Align: true,
+		Empty: "no matching model",
+	})
 }
 
 // spinnerLine renders the "processing..." indicator shown above the input
@@ -182,12 +194,19 @@ func waitForEvent(events <-chan agent.Event, turnID int) tea.Cmd {
 	}
 }
 
-// forwardToInput hands a keypress to the text input and settles the menu around
-// the edit it made.
+// forwardToInput hands a keypress to the text input and settles the list the
+// edit it made belongs to.
 func (m model) forwardToInput(msg tea.Msg) (model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	m.menu = m.menu.SetQuery(m.input.Value())
+	// Whichever list is open is the one the typing filters. The command menu
+	// must not see the text while the model list is up, or a slash would open it
+	// behind the list.
+	if m.models.Open() {
+		m.models = m.models.SetQuery(m.input.Value())
+	} else {
+		m.menu = m.menu.SetQuery(m.input.Value())
+	}
 	return m, cmd
 }
 
@@ -265,8 +284,25 @@ func (m model) showModels(msg modelsMsg) (model, tea.Cmd) {
 		return m, m.reportError(fmt.Errorf("unknown model: %s", msg.choose))
 	}
 
-	m.picker = m.picker.Show(msg.models, m.config.Model)
+	m.models = m.models.Show(msg.models, func(candidate agent.Model) bool {
+		return candidate.ID == m.config.Model
+	})
 	return m, nil
+}
+
+// chooseModel switches to the model the list is pointing at, or does nothing
+// when the filter leaves nothing to point at: Esc stays the way out of a list
+// that has no answer in it.
+func (m model) chooseModel() (model, tea.Cmd) {
+	chosen, ok := m.models.Highlighted()
+	if !ok {
+		return m, nil
+	}
+
+	m.models = m.models.Close()
+	// The arrow keys left the id in the input, and it has now been acted on
+	m.input.Reset()
+	return m.selectModel(chosen)
 }
 
 // selectModel switches to id, clearing the conversation the previous model
@@ -349,7 +385,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(max(msg.Width-lipgloss.Width(m.input.Prompt)-1, 1))
 		m.stream.SetWidth(msg.Width)
 		m.menu.SetWidth(msg.Width)
-		m.picker.SetWidth(msg.Width)
+		m.models.SetWidth(msg.Width)
 		// Only the frame follows the new width. What is already printed keeps
 		// the width it was printed at, as the terminal owns those lines now.
 
@@ -377,14 +413,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.quitArmed && msg.String() != "ctrl+c" {
 			m.quitArmed = false
 		}
-		// The picker takes every key but ctrl+c, which keeps meaning "quit"
-		// wherever the user is. A keystroke reaching the input underneath would
-		// open the command menu behind the picker.
-		if m.picker.Focused() && msg.String() != "ctrl+c" {
-			var cmd tea.Cmd
-			m.picker, cmd = m.picker.Update(msg)
-			return m, cmd
-		}
 		// handle user input
 		switch msg.String() {
 		case "ctrl+c":
@@ -407,15 +435,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.armQuit()
 		case "esc", "up", "down", "tab":
-			// These belong to the menu while it is showing, and to the input
-			// otherwise: an arrow key still has to move the cursor.
-			if !m.menu.Open() {
+			// These drive whichever list is open, and the input when none is: an
+			// arrow key still has to move the cursor.
+			var cmd tea.Cmd
+			switch {
+			case m.models.Open():
+				m.models, cmd = m.models.Update(msg)
+			case m.menu.Open():
+				m.menu, cmd = m.menu.Update(msg)
+			default:
 				return m.forwardToInput(msg)
 			}
-			var cmd tea.Cmd
-			m.menu, cmd = m.menu.Update(msg)
 			return m, cmd
 		case "enter":
+			// The model list holds Enter until something is chosen or Esc closes
+			// it, so a filter that matches nothing cannot start a turn by accident.
+			if m.models.Open() {
+				return m.chooseModel()
+			}
 			// What the menu points at is what the user sees Enter aimed at, so
 			// that is what runs, rather than what they have finished typing.
 			if highlighted, ok := m.menu.Highlighted(); ok {
@@ -489,13 +526,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.Reset()
 		return m, nil
 
-	case modelpicker.SelectedMsg:
-		return m.selectModel(msg.Model)
-
-	case modelpicker.ClosedMsg:
-		// The picker closed itself; there is nothing left to undo here.
-		return m, nil
-
 	case modelsMsg:
 		return m.showModels(msg)
 
@@ -563,7 +593,7 @@ func (m model) View() tea.View {
 	if view := m.menu.View(); view != "" {
 		rows = append(rows, view)
 	}
-	if view := m.picker.View(); view != "" {
+	if view := m.models.View(); view != "" {
 		rows = append(rows, view)
 	}
 	rows = append(rows, inputView)
