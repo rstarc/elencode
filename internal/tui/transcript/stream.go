@@ -51,6 +51,10 @@ func (s *Stream) End() string {
 	return rest
 }
 
+// Printed reports whether any of this stream has already reached the
+// scrollback, where the terminal owns it and it can no longer be taken back.
+func (s Stream) Printed() bool { return s.printed > 0 }
+
 // Reset drops the stream unprinted, for a turn that starts fresh
 func (s *Stream) Reset() {
 	s.partial, s.printed, s.thinking = "", 0, false

@@ -74,15 +74,17 @@ func (c *Client) messageParams(req agent.Request, messages []sdk.MessageParam) s
 		Thinking:  c.thinkingParam(req.Model),
 	}
 
-	if c.thinking && req.Model.Thinking == agent.ThinkingEffort {
+	// An unset effort sends no OutputConfig at all: the API defaults to high,
+	// and filling in a level here would quietly reason at another one.
+	if c.thinking && req.Model.Thinking == agent.ThinkingEffort && c.effort != agent.EffortNone {
 		params.OutputConfig = sdk.OutputConfigParam{Effort: toAnthropicEffort(c.effort)}
 	}
 	return params
 }
 
-// toAnthropicEffort clamps to the levels the API accepts. The zero value falls
-// to the API's own default rather than erroring: an unset effort is not a
-// mistake, it just means "whatever you normally do".
+// toAnthropicEffort clamps to the levels the API accepts. A level it does not
+// know falls to medium rather than erroring: config has already rejected the
+// typos, so what is left is a level this build has not caught up with.
 func toAnthropicEffort(e agent.Effort) sdk.OutputConfigEffort {
 	switch e {
 	case agent.EffortLow:
@@ -176,6 +178,10 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 		// noRetry, not a client-wide setting: only inference is retried by the
 		// agent, so this is the one call whose retries would be doubled up.
 		stream := c.client.Messages.NewStreaming(ctx, c.messageParams(req, messages), noRetry)
+		// Close is the only thing that closes the response body — Next never
+		// does, not even at the end of the stream — so without this every early
+		// return below leaves a connection out of the pool until it times out.
+		defer stream.Close()
 
 		// The SDK has no GetFinalMessage; Accumulate folds each event into
 		// message, rebuilding what a non-streaming call would have returned.

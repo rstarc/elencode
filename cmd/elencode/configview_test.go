@@ -31,24 +31,50 @@ func TestRenderConfigShowsThePath(t *testing.T) {
 	}
 }
 
-func TestRenderConfigNamesTheSource(t *testing.T) {
-	tests := []struct {
-		name      string
-		fromEnv   bool
-		wantMatch string
-	}{
-		{"environment", true, config.ANTHROPIC_API_KEY_ENV_VAR_NAME},
-		{"config file", false, "config file"},
+// TestRenderConfigNamesTheSourceOfEachKey: the two keys have their own
+// provenance, and showing one key's source against the other's value would say
+// something untrue about where the session's key came from.
+func TestRenderConfigNamesTheSourceOfEachKey(t *testing.T) {
+	cfg := config.Config{
+		Provider:            config.ProviderOpenAI,
+		AnthropicAPIKey:     "a",
+		OpenAIAPIKey:        "o",
+		AnthropicKeyFromEnv: true,
+		Path:                "/tmp/c.json",
 	}
 
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			cfg := config.Config{AnthropicAPIKey: "x", AnthropicKeyFromEnv: test.fromEnv, Path: "/tmp/c.json"}
+	view := renderConfig(cfg, 120)
 
-			if view := renderConfig(cfg, 80); !strings.Contains(view, test.wantMatch) {
-				t.Errorf("config view does not name %q as the source:\n%s", test.wantMatch, view)
-			}
-		})
+	anthropic := rowFor(view, "anthropic_api_key")
+	if !strings.Contains(anthropic, config.ANTHROPIC_API_KEY_ENV_VAR_NAME) {
+		t.Errorf("anthropic key row = %q, want it to name the environment", anthropic)
+	}
+	openai := rowFor(view, "openai_api_key")
+	if openai == "" || !strings.Contains(openai, "config file") {
+		t.Errorf("openai key row = %q, want it to name the config file", openai)
+	}
+}
+
+func TestRenderConfigShowsTheProvider(t *testing.T) {
+	cfg := config.Config{Provider: config.ProviderOpenAI, Path: "/tmp/c.json"}
+
+	if row := rowFor(renderConfig(cfg, 80), "provider"); !strings.Contains(row, config.ProviderOpenAI) {
+		t.Errorf("provider row = %q, want it to say openai", row)
+	}
+}
+
+func TestRenderConfigShowsTheThinkingEffort(t *testing.T) {
+	cfg := config.Config{ThinkingEffort: "xhigh", Path: "/tmp/c.json"}
+
+	if row := rowFor(renderConfig(cfg, 80), "thinking_effort"); !strings.Contains(row, "xhigh") {
+		t.Errorf("thinking_effort row = %q, want it to say xhigh", row)
+	}
+
+	// An unset effort is a real setting — the API picks the level — so the row
+	// has to say that rather than showing nothing.
+	row := rowFor(renderConfig(config.Config{Path: "/tmp/c.json"}, 80), "thinking_effort")
+	if !strings.Contains(row, "default") {
+		t.Errorf("unset thinking_effort row = %q, want it to say the API decides", row)
 	}
 }
 

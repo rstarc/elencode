@@ -37,6 +37,25 @@ func TestDeltaPrintsRowsThatHaveSettled(t *testing.T) {
 	}
 }
 
+// TestPrintedReportsWhatReachedTheScrollback: a retry discards the stream, but
+// rows already handed out belong to the terminal and cannot be taken back — the
+// caller can only say so, and needs to know when there is something to say.
+func TestPrintedReportsWhatReachedTheScrollback(t *testing.T) {
+	s := newStream()
+
+	if s.Printed() {
+		t.Error("Printed() = true before anything streamed")
+	}
+	s.Delta("short", false)
+	if s.Printed() {
+		t.Error("Printed() = true for a row still being written into")
+	}
+	s.Delta(wrappingText, false)
+	if !s.Printed() {
+		t.Error("Printed() = false after rows settled into the scrollback")
+	}
+}
+
 func TestDeltaPrintsEachRowOnce(t *testing.T) {
 	s := newStream()
 	s.Delta(wrappingText, false)

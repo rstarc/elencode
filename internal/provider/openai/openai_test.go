@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -530,6 +531,11 @@ func TestStopReasonDerivation(t *testing.T) {
 		{"truncated tool call",
 			`{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"function_call","call_id":"c","name":"read","arguments":"{\"pa"}]}`,
 			agent.StopReasonMaxTokens},
+		// The other reason the API documents for an incomplete response. Its
+		// output is cut off the same way, so it must not report ToolUse either.
+		{"content filter",
+			`{"status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[{"type":"function_call","call_id":"c","name":"read","arguments":"{\"pa"}]}`,
+			agent.StopReasonRefusal},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -615,9 +621,26 @@ func TestParamsRequestsReasoningOnlyForEffortModelsWithThinkingOn(t *testing.T) 
 	}
 }
 
+// TestUnsetEffortStillAsksForReasoning: an effort the user never chose is left
+// to the API, but the summary and the encrypted content still have to be
+// requested or there is nothing to render or round-trip.
+func TestUnsetEffortStillAsksForReasoning(t *testing.T) {
+	c := newWithOptions("key", true, agent.EffortNone)
+	req := agent.Request{Model: agent.Model{ID: "gpt-5", Thinking: agent.ThinkingEffort}, MaxTokens: 10}
+
+	p := c.params(req, nil)
+
+	if p.Reasoning.Effort != "" {
+		t.Errorf("effort = %q, want it left out of the request", p.Reasoning.Effort)
+	}
+	if p.Reasoning.Summary != shared.ReasoningSummaryAuto || len(p.Include) != 1 {
+		t.Errorf("reasoning = %+v, include = %v, want the summary and the encrypted content", p.Reasoning, p.Include)
+	}
+}
+
 func TestToOpenAIEffortClampsToKnownLevels(t *testing.T) {
 	tests := map[agent.Effort]shared.ReasoningEffort{
-		agent.EffortNone:   shared.ReasoningEffortMedium,
+		agent.EffortNone:   "",
 		agent.EffortLow:    shared.ReasoningEffortLow,
 		agent.EffortMedium: shared.ReasoningEffortMedium,
 		agent.EffortHigh:   shared.ReasoningEffortHigh,
@@ -658,6 +681,33 @@ func TestToInputResubmitsReasoning(t *testing.T) {
 	}
 	if input[2].OfFunctionCall == nil {
 		t.Fatalf("reasoning must precede its function_call; got %+v", input[2])
+	}
+}
+
+// With thinking off the request asks for no encrypted content, but a reasoning
+// model still returns reasoning items — with nothing in them we could replay.
+// Under store:false the server cannot resolve a bare rs_ id, so re-sending one
+// fails every turn after the first.
+func TestToInputDropsReasoningWithNothingToReplay(t *testing.T) {
+	msgs := []agent.Message{
+		agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}}),
+		{Role: agent.RoleAssistant, Content: []agent.Block{
+			agent.ThinkingBlock{Thinking: "plan", ID: "rs_1"}, // no encrypted content
+			agent.ToolUseBlock{ID: "call_1", Name: "read", Input: []byte(`{}`)},
+		}},
+	}
+
+	input, err := toInput(msgs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// user, function_call
+	if len(input) != 2 {
+		t.Fatalf("items = %d, want 2 (the reasoning item cannot be replayed)", len(input))
+	}
+	if input[1].OfFunctionCall == nil {
+		t.Fatalf("item[1] = %+v, want the function call", input[1])
 	}
 }
 
@@ -951,6 +1001,53 @@ func TestStreamSurfacesAFailedResponse(t *testing.T) {
 	}
 	if !strings.Contains(last.Err.Error(), "upstream exploded") {
 		t.Errorf("err = %v, want it to carry the API's explanation", last.Err)
+	}
+}
+
+// closeTracker wraps the transport so a test can see whether the response body
+// was closed. Nothing else notices: a stream left open simply keeps its
+// connection out of the pool until the server times it out.
+type closeTracker struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *closeTracker) Do(req *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = trackedBody{ReadCloser: resp.Body, closed: func() { c.once.Do(func() { close(c.closed) }) }}
+	return resp, nil
+}
+
+type trackedBody struct {
+	io.ReadCloser
+	closed func()
+}
+
+func (b trackedBody) Close() error {
+	b.closed()
+	return b.ReadCloser.Close()
+}
+
+// TestStreamClosesTheResponseBody covers every early return: the SDK's Next
+// never closes the body, not even at the end of the stream, so only an explicit
+// Close returns the connection.
+func TestStreamClosesTheResponseBody(t *testing.T) {
+	_, url := newStub(t, sse(`{"type":"response.output_text.delta","delta":"partial"}`))
+	tracker := &closeTracker{closed: make(chan struct{})}
+
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url), option.WithHTTPClient(tracker))
+	collect(t, c.Stream(context.Background(), agent.Request{
+		Model:    agent.Model{ID: "gpt-5"},
+		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+
+	select {
+	case <-tracker.closed:
+	default:
+		t.Error("response body left open after the stream ended")
 	}
 }
 

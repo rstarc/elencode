@@ -74,10 +74,12 @@ func (c *Client) params(req agent.Request, input responses.ResponseInputParam) r
 }
 
 // toOpenAIEffort clamps to the levels this API accepts: it has no xhigh or max,
-// so those become high rather than letting the request be rejected. The zero
-// value falls to the API's own default, medium.
+// so those become high rather than letting the request be rejected. An unset
+// effort is sent as nothing at all, leaving the API to use its own default.
 func toOpenAIEffort(e agent.Effort) shared.ReasoningEffort {
 	switch e {
+	case agent.EffortNone:
+		return ""
 	case agent.EffortLow:
 		return shared.ReasoningEffortLow
 	case agent.EffortHigh, agent.EffortXHigh, agent.EffortMax:
@@ -180,6 +182,10 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 		// noRetry, not a client-wide setting: only inference is retried by the
 		// agent, so this is the one call whose retries would be doubled up.
 		stream := c.client.Responses.NewStreaming(ctx, c.params(req, input), noRetry)
+		// Close is the only thing that closes the response body — Next never
+		// does, not even at the end of the stream — so without this every early
+		// return below leaves a connection out of the pool until it times out.
+		defer stream.Close()
 
 		// Emit only what the UI needs to paint live. Everything else (tool
 		// inputs, status) is recovered from the terminal response, which
@@ -367,6 +373,13 @@ func toInput(msgs []agent.Message) (responses.ResponseInputParam, error) {
 					Content: responses.EasyInputMessageContentUnionParam{OfString: openai.String(block.Text)},
 				}})
 			case agent.ThinkingBlock:
+				// Nothing to replay: with thinking off the request asks for no
+				// encrypted content, but the model still reasons and returns the
+				// items. Under store:false a bare id resolves to nothing, so
+				// sending one back fails the request outright.
+				if block.Signature == "" {
+					continue
+				}
 				// Assistant blocks arrive in the order the model produced them,
 				// so a reasoning item lands before the function call it led to,
 				// which is the order the API demands on resubmission.
@@ -447,8 +460,13 @@ func toBlocks(resp responses.Response) ([]agent.Block, error) {
 // for it. The order matters.
 func stopReason(resp responses.Response) agent.StopReason {
 	// Checked before the function-call scan: a response cut off mid tool call
-	// must not hand the agent truncated argument JSON to execute.
-	if resp.Status == responses.ResponseStatusIncomplete && resp.IncompleteDetails.Reason == "max_output_tokens" {
+	// must not hand the agent truncated argument JSON to execute. Every reason
+	// ends the response early, so an unfamiliar one is read as the token limit
+	// rather than falling through to the scan.
+	if resp.Status == responses.ResponseStatusIncomplete {
+		if resp.IncompleteDetails.Reason == "content_filter" {
+			return agent.StopReasonRefusal
+		}
 		return agent.StopReasonMaxTokens
 	}
 

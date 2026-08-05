@@ -247,26 +247,54 @@ func TestRunForwardsProviderError(t *testing.T) {
 	if provider.calls != 1 {
 		t.Errorf("rounds of inference = %d, want 1", provider.calls)
 	}
-	// The prompt survives: inference only ever fails at a point where the window
-	// is still sendable, so there is nothing to undo and the user keeps their turn.
-	wantWindow := []Message{NewUserMessage([]Block{TextBlock{Text: "hi"}})}
-	if !reflect.DeepEqual(a.contextWindow, wantWindow) {
-		t.Errorf("context window =\n\t%#v\nwant\n\t%#v", a.contextWindow, wantWindow)
+	// A failure the provider calls permanent — an oversized prompt, most
+	// plainly — would fail the same way on every later turn, so the turn is
+	// undone rather than left in the window to wedge the session.
+	if len(a.contextWindow) != 0 {
+		t.Errorf("context window = %#v, want the failed turn rolled back", a.contextWindow)
 	}
 }
 
-// TestRunKeepsCompletedRoundsWhenALaterRoundFails is the point of the
-// round-level rollback: a failure deep into a turn must not throw away the tool
-// work that already succeeded.
-func TestRunKeepsCompletedRoundsWhenALaterRoundFails(t *testing.T) {
+// TestRunRollsBackEveryRoundOfAPermanentFailure covers the wedge a completed
+// tool round can cause: a huge tool result that pushes the window past the
+// context limit fails permanently, and keeping it would fail every later turn.
+func TestRunRollsBackEveryRoundOfAPermanentFailure(t *testing.T) {
 	toolUse := ToolUseBlock{ID: "toolu_1", Name: "read", Input: json.RawMessage(`{}`)}
 	provider := &scriptedProvider{turns: [][]Event{
 		{ResponseEvent{Response: Response{
 			Message:    assistantMessage(toolUse),
 			StopReason: StopReasonToolUse,
 		}}},
-		{ErrorEvent{Err: errors.New("api exploded")}},
+		{ErrorEvent{Err: errors.New("prompt is too long")}},
 	}}
+	read := Tool{
+		Name: "read",
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+			return strings.Repeat("x", 64), nil
+		},
+	}
+	a := New(provider, []Tool{read})
+
+	collect(t, a.Run(context.Background(), "read a.txt"))
+
+	if len(a.contextWindow) != 0 {
+		t.Errorf("context window = %#v, want the failed turn rolled back", a.contextWindow)
+	}
+}
+
+// TestRunKeepsCompletedRoundsWhenRetriesRunOut is the point of keeping a
+// transient failure: the API was overloaded, not the conversation broken, so
+// the tool work that already succeeded must survive for the next turn.
+func TestRunKeepsCompletedRoundsWhenRetriesRunOut(t *testing.T) {
+	toolUse := ToolUseBlock{ID: "toolu_1", Name: "read", Input: json.RawMessage(`{}`)}
+	turns := [][]Event{{ResponseEvent{Response: Response{
+		Message:    assistantMessage(toolUse),
+		StopReason: StopReasonToolUse,
+	}}}}
+	for range maxAttempts {
+		turns = append(turns, []Event{ErrorEvent{Err: &RetryableError{Err: errors.New("overloaded"), After: time.Millisecond}}})
+	}
+	provider := &scriptedProvider{turns: turns}
 	read := Tool{
 		Name: "read",
 		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
@@ -282,6 +310,57 @@ func TestRunKeepsCompletedRoundsWhenALaterRoundFails(t *testing.T) {
 		assistantMessage(toolUse),
 		NewUserMessage([]Block{NewToolResultBlock("toolu_1", "file contents", false)}),
 	}
+	if !reflect.DeepEqual(a.contextWindow, wantWindow) {
+		t.Errorf("context window =\n\t%#v\nwant\n\t%#v", a.contextWindow, wantWindow)
+	}
+}
+
+// TestRunDropsAToolCallCutOffByTheTokenLimit covers a response truncated mid
+// tool call: the call is never executed, so nothing will ever answer it, and
+// both APIs reject a tool_use with no result. Keeping it would fail every later
+// turn rather than only this one.
+func TestRunDropsAToolCallCutOffByTheTokenLimit(t *testing.T) {
+	truncated := ToolUseBlock{ID: "toolu_1", Name: "read", Input: json.RawMessage(`{"path":"a.tx`)}
+	provider := &scriptedProvider{turns: [][]Event{
+		{ResponseEvent{Response: Response{
+			Message:    assistantMessage(TextBlock{Text: "reading"}, truncated),
+			StopReason: StopReasonMaxTokens,
+		}}},
+	}}
+	read := Tool{
+		Name: "read",
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+			t.Error("a tool call cut off by the token limit was executed")
+			return "", nil
+		},
+	}
+	a := New(provider, []Tool{read})
+
+	collect(t, a.Run(context.Background(), "read a.txt"))
+
+	wantWindow := []Message{
+		NewUserMessage([]Block{TextBlock{Text: "read a.txt"}}),
+		assistantMessage(TextBlock{Text: "reading"}),
+	}
+	if !reflect.DeepEqual(a.contextWindow, wantWindow) {
+		t.Errorf("context window =\n\t%#v\nwant\n\t%#v", a.contextWindow, wantWindow)
+	}
+}
+
+// TestRunDropsAMessageLeftEmptyByTheTokenLimit is the same case with nothing but
+// the tool call in it: an assistant message with no content is unsendable too.
+func TestRunDropsAMessageLeftEmptyByTheTokenLimit(t *testing.T) {
+	provider := &scriptedProvider{turns: [][]Event{
+		{ResponseEvent{Response: Response{
+			Message:    assistantMessage(ToolUseBlock{ID: "toolu_1", Name: "read", Input: json.RawMessage(`{"pa`)}),
+			StopReason: StopReasonMaxTokens,
+		}}},
+	}}
+	a := New(provider, []Tool{{Name: "read"}})
+
+	collect(t, a.Run(context.Background(), "read a.txt"))
+
+	wantWindow := []Message{NewUserMessage([]Block{TextBlock{Text: "read a.txt"}})}
 	if !reflect.DeepEqual(a.contextWindow, wantWindow) {
 		t.Errorf("context window =\n\t%#v\nwant\n\t%#v", a.contextWindow, wantWindow)
 	}
@@ -411,11 +490,10 @@ func TestRunRollsBackOnlyItsOwnTurn(t *testing.T) {
 	collect(t, a.Run(context.Background(), "hi"))
 	collect(t, a.Run(context.Background(), "hi again"))
 
-	// The first turn survives untouched, and the second keeps its prompt
+	// The second turn undoes its own prompt; the first survives untouched
 	wantWindow := []Message{
 		NewUserMessage([]Block{TextBlock{Text: "hi"}}),
 		assistant,
-		NewUserMessage([]Block{TextBlock{Text: "hi again"}}),
 	}
 	if !reflect.DeepEqual(a.contextWindow, wantWindow) {
 		t.Errorf("context window =\n\t%#v\nwant\n\t%#v", a.contextWindow, wantWindow)

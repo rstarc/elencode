@@ -373,8 +373,10 @@ func TestLoadDefaultsProviderToAnthropic(t *testing.T) {
 	if cfg.Provider != ProviderAnthropic {
 		t.Fatalf("provider = %q, want anthropic", cfg.Provider)
 	}
-	if cfg.ThinkingEffort != "medium" {
-		t.Fatalf("thinking_effort = %q, want the medium default", cfg.ThinkingEffort)
+	// Unset, not defaulted: an effort the user never chose is the API's to pick,
+	// and the two APIs do not default to the same level.
+	if cfg.ThinkingEffort != "" {
+		t.Fatalf("thinking_effort = %q, want it left unset", cfg.ThinkingEffort)
 	}
 }
 
@@ -442,9 +444,9 @@ func TestLoadRejectsUnknownThinkingEffort(t *testing.T) {
 }
 
 // TestLoadNormalizesExplicitlyEmptySettings: the file is unmarshalled over the
-// defaults, so a key written as "" overwrites the default with nothing rather
-// than leaving it alone. Both settings have to be put back, or an empty
-// provider fails validation and an empty effort reaches the provider.
+// defaults, so a provider written as "" overwrites the default with nothing
+// rather than leaving it alone, and would then fail validation. An empty effort
+// is a value in its own right — it means "whatever the API normally does".
 func TestLoadNormalizesExplicitlyEmptySettings(t *testing.T) {
 	writeConfig(t, `{"anthropic_api_key":"`+realKey+`","provider":"","thinking_effort":""}`)
 	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
@@ -457,8 +459,8 @@ func TestLoadNormalizesExplicitlyEmptySettings(t *testing.T) {
 	if cfg.Provider != ProviderAnthropic {
 		t.Errorf("provider = %q, want the anthropic default", cfg.Provider)
 	}
-	if cfg.ThinkingEffort != "medium" {
-		t.Errorf("thinking_effort = %q, want the medium default", cfg.ThinkingEffort)
+	if cfg.ThinkingEffort != "" {
+		t.Errorf("thinking_effort = %q, want it left unset", cfg.ThinkingEffort)
 	}
 }
 

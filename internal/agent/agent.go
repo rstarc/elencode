@@ -84,20 +84,29 @@ func (a *Agent) Run(ctx context.Context, userInput string) <-chan Event {
 		}()
 
 		for {
-			response, ok := a.infer(ctx, events, mark.model)
+			response, ok := a.infer(ctx, events, mark)
 			if !ok {
-				// No rollback: inference is only ever reached with the window in
-				// a sendable shape, so a failure here leaves nothing to undo and
-				// the completed rounds stay available to the next turn.
 				return
 			}
 
-			if !a.appendMessage(mark.generation, response.Message) {
-				return
+			// A response cut off mid tool call carries a tool_use whose argument
+			// JSON never finished. It is never executed, so nothing will answer
+			// it, and both APIs reject a tool_use with no matching result:
+			// keeping it would fail every later turn, not just this one.
+			if response.StopReason == StopReasonMaxTokens {
+				response.Message.Content = withoutToolUse(response.Message.Content)
 			}
-			if !send(ctx, events, MessageEvent{Message: response.Message}) {
-				a.rollback(mark)
-				return
+
+			// A message left with no content at all is unsendable in its own
+			// right, so it is dropped rather than recorded.
+			if len(response.Message.Content) > 0 {
+				if !a.appendMessage(mark.generation, response.Message) {
+					return
+				}
+				if !send(ctx, events, MessageEvent{Message: response.Message}) {
+					a.rollback(mark)
+					return
+				}
 			}
 
 			if response.StopReason != StopReasonToolUse {
@@ -131,9 +140,9 @@ const (
 // infer runs one round of inference, retrying while the provider says the
 // failure was transient. ok is false if the turn should stop, which covers
 // cancellation and any error the retries did not clear.
-func (a *Agent) infer(ctx context.Context, events chan<- Event, model Model) (Response, bool) {
+func (a *Agent) infer(ctx context.Context, events chan<- Event, mark turnMark) (Response, bool) {
 	for attempt := 1; ; attempt++ {
-		response, err, ok := a.inferOnce(ctx, events, model)
+		response, err, ok := a.inferOnce(ctx, events, mark.model)
 		if ok {
 			return response, true
 		}
@@ -143,7 +152,16 @@ func (a *Agent) infer(ctx context.Context, events chan<- Event, model Model) (Re
 		}
 
 		var retryable *RetryableError
-		if !errors.As(err, &retryable) || attempt == maxAttempts {
+		if !errors.As(err, &retryable) {
+			// A permanent failure — an oversized prompt, most plainly — would
+			// reject the same window on every later turn, so the turn is undone
+			// rather than left there. Retries running out is the other case and
+			// keeps everything: the API was busy, the conversation is fine.
+			a.rollback(mark)
+			send(ctx, events, ErrorEvent{Err: err})
+			return Response{}, false
+		}
+		if attempt == maxAttempts {
 			send(ctx, events, ErrorEvent{Err: err})
 			return Response{}, false
 		}
@@ -220,6 +238,18 @@ func sleep(ctx context.Context, d time.Duration) bool {
 	}
 }
 
+// withoutToolUse returns blocks with every tool call removed, leaving the rest
+// in the order the model produced them.
+func withoutToolUse(blocks []Block) []Block {
+	kept := make([]Block, 0, len(blocks))
+	for _, block := range blocks {
+		if _, ok := block.(ToolUseBlock); !ok {
+			kept = append(kept, block)
+		}
+	}
+	return kept
+}
+
 // runTools executes every ToolUseBlock in the response, returning the matching
 // ToolResultBlocks
 func (a *Agent) runTools(ctx context.Context, response Response) []Block {
@@ -292,14 +322,16 @@ func (a *Agent) appendMessage(generation int, msg Message) bool {
 
 // rollback discards everything a turn added, back to mark.
 //
-// Reserved for the turn abandoning itself mid-round — a panic, or a consumer
-// that stopped reading — which is the only way the window is left holding a
-// tool_use block with no matching tool_result. That shape is unsendable, so
-// every later turn would fail too.
+// Called when the turn abandons itself mid-round — a panic, or a consumer that
+// stopped reading — which is the only way the window is left holding a tool_use
+// block with no matching tool_result. That shape is unsendable, so every later
+// turn would fail too.
 //
-// A prompt with no reply needs no such undoing: both APIs combine consecutive
-// user messages, so the unanswered prompt simply stays in the conversation and
-// the next turn can carry on from it.
+// Also called when inference fails permanently, where what is unsendable is the
+// content rather than the shape: the same window would be rejected again on
+// every later turn. A transient failure needs no such undoing — both APIs
+// combine consecutive user messages, so an unanswered prompt simply stays in
+// the conversation and the next turn carries on from it.
 //
 // A stale mark is ignored: SetModel clears the window while a turn is still
 // running, and its later cleanup must not affect the new model's context.

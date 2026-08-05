@@ -203,10 +203,26 @@ func (m model) reportError(err error) tea.Cmd {
 // error: the turn has not failed, and the wait would otherwise be
 // indistinguishable from a hang. Printed once per attempt instead of counting
 // down in the frame, which would need a ticker for a wait of a few seconds.
-func (m model) reportRetry(event agent.RetryEvent) tea.Cmd {
+// discarded says whether the failed attempt already reached the scrollback,
+// which the terminal owns: it cannot be taken back, only disowned, or the retry
+// reads as a second half of the same answer.
+func (m model) reportRetry(event agent.RetryEvent, discarded bool) tea.Cmd {
 	detail := fmt.Sprintf(" — retrying in %s (%d/%d)",
-		event.In.Round(time.Second), event.Attempt, event.Of)
+		retryDelay(event.In), event.Attempt, event.Of)
+	if discarded {
+		detail += ", output above is from the failed attempt"
+	}
 	return printAbove(transcript.Retry(event.Err, detail, m.width))
+}
+
+// retryDelay renders how long the wait is. Rounded to the second, except for a
+// hint finer than one — Retry-After-Ms can ask for 300ms — where the rounding
+// would print "0s" and read as a bug rather than a wait.
+func retryDelay(d time.Duration) string {
+	if d < time.Second {
+		return d.Round(time.Millisecond).String()
+	}
+	return d.Round(time.Second).String()
 }
 
 // modelsMsg carries the result of a /model lookup. choose is the model the user
@@ -434,9 +450,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			print = m.reportError(event.Err)
 		case agent.RetryEvent:
 			// A retry starts a fresh response. Do not let deltas from the failed
-			// attempt join the successful attempt's stream.
+			// attempt join the successful attempt's stream. Whatever was printed
+			// before the failure is beyond reach, so the notice says so.
+			discarded := m.stream.Printed()
 			m.stream.Reset()
-			print = m.reportRetry(event)
+			print = m.reportRetry(event, discarded)
 		}
 		// Sequenced, not batched: batched commands run concurrently, so the next
 		// event could be printed before this one. Waiting for the next event is

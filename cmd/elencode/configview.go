@@ -9,26 +9,46 @@ import (
 	"github.com/rstarc/elencode/internal/tui/menu"
 )
 
-// renderConfig draws the read-only configuration view. The API key is printed
-// through Secret.String, so the value cannot reach the screen.
+// renderConfig draws the read-only configuration view. The API keys are printed
+// through Secret.String, so the values cannot reach the screen.
+//
+// Both keys are shown whichever provider is selected: the file holds both, and
+// which one is in use is what the provider row says.
 func renderConfig(cfg config.Config, width int) string {
-	source := "from config file"
-	if cfg.AnthropicKeyFromEnv {
-		source = "from " + config.ANTHROPIC_API_KEY_ENV_VAR_NAME
-	}
-
 	title := lipgloss.NewStyle().Foreground(menu.NameColor).Render("configuration")
 	rows := []string{
 		menu.Row(menu.Marker, title, width),
 		menu.Row(menu.Marker, "", width),
-		configRow("anthropic_api_key", cfg.AnthropicAPIKey.String()+"  ("+source+")", width),
+		configRow("provider", cfg.Provider, width),
+		configRow("anthropic_api_key", keyValue(cfg.AnthropicAPIKey, cfg.AnthropicKeyFromEnv, config.ANTHROPIC_API_KEY_ENV_VAR_NAME), width),
+		configRow("openai_api_key", keyValue(cfg.OpenAIAPIKey, cfg.OpenAIKeyFromEnv, config.OPENAI_API_KEY_ENV_VAR_NAME), width),
 		configRow("model", cfg.Model, width),
 		configRow("thinking_enabled", strconv.FormatBool(cfg.ThinkingEnabled), width),
+		configRow("thinking_effort", effortValue(cfg.ThinkingEffort), width),
 		configRow("config file", cfg.Path, width),
 		menu.Row(menu.Marker, "", width),
 		menu.Row(menu.Marker, lipgloss.NewStyle().Foreground(menu.DescriptionColor).Render("esc to close"), width),
 	}
 	return strings.Join(rows, "\n")
+}
+
+// keyValue masks a key and says where it came from, which is the whole point of
+// the view: a key from the environment is not the one in the file.
+func keyValue(key config.Secret, fromEnv bool, envVar string) string {
+	source := "from config file"
+	if fromEnv {
+		source = "from " + envVar
+	}
+	return key.String() + "  (" + source + ")"
+}
+
+// effortValue names what an unset effort means, rather than leaving the row
+// blank as if the setting did nothing.
+func effortValue(effort string) string {
+	if effort == "" {
+		return "(the API's default)"
+	}
+	return effort
 }
 
 // configRow renders one name/value pair, with the name padded so the values line up

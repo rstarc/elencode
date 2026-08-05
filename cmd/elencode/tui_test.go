@@ -449,6 +449,68 @@ func TestProgramReportsARetryAndCarriesOn(t *testing.T) {
 	}
 }
 
+// noisyRateLimitedProvider streams enough text to settle rows into the
+// scrollback before the failure, which the unflushed tail of the other retry
+// test never does.
+type noisyRateLimitedProvider struct{ calls int }
+
+func (p *noisyRateLimitedProvider) Models(ctx context.Context) ([]agent.Model, error) {
+	return nil, nil
+}
+
+func (p *noisyRateLimitedProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
+	events := make(chan agent.Event, 2)
+	if p.calls == 0 {
+		p.calls++
+		events <- agent.TextDeltaEvent{Text: strings.Repeat("half an answer ", 20)}
+		events <- agent.ErrorEvent{Err: &agent.RetryableError{
+			Err:   errors.New("overloaded"),
+			After: time.Millisecond,
+		}}
+	} else {
+		events <- agent.ResponseEvent{Response: agent.Response{
+			Message:    agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{agent.TextBlock{Text: "recovered"}}},
+			StopReason: agent.StopReasonEndTurn,
+		}}
+	}
+	close(events)
+	return events
+}
+
+// TestRetryNoticeDisownsPrintedOutput: printed scrollback belongs to the
+// terminal, so the failed attempt's output cannot be retracted — the notice has
+// to say it is not part of the answer, or the reply reads as two answers.
+func TestRetryNoticeDisownsPrintedOutput(t *testing.T) {
+	a := agent.New(&noisyRateLimitedProvider{}, nil)
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands()), teatest.WithInitialTermSize(80, 20))
+
+	tm.Type("hi")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return bytes.Contains(out, []byte("failed attempt"))
+	})
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("quitting the program: %v", err)
+	}
+}
+
+// A hint finer than a second is real — Retry-After-Ms asks for one — and
+// rounding it to "0s" reads as a bug rather than a wait.
+func TestRetryDelayNeverRendersAsZero(t *testing.T) {
+	tests := map[time.Duration]string{
+		300 * time.Millisecond:  "300ms",
+		2 * time.Second:         "2s",
+		2500 * time.Millisecond: "3s",
+	}
+	for in, want := range tests {
+		if got := retryDelay(in); got != want {
+			t.Errorf("retryDelay(%s) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestConfigCommandOpensTheView(t *testing.T) {
 	m := typeText(t, newSizedModel(t), "/config")
 

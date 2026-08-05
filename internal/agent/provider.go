@@ -39,8 +39,8 @@ const (
 )
 
 // Effort is how hard an effort-based model is asked to reason. Providers clamp
-// it to the levels their own API accepts and treat the zero value as their
-// default, medium.
+// it to the levels their own API accepts, and send nothing at all for the zero
+// value, which leaves the level to the API.
 type Effort string
 
 const (

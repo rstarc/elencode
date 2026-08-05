@@ -25,8 +25,9 @@ type Config struct {
 	// and a save would drop it back to the default.
 	ThinkingEnabled bool `json:"thinking_enabled"`
 	// ThinkingEffort is how hard an effort-based model reasons, used when
-	// ThinkingEnabled is on. Validated by Load: a typo must fail at startup
-	// rather than silently run at some other level.
+	// ThinkingEnabled is on. Empty means the API's own default rather than a
+	// level we picked. Validated by Load: a typo must fail at startup rather
+	// than silently run at some other level.
 	ThinkingEffort string `json:"thinking_effort,omitempty"`
 	// Provenance, filled in by Load and never read from the file, so the config
 	// view can say where a value came from. One flag per key: a single bool
@@ -109,16 +110,12 @@ const (
 	ProviderOpenAI    = "openai"
 )
 
-// defaultEffort is the level an effort-based model reasons at when the file
-// names none. Medium is what both APIs use as their own default.
-const defaultEffort = "medium"
-
 // Load loads the configuration file ($XDG_CONFIG_HOME/elencode/config.json) from disk
 // and unmarshals the contents into a Config, then reads any environment variables to check if they override any of the values
 func Load() (Config, error) {
 	// Defaults first: the file is unmarshalled over them, so a setting it does
 	// not mention keeps the value here rather than a zero one.
-	cfg := Config{ThinkingEnabled: true, ThinkingEffort: defaultEffort, Provider: ProviderAnthropic}
+	cfg := Config{ThinkingEnabled: true, Provider: ProviderAnthropic}
 
 	userConfigDir, err := os.UserConfigDir()
 	if err != nil {
@@ -147,9 +144,6 @@ func Load() (Config, error) {
 	if cfg.Provider == "" {
 		cfg.Provider = ProviderAnthropic
 	}
-	if cfg.ThinkingEffort == "" {
-		cfg.ThinkingEffort = defaultEffort
-	}
 
 	// Both overrides are applied whichever provider is selected: the value is
 	// real either way, and what matters is that Save never writes it back.
@@ -175,8 +169,10 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("unknown provider %q in %q (valid: %q, %q)", cfg.Provider, configFilePath, ProviderAnthropic, ProviderOpenAI)
 	}
 
+	// Unset is a value of its own: it means the API picks, and the two APIs do
+	// not pick the same level, so there is no one default to fill in here.
 	switch cfg.ThinkingEffort {
-	case "low", "medium", "high", "xhigh", "max":
+	case "", "low", "medium", "high", "xhigh", "max":
 	default:
 		return cfg, fmt.Errorf("unknown thinking_effort %q in %q (valid: low, medium, high, xhigh, max)", cfg.ThinkingEffort, configFilePath)
 	}

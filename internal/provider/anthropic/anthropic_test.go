@@ -6,11 +6,13 @@ import (
 	"io"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -476,9 +478,21 @@ func TestEffortIsNotRequestedWhenThinkingDisabled(t *testing.T) {
 	}
 }
 
+// TestUnsetEffortIsLeftToTheAPI: the API's own default is high, so sending an
+// effort the user never chose would quietly reason at another level.
+func TestUnsetEffortIsLeftToTheAPI(t *testing.T) {
+	c := newWithOptions("key", true, agent.EffortNone)
+	m := agent.Model{ID: "claude-x", Thinking: agent.ThinkingEffort}
+
+	params := c.messageParams(agent.Request{Model: m, MaxTokens: 10}, nil)
+
+	if params.OutputConfig.Effort != "" {
+		t.Fatalf("effort = %q, want it left out of the request", params.OutputConfig.Effort)
+	}
+}
+
 func TestToAnthropicEffortClampsToKnownLevels(t *testing.T) {
 	tests := map[agent.Effort]sdk.OutputConfigEffort{
-		agent.EffortNone:   sdk.OutputConfigEffortMedium,
 		agent.EffortLow:    sdk.OutputConfigEffortLow,
 		agent.EffortMedium: sdk.OutputConfigEffortMedium,
 		agent.EffortHigh:   sdk.OutputConfigEffortHigh,
@@ -583,6 +597,59 @@ func TestStreamAssemblesAResponseFromSSE(t *testing.T) {
 	want := agent.TextBlock{Text: "Hello"}
 	if len(resp.Response.Message.Content) != 1 || resp.Response.Message.Content[0] != want {
 		t.Errorf("content = %#v, want [%#v]", resp.Response.Message.Content, want)
+	}
+}
+
+// closeTracker wraps the transport so a test can see whether the response body
+// was closed. Nothing else notices: a stream left open simply keeps its
+// connection out of the pool until the server times it out.
+type closeTracker struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func (c *closeTracker) Do(req *http.Request) (*http.Response, error) {
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	resp.Body = trackedBody{ReadCloser: resp.Body, closed: func() { c.once.Do(func() { close(c.closed) }) }}
+	return resp, nil
+}
+
+type trackedBody struct {
+	io.ReadCloser
+	closed func()
+}
+
+func (b trackedBody) Close() error {
+	b.closed()
+	return b.ReadCloser.Close()
+}
+
+// TestStreamClosesTheResponseBody covers every early return — here a stream
+// that stops before the message does. The SDK's Next never closes the body, not
+// even at the end of the stream, so only an explicit Close returns the
+// connection.
+func TestStreamClosesTheResponseBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-x\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+	}))
+	defer server.Close()
+
+	tracker := &closeTracker{closed: make(chan struct{})}
+	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL), option.WithHTTPClient(tracker))
+	collectEvents(t, c.Stream(context.Background(), agent.Request{
+		Model:     agent.Model{ID: "claude-x"},
+		MaxTokens: 100,
+		Messages:  []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+
+	select {
+	case <-tracker.closed:
+	default:
+		t.Error("response body left open after the stream ended")
 	}
 }
 
