@@ -98,7 +98,7 @@ func toTools(tools []agent.Tool) []responses.ToolUnionParam {
 			Description: openai.String(tool.Description),
 			Strict:      openai.Bool(false),
 			Parameters: map[string]any{
-				"type":       "object",
+				"type":       tool.InputSchema.Type,
 				"properties": tool.InputSchema.Properties,
 				"required":   tool.InputSchema.Required,
 			},

@@ -12,6 +12,7 @@ import (
 )
 
 var writeToolInputSchema agent.InputSchema = agent.InputSchema{
+	Type: "object",
 	Properties: map[string]agent.Property{
 		"path":    {Type: "string", Description: "Path to the file, relative to the workspace root"},
 		"content": {Type: "string", Description: "The literal file content"},

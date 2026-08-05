@@ -31,7 +31,7 @@ type Property struct {
 
 // InputSchema is the struct matching the JSON Schema for the Tool Input
 type InputSchema struct {
-	Type       string `json:"type" default:"object"`
+	Type       string `json:"type"`
 	Properties map[string]Property
 	Required   []string // Names of required properties TODO: Track in Property struct instead?
 }

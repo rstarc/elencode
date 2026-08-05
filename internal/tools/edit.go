@@ -13,6 +13,7 @@ import (
 
 // TODO: Change schema to allow batching multiple edits in a single tool call
 var editToolInputSchema agent.InputSchema = agent.InputSchema{
+	Type: "object",
 	Properties: map[string]agent.Property{
 		"path":    {Type: "string", Description: "Path to the file, relative to the workspace root"},
 		"oldText": {Type: "string", Description: "Exact text to find and replace. Must match byte for byte"},

@@ -13,6 +13,7 @@ import (
 
 // TODO: Change schema to allow batching multiple edits in a single tool call?
 var bashToolInputSchema agent.InputSchema = agent.InputSchema{
+	Type: "object",
 	Properties: map[string]agent.Property{
 		"command": {Type: "string", Description: "Bash command to execute"},
 		"timeout": {Type: "string", Description: "optional, timeout in seconds. No default timeout"},
