@@ -1,7 +1,7 @@
 package main
 
 import (
-	"context"
+	"errors"
 	"fmt"
 	"os"
 	"runtime/debug"
@@ -30,25 +30,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Initialize provider
-	provider, defaultModelID, resolve, err := providerFromConfig(cfg)
+	// One client per key found. Which of them a turn talks to is decided by the
+	// model, here and at every /model after it.
+	providers := loadProviders(cfg)
+	selectedModel, notice, err := startupModel(cfg, providers)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
 		os.Exit(1)
 	}
-	modelID := cfg.Model
-	if modelID == "" {
-		modelID = defaultModelID
-	}
-	selectedModel := agent.Model{ID: modelID}
-
-	// Models differ in what kind of reasoning they accept, and asking for the
-	// wrong kind fails the turn. Not fatal: without it the session simply runs
-	// without thinking, which beats refusing to start.
-	if resolved, err := resolve(context.Background(), modelID); err != nil {
-		fmt.Fprintf(os.Stderr, "elencode: could not read what %s supports, continuing without thinking: %v\n", modelID, err)
-	} else {
-		selectedModel = resolved
+	if notice != "" {
+		fmt.Fprintf(os.Stderr, "elencode: %s\n", notice)
 	}
 	cfg = configWithEffectiveModel(cfg, selectedModel)
 
@@ -60,7 +51,7 @@ func main() {
 		tools.NewEditTool(root),
 		tools.NewBashTool(root),
 	}
-	agentConfig := agent.New(provider, tools)
+	agentConfig := agent.New(providers[selectedModel.Provider], tools)
 	agentConfig.SetModel(selectedModel)
 
 	tui := tea.NewProgram(newModel(agentConfig, cfg, defaultCommands()))
@@ -70,25 +61,74 @@ func main() {
 	}
 }
 
-// providerFromConfig builds the provider the config selects, along with the two
-// things that are not on the agent.Provider interface: its default model and
-// its Resolve. Returning Resolve as a closure keeps main from having to reach
-// for a concrete type through the interface.
-func providerFromConfig(cfg config.Config) (agent.Provider, string, func(context.Context, string) (agent.Model, error), error) {
-	effort := agent.Effort(cfg.ThinkingEffort)
+// providerSet holds the live client for every provider a key was found for.
+// Built and read on one goroutine — a turn is handed the one client it needs,
+// never the set.
+type providerSet map[agent.ProviderName]agent.Provider
 
-	switch cfg.Provider {
-	case config.ProviderOpenAI:
-		client := openai.New(cfg.OpenAIAPIKey.Reveal(), cfg.ThinkingEnabled, effort)
-		return client, openai.DefaultModelID(), client.Resolve, nil
-	// Empty means a config written before the setting existed, which was
-	// Anthropic-only.
-	case config.ProviderAnthropic, "":
-		client := anthropic.New(cfg.AnthropicAPIKey.Reveal(), cfg.ThinkingEnabled, effort)
-		return client, anthropic.DefaultModelID(), client.Resolve, nil
-	default:
-		return nil, "", nil, fmt.Errorf("unknown provider %q", cfg.Provider)
+// loadProviders builds a client for each API key the config holds. No error to
+// return: which providers a session can reach is whichever keys were there,
+// and an empty set is the caller's to report. Kept to one function because a
+// key entered mid-session will want to run it again.
+func loadProviders(cfg config.Config) providerSet {
+	effort := agent.Effort(cfg.ThinkingEffort)
+	providers := providerSet{}
+
+	if cfg.AnthropicAPIKey != "" {
+		providers[agent.ProviderAnthropic] = anthropic.New(cfg.AnthropicAPIKey.Reveal(), cfg.ThinkingEnabled, effort)
 	}
+	if cfg.OpenAIAPIKey != "" {
+		providers[agent.ProviderOpenAI] = openai.New(cfg.OpenAIAPIKey.Reveal(), cfg.ThinkingEnabled, effort)
+	}
+	return providers
+}
+
+// catalog is every model this build knows about, whether or not its provider
+// has a key: what to offer is a smaller question than what exists, and naming
+// a model nobody can reach deserves a better answer than "unknown model".
+func catalog() []agent.Model {
+	return append(anthropic.Catalog(), openai.Catalog()...)
+}
+
+// startupModel decides which model the session opens on. The notice it returns
+// says why that is not what the config asked for, and is empty when it is:
+// a saved model whose provider lost its key, or which no longer exists, is
+// worth saying out loud but not worth refusing to start over.
+func startupModel(cfg config.Config, providers providerSet) (agent.Model, string, error) {
+	fallback, err := defaultModel(providers)
+	if err != nil {
+		return agent.Model{}, "", err
+	}
+
+	if cfg.Model == "" {
+		return fallback, "", nil
+	}
+
+	wanted, ok := agent.FindModel(catalog(), cfg.Model)
+	if !ok {
+		return fallback, fmt.Sprintf("no model named %s, starting on %s instead", cfg.Model, fallback.ID), nil
+	}
+	if _, keyed := providers[wanted.Provider]; !keyed {
+		return fallback, fmt.Sprintf("no API key for %s, so %s is out of reach: starting on %s instead", wanted.Provider, wanted.ID, fallback.ID), nil
+	}
+	return wanted, "", nil
+}
+
+// defaultModel is the model a session opens on when the config names none: the
+// default of the first provider that has a key, in the order agent prefers.
+func defaultModel(providers providerSet) (agent.Model, error) {
+	for _, name := range agent.Providers {
+		if _, ok := providers[name]; !ok {
+			continue
+		}
+		switch name {
+		case agent.ProviderAnthropic:
+			return anthropic.Default(), nil
+		case agent.ProviderOpenAI:
+			return openai.Default(), nil
+		}
+	}
+	return agent.Model{}, errors.New("no API key for any provider")
 }
 
 // defaultCommands is the set of slash commands a session offers. Assembled here

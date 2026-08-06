@@ -27,10 +27,10 @@ type Config struct {
 	// leaves whatever the file already said in place, rather than blanking it.
 	AnthropicAPIKey Secret `json:"anthropic_api_key,omitempty"`
 	OpenAIAPIKey    Secret `json:"openai_api_key,omitempty"`
-	// Provider names which API a session talks to. Fixed for the process: it is
-	// chosen at startup like the key is, not switched mid-session.
-	Provider string `json:"provider,omitempty"`
-	// Model the provider should use. Empty means the provider's own default.
+	// Model a session talks to, which is also what says who to talk to: every
+	// provider a key was found for is loaded, and a model belongs to one of
+	// them. Empty means the default. Stored qualified ("openai/gpt-5") when a
+	// bare id would not say who serves it.
 	Model string `json:"model,omitempty"`
 	// ThinkingEnabled asks the provider for the model's reasoning. Not
 	// omitempty, unlike the rest: false is a bool's zero value, so omitting it
@@ -117,12 +117,6 @@ const ANTHROPIC_API_KEY_ENV_VAR_NAME = "ANTHROPIC_API_KEY"
 
 const OPENAI_API_KEY_ENV_VAR_NAME = "OPENAI_API_KEY"
 
-// The providers a session can be pointed at.
-const (
-	ProviderAnthropic = "anthropic"
-	ProviderOpenAI    = "openai"
-)
-
 // Load loads the configuration file ($XDG_CONFIG_HOME/elencode/config.json) from disk
 // and unmarshals the contents into a Config, then reads any environment variables to check if they override any of the values
 func Load() (Config, error) {
@@ -154,15 +148,6 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 
-	// The one place the provider default lives: a file that never mentions it
-	// and one that writes it as an empty string both mean "unset", and both
-	// arrive here as the empty string.
-	if cfg.Provider == "" {
-		cfg.Provider = ProviderAnthropic
-	}
-
-	// Both overrides are applied whichever provider is selected: the value is
-	// real either way, and what matters is that Save never writes it back.
 	if val, ok := os.LookupEnv(ANTHROPIC_API_KEY_ENV_VAR_NAME); ok && val != "" {
 		cfg.AnthropicAPIKey = Secret(val)
 		cfg.AnthropicKeyFromEnv = true
@@ -172,17 +157,12 @@ func Load() (Config, error) {
 		cfg.OpenAIKeyFromEnv = true
 	}
 
-	switch cfg.Provider {
-	case ProviderAnthropic:
-		if cfg.AnthropicAPIKey == "" {
-			return cfg, fmt.Errorf("API key not set: provide %q in the environment or %q in %q", ANTHROPIC_API_KEY_ENV_VAR_NAME, "anthropic_api_key", configFilePath)
-		}
-	case ProviderOpenAI:
-		if cfg.OpenAIAPIKey == "" {
-			return cfg, fmt.Errorf("API key not set: provide %q in the environment or %q in %q", OPENAI_API_KEY_ENV_VAR_NAME, "openai_api_key", configFilePath)
-		}
-	default:
-		return cfg, fmt.Errorf("unknown provider %q in %q (valid: %q, %q)", cfg.Provider, configFilePath, ProviderAnthropic, ProviderOpenAI)
+	// One key is enough — it is what decides which providers a session can
+	// reach — but with none there is nothing to talk to, and saying so now
+	// beats saying it on the first message.
+	if cfg.AnthropicAPIKey == "" && cfg.OpenAIAPIKey == "" {
+		return cfg, fmt.Errorf("no API key set: provide %q or %q in the environment, or %q or %q in %q",
+			ANTHROPIC_API_KEY_ENV_VAR_NAME, OPENAI_API_KEY_ENV_VAR_NAME, "anthropic_api_key", "openai_api_key", configFilePath)
 	}
 
 	// Validated against the agent's own vocabulary rather than a copy of it:

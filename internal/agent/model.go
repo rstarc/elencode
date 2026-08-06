@@ -13,6 +13,11 @@ const (
 	ProviderOpenAI    ProviderName = "openai"
 )
 
+// Providers is every provider elencode can talk to, in the order it prefers
+// them when nothing else decides — which is only ever at startup, when a key
+// was found for more than one and the config named no model.
+var Providers = []ProviderName{ProviderAnthropic, ProviderOpenAI}
+
 // Model is one model a provider offers, as shown in the picker
 type Model struct {
 	Provider    ProviderName

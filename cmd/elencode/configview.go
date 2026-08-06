@@ -12,14 +12,13 @@ import (
 // renderConfig draws the read-only configuration view. The API keys are printed
 // through Secret.String, so the values cannot reach the screen.
 //
-// Both keys are shown whichever provider is selected: the file holds both, and
-// which one is in use is what the provider row says.
+// Both keys are shown: both are live, since a session reaches whichever
+// providers were keyed, and the model row says which one it is talking to.
 func renderConfig(cfg config.Config, width int) string {
 	title := lipgloss.NewStyle().Foreground(menu.NameColor).Render("configuration")
 	rows := []string{
 		menu.Row(menu.Marker, title, width),
 		menu.Row(menu.Marker, "", width),
-		configRow("provider", cfg.Provider, width),
 		configRow("anthropic_api_key", keyValue(cfg.AnthropicAPIKey, cfg.AnthropicKeyFromEnv, config.ANTHROPIC_API_KEY_ENV_VAR_NAME), width),
 		configRow("openai_api_key", keyValue(cfg.OpenAIAPIKey, cfg.OpenAIKeyFromEnv, config.OPENAI_API_KEY_ENV_VAR_NAME), width),
 		configRow("model", cfg.Model, width),

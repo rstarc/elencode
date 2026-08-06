@@ -36,7 +36,6 @@ func TestRenderConfigShowsThePath(t *testing.T) {
 // something untrue about where the session's key came from.
 func TestRenderConfigNamesTheSourceOfEachKey(t *testing.T) {
 	cfg := config.Config{
-		Provider:            config.ProviderOpenAI,
 		AnthropicAPIKey:     "a",
 		OpenAIAPIKey:        "o",
 		AnthropicKeyFromEnv: true,
@@ -52,14 +51,6 @@ func TestRenderConfigNamesTheSourceOfEachKey(t *testing.T) {
 	openai := rowFor(view, "openai_api_key")
 	if openai == "" || !strings.Contains(openai, "config file") {
 		t.Errorf("openai key row = %q, want it to name the config file", openai)
-	}
-}
-
-func TestRenderConfigShowsTheProvider(t *testing.T) {
-	cfg := config.Config{Provider: config.ProviderOpenAI, Path: "/tmp/c.json"}
-
-	if row := rowFor(renderConfig(cfg, 80), "provider"); !strings.Contains(row, config.ProviderOpenAI) {
-		t.Errorf("provider row = %q, want it to say openai", row)
 	}
 }
 

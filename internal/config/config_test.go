@@ -332,8 +332,8 @@ func TestSaveKeepsThinkingOff(t *testing.T) {
 	}
 }
 
-func TestLoadReadsTheOpenAIProviderSettings(t *testing.T) {
-	writeConfig(t, `{"provider":"openai","openai_api_key":"sk-oai","thinking_effort":"high"}`)
+func TestLoadReadsTheOpenAISettings(t *testing.T) {
+	writeConfig(t, `{"openai_api_key":"sk-oai","thinking_effort":"high"}`)
 	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
 	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
 
@@ -341,37 +341,60 @@ func TestLoadReadsTheOpenAIProviderSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Provider != ProviderOpenAI || cfg.OpenAIAPIKey.Reveal() != "sk-oai" || cfg.ThinkingEffort != "high" {
-		t.Fatalf("provider = %q, thinking_effort = %q, openai key set = %t", cfg.Provider, cfg.ThinkingEffort, cfg.OpenAIAPIKey != "")
+	if cfg.OpenAIAPIKey.Reveal() != "sk-oai" || cfg.ThinkingEffort != "high" {
+		t.Fatalf("thinking_effort = %q, openai key set = %t", cfg.ThinkingEffort, cfg.OpenAIAPIKey != "")
 	}
 }
 
-// TestLoadValidatesTheSelectedProvidersKey: an anthropic key on file must not
-// satisfy the check when openai is the selected provider.
-func TestLoadValidatesTheSelectedProvidersKey(t *testing.T) {
-	writeConfig(t, `{"provider":"openai","anthropic_api_key":"`+realKey+`"}`)
+// One key is enough: which providers a session can reach is whichever keys
+// were found, and a model names the provider it needs.
+func TestLoadAcceptsAnOpenAIKeyAlone(t *testing.T) {
+	writeConfig(t, `{"openai_api_key":"sk-oai"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
+// With no key at all there is nothing to talk to, which is worth saying at
+// startup rather than on the first message.
+func TestLoadRequiresAtLeastOneAPIKey(t *testing.T) {
+	writeConfig(t, `{"model":"claude-haiku-4-5"}`)
 	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
 	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
 
 	_, err := Load()
 	if err == nil {
-		t.Fatal("Load succeeded without the selected provider's key")
+		t.Fatal("Load succeeded with no API key at all")
 	}
-	if !strings.Contains(err.Error(), OPENAI_API_KEY_ENV_VAR_NAME) {
-		t.Errorf("err = %q, want it to name the openai key", err)
+	for _, want := range []string{ANTHROPIC_API_KEY_ENV_VAR_NAME, OPENAI_API_KEY_ENV_VAR_NAME} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %q, want it to name %s", err, want)
+		}
 	}
 }
 
-func TestLoadDefaultsProviderToAnthropic(t *testing.T) {
+// A file written when the provider was a setting still parses: the key means
+// nothing now, and Save leaves it alone like any other it does not know.
+func TestLoadIgnoresARetiredProviderSetting(t *testing.T) {
+	writeConfig(t, `{"provider":"openai","anthropic_api_key":"`+realKey+`"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
+
+	if _, err := Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+}
+
+func TestLoadLeavesThinkingEffortUnset(t *testing.T) {
 	writeConfig(t, `{"anthropic_api_key":"`+realKey+`"}`)
 	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Provider != ProviderAnthropic {
-		t.Fatalf("provider = %q, want anthropic", cfg.Provider)
 	}
 	// Unset, not defaulted: an effort the user never chose is the API's to pick,
 	// and the two APIs do not default to the same level.
@@ -423,15 +446,6 @@ func TestSaveWritesNeitherEnvironmentKey(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsUnknownProvider(t *testing.T) {
-	writeConfig(t, `{"provider":"nope","anthropic_api_key":"`+realKey+`"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
-
-	if _, err := Load(); err == nil {
-		t.Fatal("Load accepted an unknown provider")
-	}
-}
-
 // TestLoadRejectsUnknownThinkingEffort: a typo like "hihg" must fail loudly
 // rather than silently clamping to medium.
 func TestLoadRejectsUnknownThinkingEffort(t *testing.T) {
@@ -443,12 +457,11 @@ func TestLoadRejectsUnknownThinkingEffort(t *testing.T) {
 	}
 }
 
-// TestLoadNormalizesExplicitlyEmptySettings: the file is unmarshalled over the
-// defaults, so a provider written as "" overwrites the default with nothing
-// rather than leaving it alone, and would then fail validation. An empty effort
-// is a value in its own right — it means "whatever the API normally does".
-func TestLoadNormalizesExplicitlyEmptySettings(t *testing.T) {
-	writeConfig(t, `{"anthropic_api_key":"`+realKey+`","provider":"","thinking_effort":""}`)
+// TestLoadAcceptsAnExplicitlyEmptyEffort: an empty effort is a value in its own
+// right — it means "whatever the API normally does" — so it must pass the
+// validation a typo fails.
+func TestLoadAcceptsAnExplicitlyEmptyEffort(t *testing.T) {
+	writeConfig(t, `{"anthropic_api_key":"`+realKey+`","thinking_effort":""}`)
 	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
 
 	cfg, err := Load()
@@ -456,9 +469,6 @@ func TestLoadNormalizesExplicitlyEmptySettings(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if cfg.Provider != ProviderAnthropic {
-		t.Errorf("provider = %q, want the anthropic default", cfg.Provider)
-	}
 	if cfg.ThinkingEffort != "" {
 		t.Errorf("thinking_effort = %q, want it left unset", cfg.ThinkingEffort)
 	}
