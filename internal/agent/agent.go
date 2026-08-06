@@ -42,15 +42,19 @@ type Agent struct {
 	mu                sync.Mutex
 	contextWindow     []Message
 	contextGeneration int
-	model             Model
-	maxTokens         int64
-	provider          Provider
+	// model and the provider serving it are one decision and are written
+	// together: a model is offered by exactly one API, and asking another for
+	// it is a request nobody can answer.
+	model     Model
+	provider  Provider
+	maxTokens int64
 }
 
 type turnMark struct {
 	index      int
 	generation int
 	model      Model
+	provider   Provider
 }
 
 func (a *Agent) useTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
@@ -142,7 +146,7 @@ const (
 // cancellation and any error the retries did not clear.
 func (a *Agent) infer(ctx context.Context, events chan<- Event, mark turnMark) (Response, bool) {
 	for attempt := 1; ; attempt++ {
-		response, err, ok := a.inferOnce(ctx, events, mark.model)
+		response, err, ok := a.inferOnce(ctx, events, mark)
 		if ok {
 			return response, true
 		}
@@ -179,17 +183,25 @@ func (a *Agent) infer(ctx context.Context, events chan<- Event, mark turnMark) (
 // inferOnce runs a single request, forwarding Events to the caller and
 // returning the assembled Response. A failure is returned rather than emitted,
 // so infer can decide whether the caller ever needs to hear about it.
-func (a *Agent) inferOnce(ctx context.Context, events chan<- Event, model Model) (Response, error, bool) {
+func (a *Agent) inferOnce(ctx context.Context, events chan<- Event, mark turnMark) (Response, error, bool) {
+	// Both come off the mark rather than off the agent: a turn belongs to the
+	// model it began on, and to whoever serves that model. Reading them live
+	// would send this turn's half-finished conversation to whatever the user
+	// switched to while it was in flight.
+	if mark.provider == nil {
+		return Response{}, errors.New("no model selected"), false
+	}
+
 	a.mu.Lock()
 	req := Request{
-		Model:     model,
+		Model:     mark.model,
 		MaxTokens: a.maxTokens, // TODO: set dynamically from API query if not set explicitly
 		Tools:     a.tools,
 		Messages:  a.contextWindow,
 	}
 	a.mu.Unlock()
 
-	for event := range a.provider.Stream(ctx, req) {
+	for event := range mark.provider.Stream(ctx, req) {
 		switch event := event.(type) {
 		case ResponseEvent:
 			// Terminal, and not forwarded: the caller sees the Message once it
@@ -278,18 +290,25 @@ func send(ctx context.Context, events chan<- Event, ev Event) bool {
 	}
 }
 
-// Models lists the models the provider offers
+// Models lists the models the current provider offers
 func (a *Agent) Models(ctx context.Context) ([]Model, error) {
-	return a.provider.Models(ctx)
+	a.mu.Lock()
+	provider := a.provider
+	a.mu.Unlock()
+	return provider.Models(ctx)
 }
 
 // SetModel switches models and drops the conversation so far, which was
 // produced by the previous model and does not carry over.
-func (a *Agent) SetModel(model Model) {
+//
+// The provider serving model comes with it: the caller holds the clients, so
+// it is the only one that can say which of them answers for this model.
+func (a *Agent) SetModel(model Model, provider Provider) {
 	a.mu.Lock()
 	a.contextGeneration++
 	a.contextWindow = []Message{}
 	a.model = model
+	a.provider = provider
 	a.mu.Unlock()
 }
 
@@ -305,7 +324,12 @@ func (a *Agent) AppendMessage(msg Message) {
 func (a *Agent) beginTurn(msg Message) turnMark {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	mark := turnMark{index: len(a.contextWindow), generation: a.contextGeneration, model: a.model}
+	mark := turnMark{
+		index:      len(a.contextWindow),
+		generation: a.contextGeneration,
+		model:      a.model,
+		provider:   a.provider,
+	}
 	a.contextWindow = append(a.contextWindow, msg)
 	return mark
 }
@@ -344,8 +368,9 @@ func (a *Agent) rollback(mark turnMark) {
 	a.contextWindow = a.contextWindow[:min(mark.index, len(a.contextWindow))]
 }
 
-// New returns a pointer because Agent holds a Mutex and must not be copied
-func New(provider Provider, tools []Tool) *Agent {
+// New returns a pointer because Agent holds a Mutex and must not be copied.
+// The agent has no model, and so nobody to ask, until SetModel says.
+func New(tools []Tool) *Agent {
 	// TODO: Use functional options
 
 	toolMap := map[string]Tool{}
@@ -358,6 +383,5 @@ func New(provider Provider, tools []Tool) *Agent {
 		toolsMap:      toolMap,
 		tools:         tools,
 		contextWindow: []Message{},
-		provider:      provider,
 	}
 }

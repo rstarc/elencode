@@ -794,8 +794,8 @@ func TestAgentLoopRoundTripsReasoningAndTools(t *testing.T) {
 			return "module elencode", nil
 		},
 	}
-	a := agent.New(c, []agent.Tool{read})
-	a.SetModel(agent.Model{ID: "gpt-5", Thinking: agent.ThinkingEffort})
+	a := agent.New([]agent.Tool{read})
+	a.SetModel(agent.Model{Provider: agent.ProviderOpenAI, ID: "gpt-5", Thinking: agent.ThinkingEffort}, c)
 
 	events := collect(t, a.Run(context.Background(), "read go.mod"))
 
@@ -892,8 +892,8 @@ func TestAgentLoopSurvivesARateLimitedRound(t *testing.T) {
 			return "module elencode", nil
 		},
 	}
-	a := agent.New(c, []agent.Tool{read})
-	a.SetModel(agent.Model{ID: "gpt-5"})
+	a := agent.New([]agent.Tool{read})
+	a.SetModel(agent.Model{Provider: agent.ProviderOpenAI, ID: "gpt-5"}, c)
 
 	var last agent.Message
 	for _, event := range collect(t, a.Run(context.Background(), "read go.mod")) {

@@ -119,6 +119,14 @@ func collect(t *testing.T, events <-chan Event) []Event {
 	}
 }
 
+// newAgent is an agent already pointed at provider, which is what most tests
+// want: they care about the turn, not about which model started it.
+func newAgent(provider Provider, tools []Tool) *Agent {
+	a := New(tools)
+	a.SetModel(Model{Provider: ProviderAnthropic, ID: "test-model"}, provider)
+	return a
+}
+
 func assistantMessage(blocks ...Block) Message {
 	return Message{Role: RoleAssistant, Content: blocks}
 }
@@ -130,7 +138,7 @@ func TestRunEmitsDeltasThenMessage(t *testing.T) {
 		TextDeltaEvent{Text: "lo"},
 		ResponseEvent{Response: Response{Message: assistant, StopReason: StopReasonEndTurn}},
 	}}}
-	a := New(provider, nil)
+	a := newAgent(provider, nil)
 
 	got := collect(t, a.Run(context.Background(), "hi"))
 
@@ -173,7 +181,7 @@ func TestRunExecutesToolsAndInfersAgain(t *testing.T) {
 			return "file contents", nil
 		},
 	}
-	a := New(provider, []Tool{read})
+	a := newAgent(provider, []Tool{read})
 
 	collect(t, a.Run(context.Background(), "read a.txt"))
 
@@ -219,7 +227,7 @@ func TestRunRecordsToolFailureAsErrorResult(t *testing.T) {
 			return "", errors.New("no such file")
 		},
 	}
-	a := New(provider, []Tool{read})
+	a := newAgent(provider, []Tool{read})
 
 	collect(t, a.Run(context.Background(), "read a.txt"))
 
@@ -235,7 +243,7 @@ func TestRunRecordsToolFailureAsErrorResult(t *testing.T) {
 func TestRunForwardsProviderError(t *testing.T) {
 	wantErr := errors.New("api exploded")
 	provider := &scriptedProvider{turns: [][]Event{{ErrorEvent{Err: wantErr}}}}
-	a := New(provider, nil)
+	a := newAgent(provider, nil)
 
 	got := collect(t, a.Run(context.Background(), "hi"))
 
@@ -273,7 +281,7 @@ func TestRunRollsBackEveryRoundOfAPermanentFailure(t *testing.T) {
 			return strings.Repeat("x", 64), nil
 		},
 	}
-	a := New(provider, []Tool{read})
+	a := newAgent(provider, []Tool{read})
 
 	collect(t, a.Run(context.Background(), "read a.txt"))
 
@@ -301,7 +309,7 @@ func TestRunKeepsCompletedRoundsWhenRetriesRunOut(t *testing.T) {
 			return "file contents", nil
 		},
 	}
-	a := New(provider, []Tool{read})
+	a := newAgent(provider, []Tool{read})
 
 	collect(t, a.Run(context.Background(), "read a.txt"))
 
@@ -334,7 +342,7 @@ func TestRunDropsAToolCallCutOffByTheTokenLimit(t *testing.T) {
 			return "", nil
 		},
 	}
-	a := New(provider, []Tool{read})
+	a := newAgent(provider, []Tool{read})
 
 	collect(t, a.Run(context.Background(), "read a.txt"))
 
@@ -356,7 +364,7 @@ func TestRunDropsAMessageLeftEmptyByTheTokenLimit(t *testing.T) {
 			StopReason: StopReasonMaxTokens,
 		}}},
 	}}
-	a := New(provider, []Tool{{Name: "read"}})
+	a := newAgent(provider, []Tool{{Name: "read"}})
 
 	collect(t, a.Run(context.Background(), "read a.txt"))
 
@@ -373,7 +381,7 @@ func TestRunRetriesRetryableErrors(t *testing.T) {
 		{ErrorEvent{Err: &RetryableError{Err: errors.New("rate limited"), After: time.Millisecond}}},
 		{ResponseEvent{Response: Response{Message: assistant, StopReason: StopReasonEndTurn}}},
 	}}
-	a := New(provider, nil)
+	a := newAgent(provider, nil)
 
 	got := collect(t, a.Run(context.Background(), "hi"))
 
@@ -414,7 +422,7 @@ func TestRunGivesUpAfterMaxAttempts(t *testing.T) {
 		turns[i] = round
 	}
 	provider := &scriptedProvider{turns: turns}
-	a := New(provider, nil)
+	a := newAgent(provider, nil)
 
 	got := collect(t, a.Run(context.Background(), "hi"))
 
@@ -437,7 +445,7 @@ func TestRunAbandonsARetryWhenCancelled(t *testing.T) {
 	provider := &scriptedProvider{turns: [][]Event{
 		{ErrorEvent{Err: &RetryableError{Err: errors.New("rate limited"), After: time.Hour}}},
 	}}
-	a := New(provider, nil)
+	a := newAgent(provider, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	events := a.Run(ctx, "hi")
@@ -485,7 +493,7 @@ func TestRunRollsBackOnlyItsOwnTurn(t *testing.T) {
 		{ResponseEvent{Response: Response{Message: assistant, StopReason: StopReasonEndTurn}}},
 		{ErrorEvent{Err: errors.New("api exploded")}},
 	}}
-	a := New(provider, nil)
+	a := newAgent(provider, nil)
 
 	collect(t, a.Run(context.Background(), "hi"))
 	collect(t, a.Run(context.Background(), "hi again"))
@@ -514,7 +522,7 @@ func TestRunRecoversFromToolPanic(t *testing.T) {
 			panic("tool blew up")
 		},
 	}
-	a := New(provider, []Tool{read})
+	a := newAgent(provider, []Tool{read})
 
 	// Run's work happens on its own goroutine, so an unrecovered panic here
 	// takes down the whole process rather than failing this test.
@@ -537,7 +545,7 @@ func TestRunRecoversFromToolPanic(t *testing.T) {
 
 func TestRunStopsWhenContextIsCancelled(t *testing.T) {
 	provider := &blockingProvider{started: make(chan struct{})}
-	a := New(provider, nil)
+	a := newAgent(provider, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	events := a.Run(ctx, "hi")
@@ -554,7 +562,7 @@ func TestRunStopsWhenContextIsCancelled(t *testing.T) {
 
 func TestModelsComeFromTheProvider(t *testing.T) {
 	provider := &scriptedProvider{models: []Model{{ID: "a", DisplayName: "A"}}}
-	a := New(provider, nil)
+	a := newAgent(provider, nil)
 
 	got, err := a.Models(context.Background())
 	if err != nil {
@@ -566,12 +574,110 @@ func TestModelsComeFromTheProvider(t *testing.T) {
 	}
 }
 
+// A model is served by exactly one API, so switching models is what switches
+// providers: nothing else says which one a turn talks to.
+func TestSetModelSwitchesTheProviderStreamedAgainst(t *testing.T) {
+	reply := func() [][]Event {
+		return [][]Event{{ResponseEvent{Response: Response{Message: assistantMessage(TextBlock{Text: "hi"}), StopReason: StopReasonEndTurn}}}}
+	}
+	first, second := &scriptedProvider{turns: reply()}, &scriptedProvider{turns: reply()}
+
+	a := New(nil)
+	a.SetModel(Model{Provider: ProviderAnthropic, ID: "claude-x"}, first)
+	collect(t, a.Run(context.Background(), "hi"))
+
+	a.SetModel(Model{Provider: ProviderOpenAI, ID: "gpt-x"}, second)
+	collect(t, a.Run(context.Background(), "hi again"))
+
+	if len(first.requests) != 1 {
+		t.Errorf("the first provider served %d turns, want only the one before the switch", len(first.requests))
+	}
+	if len(second.requests) != 1 {
+		t.Fatalf("the second provider served %d turns, want the one after the switch", len(second.requests))
+	}
+	if got := second.requests[0].Model.ID; got != "gpt-x" {
+		t.Errorf("second provider was sent model %q, want gpt-x", got)
+	}
+}
+
+// heldRetryProvider fails its first round with a retryable error, holding the
+// failure until release so a model switch can be placed between an attempt and
+// its retry.
+type heldRetryProvider struct {
+	started  chan struct{}
+	release  chan struct{}
+	calls    int
+	requests []Request
+}
+
+func (p *heldRetryProvider) Models(ctx context.Context) ([]Model, error) { return nil, nil }
+
+func (p *heldRetryProvider) Stream(ctx context.Context, req Request) <-chan Event {
+	p.calls++
+	p.requests = append(p.requests, req)
+
+	events := make(chan Event, 1)
+	if p.calls == 1 {
+		go func() {
+			close(p.started)
+			<-p.release
+			events <- ErrorEvent{Err: &RetryableError{Err: errors.New("overloaded"), After: time.Millisecond}}
+			close(events)
+		}()
+		return events
+	}
+	events <- ResponseEvent{Response: Response{Message: assistantMessage(TextBlock{Text: "hi"}), StopReason: StopReasonEndTurn}}
+	close(events)
+	return events
+}
+
+// A turn belongs to the provider it began on, retries included. Retrying
+// against whatever the user has since switched to would send one model's
+// half-finished conversation — reasoning blocks, tool calls and all — to
+// another API, which is the one thing the window cannot survive.
+func TestATurnRetriesAgainstTheProviderItStartedOn(t *testing.T) {
+	started := &heldRetryProvider{started: make(chan struct{}), release: make(chan struct{})}
+	next := &scriptedProvider{}
+
+	a := New(nil)
+	a.SetModel(Model{Provider: ProviderAnthropic, ID: "claude-x"}, started)
+	events := a.Run(context.Background(), "hi")
+	<-started.started
+
+	// The switch lands between the failed attempt and the retry
+	a.SetModel(Model{Provider: ProviderOpenAI, ID: "gpt-x"}, next)
+	close(started.release)
+	collect(t, events)
+
+	if len(next.requests) != 0 {
+		t.Errorf("the new provider served %d rounds of a turn that started on the old one", len(next.requests))
+	}
+	if started.calls != 2 {
+		t.Errorf("the original provider served %d rounds, want the attempt and its retry", started.calls)
+	}
+}
+
+// Without a model there is nobody to ask, which is worth saying rather than
+// panicking on the turn goroutine.
+func TestRunWithoutAModelReportsAnError(t *testing.T) {
+	a := New(nil)
+
+	got := collect(t, a.Run(context.Background(), "hi"))
+
+	if len(got) != 1 {
+		t.Fatalf("events = %#v, want one ErrorEvent", got)
+	}
+	if _, ok := got[0].(ErrorEvent); !ok {
+		t.Errorf("event = %#v, want an ErrorEvent", got[0])
+	}
+}
+
 func TestRunCarriesTheSelectedModelInItsRequest(t *testing.T) {
 	provider := &scriptedProvider{turns: [][]Event{{
 		ResponseEvent{Response: Response{Message: assistantMessage(TextBlock{Text: "Hello"}), StopReason: StopReasonEndTurn}},
 	}}}
-	a := New(provider, nil)
-	a.SetModel(Model{ID: "model-a", Thinking: ThinkingAdaptive})
+	a := newAgent(provider, nil)
+	a.SetModel(Model{ID: "model-a", Thinking: ThinkingAdaptive}, provider)
 
 	collect(t, a.Run(context.Background(), "hi"))
 
@@ -586,13 +692,13 @@ func TestSetModelClearsTheContextWindow(t *testing.T) {
 	provider := &scriptedProvider{turns: [][]Event{{
 		ResponseEvent{Response: Response{Message: assistantMessage(TextBlock{Text: "Hello"}), StopReason: StopReasonEndTurn}},
 	}}}
-	a := New(provider, nil)
+	a := newAgent(provider, nil)
 	collect(t, a.Run(context.Background(), "hi"))
 	if len(a.contextWindow) == 0 {
 		t.Fatal("context window is empty before switching models, nothing to clear")
 	}
 
-	a.SetModel(Model{ID: "b"})
+	a.SetModel(Model{ID: "b"}, provider)
 
 	if len(a.contextWindow) != 0 {
 		t.Errorf("context window has %d messages after switching models, want it cleared", len(a.contextWindow))
@@ -608,12 +714,12 @@ func TestOldTurnCannotAppendAfterModelSwitch(t *testing.T) {
 		release:  make(chan struct{}),
 		response: Response{Message: assistantMessage(TextBlock{Text: "old"}), StopReason: StopReasonEndTurn},
 	}
-	a := New(provider, nil)
-	a.SetModel(Model{ID: "a"})
+	a := newAgent(provider, nil)
+	a.SetModel(Model{ID: "a"}, provider)
 
 	events := a.Run(context.Background(), "old prompt")
 	<-provider.started
-	a.SetModel(Model{ID: "b"})
+	a.SetModel(Model{ID: "b"}, provider)
 	close(provider.release)
 	collect(t, events)
 
@@ -631,12 +737,12 @@ func TestOldTurnCannotRollbackNewTurnAfterModelSwitch(t *testing.T) {
 		release:  make(chan struct{}),
 		response: Response{Message: assistantMessage(TextBlock{Text: "new"}), StopReason: StopReasonEndTurn},
 	}
-	a := New(provider, nil)
+	a := newAgent(provider, nil)
 
 	oldContext, cancelOld := context.WithCancel(context.Background())
 	oldEvents := a.Run(oldContext, "old prompt")
 	<-provider.started
-	a.SetModel(Model{ID: "b"})
+	a.SetModel(Model{ID: "b"}, provider)
 
 	collect(t, a.Run(context.Background(), "new prompt"))
 	cancelOld()
@@ -652,7 +758,7 @@ func TestOldTurnCannotRollbackNewTurnAfterModelSwitch(t *testing.T) {
 // otherwise be a slice bound past the end of it.
 func TestRollbackSurvivesAModelSwitch(t *testing.T) {
 	provider := &blockingProvider{started: make(chan struct{})}
-	a := New(provider, nil)
+	a := newAgent(provider, nil)
 	a.AppendMessage(NewUserMessage([]Block{TextBlock{Text: "an earlier turn"}}))
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -660,7 +766,7 @@ func TestRollbackSurvivesAModelSwitch(t *testing.T) {
 	events := a.Run(ctx, "hi")
 	<-provider.started
 
-	a.SetModel(Model{ID: "b"})
+	a.SetModel(Model{ID: "b"}, provider)
 	cancel()
 
 	for _, event := range collect(t, events) {

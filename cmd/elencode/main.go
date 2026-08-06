@@ -51,10 +51,10 @@ func main() {
 		tools.NewEditTool(root),
 		tools.NewBashTool(root),
 	}
-	agentConfig := agent.New(providers[selectedModel.Provider], tools)
-	agentConfig.SetModel(selectedModel)
+	agentConfig := agent.New(tools)
+	agentConfig.SetModel(selectedModel, providers[selectedModel.Provider])
 
-	tui := tea.NewProgram(newModel(agentConfig, cfg, defaultCommands()))
+	tui := tea.NewProgram(newModel(agentConfig, cfg, defaultCommands(), providers[selectedModel.Provider]))
 	if _, err := tui.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
 		os.Exit(1)

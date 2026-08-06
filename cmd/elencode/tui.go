@@ -38,8 +38,12 @@ const (
 
 type model struct {
 	// agent state
-	agent  *agent.Agent
-	config config.Config // shown by /config, never otherwise read here
+	agent *agent.Agent
+	// provider serves the models this session can switch to. Held here because
+	// switching models is what switches providers, and the agent is told which
+	// client answers for the model it is given.
+	provider agent.Provider
+	config   config.Config // shown by /config, never otherwise read here
 	// in-flight turn, valid only while state is uiStateProcessing.
 	// Both are handles to this turn specifically, not to the agent.
 	events <-chan agent.Event
@@ -96,7 +100,11 @@ func (m model) quitHint() string {
 	return lipgloss.NewStyle().Foreground(menu.DescriptionColor).Render("press ctrl+c again to exit")
 }
 
-func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry) model {
+// provider is passed alongside the agent because a model switch has to say
+// which client serves the model it switches to, and the clients are the
+// caller's.
+func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry, provider agent.Provider) model {
+
 	input := textinput.New()
 	input.Placeholder = "start typing..."
 	input.SetVirtualCursor(false)
@@ -106,6 +114,7 @@ func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry)
 
 	return model{
 		agent:    agent,
+		provider: provider,
 		config:   cfg,
 		commands: registry,
 		menu:     commandmenu.New(registry),
@@ -283,7 +292,7 @@ func (m model) selectModel(chosen agent.Model) (model, tea.Cmd) {
 		m = m.endTurn()
 	}
 
-	m.agent.SetModel(chosen)
+	m.agent.SetModel(chosen, m.provider)
 	m.config.Model = chosen.ID
 
 	// Reported but not fatal: the model is switched for this session either way

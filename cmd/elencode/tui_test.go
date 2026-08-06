@@ -21,10 +21,18 @@ import (
 	"github.com/rstarc/elencode/internal/tui/transcript"
 )
 
+// newAgent is an agent already pointed at provider, which is what these tests
+// want: they care about the turn, not about which model started it.
+func newAgent(provider agent.Provider, tools []agent.Tool) *agent.Agent {
+	a := agent.New(tools)
+	a.SetModel(agent.Model{Provider: agent.ProviderAnthropic, ID: "test-model"}, provider)
+	return a
+}
+
 // newTestModel builds a model backed by an agent that is never Run, so it needs
 // no provider: only the transcript is read during rendering.
 func newTestModel() model {
-	return newModel(agent.New(nil, nil), config.Config{}, defaultCommands())
+	return newModel(newAgent(nil, nil), config.Config{}, defaultCommands(), nil)
 }
 
 // update applies msg and asserts the result is still our model type
@@ -371,8 +379,8 @@ func TestProgramFitsErrorToTerminal(t *testing.T) {
 	// and overflow is accepted, so it is not a case this can assert on.
 	for _, width := range []int{20, 30, 40, 80, 120} {
 		t.Run(fmt.Sprintf("width%d", width), func(t *testing.T) {
-			a := agent.New(failingProvider{err: errors.New("429 rate_limit_error: too many requests, slow down")}, nil)
-			tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands()), teatest.WithInitialTermSize(width, 20))
+			a := newAgent(failingProvider{err: errors.New("429 rate_limit_error: too many requests, slow down")}, nil)
+			tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil), teatest.WithInitialTermSize(width, 20))
 
 			tm.Type("hi")
 			tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -427,8 +435,8 @@ func (p *rateLimitedProvider) Stream(ctx context.Context, req agent.Request) <-c
 }
 
 func TestProgramReportsARetryAndCarriesOn(t *testing.T) {
-	a := agent.New(&rateLimitedProvider{}, nil)
-	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands()), teatest.WithInitialTermSize(80, 20))
+	a := newAgent(&rateLimitedProvider{}, nil)
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil), teatest.WithInitialTermSize(80, 20))
 
 	tm.Type("hi")
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -481,8 +489,8 @@ func (p *noisyRateLimitedProvider) Stream(ctx context.Context, req agent.Request
 // terminal, so the failed attempt's output cannot be retracted — the notice has
 // to say it is not part of the answer, or the reply reads as two answers.
 func TestRetryNoticeDisownsPrintedOutput(t *testing.T) {
-	a := agent.New(&noisyRateLimitedProvider{}, nil)
-	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands()), teatest.WithInitialTermSize(80, 20))
+	a := newAgent(&noisyRateLimitedProvider{}, nil)
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil), teatest.WithInitialTermSize(80, 20))
 
 	tm.Type("hi")
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -530,11 +538,11 @@ func TestConfigCommandOpensTheView(t *testing.T) {
 func TestConfigViewShowsLoadedConfigWithoutTheKey(t *testing.T) {
 	const key = "sk-ant-do-not-print-me"
 
-	m := newModel(agent.New(nil, nil), config.Config{
+	m := newModel(agent.New(nil), config.Config{
 		AnthropicAPIKey:     config.Secret(key),
 		Path:                "/tmp/elencode/config.json",
 		AnthropicKeyFromEnv: true,
-	}, defaultCommands())
+	}, defaultCommands(), nil)
 	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	m.configVisible = true
 
@@ -688,7 +696,7 @@ func TestStaleDisarmDoesNotDisarmAReArmedQuit(t *testing.T) {
 // while the agent is working: arming there would make an interrupt look like a
 // half-pressed quit.
 func TestCtrlCDuringATurnCancelsWithoutArming(t *testing.T) {
-	m := newModel(agent.New(failingProvider{err: errors.New("boom")}, nil), config.Config{}, defaultCommands())
+	m := newModel(newAgent(failingProvider{err: errors.New("boom")}, nil), config.Config{}, defaultCommands(), nil)
 	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	m.input.SetValue("hello")
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -710,8 +718,8 @@ func TestCtrlCDuringATurnCancelsWithoutArming(t *testing.T) {
 // Update, so it covers the command actually ending the event loop: Update
 // returning tea.Quit is not by itself proof the program exits.
 func TestProgramQuitsOnQuitCommand(t *testing.T) {
-	a := agent.New(failingProvider{err: errors.New("never asked")}, nil)
-	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands()), teatest.WithInitialTermSize(80, 20))
+	a := newAgent(failingProvider{err: errors.New("never asked")}, nil)
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil), teatest.WithInitialTermSize(80, 20))
 
 	tm.Type("/")
 	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
@@ -728,8 +736,8 @@ func TestProgramQuitsOnQuitCommand(t *testing.T) {
 // TestProgramQuitsOnSecondCtrlC drives the whole program: the first press must
 // not end the event loop and the second must.
 func TestProgramQuitsOnSecondCtrlC(t *testing.T) {
-	a := agent.New(failingProvider{err: errors.New("never asked")}, nil)
-	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands()), teatest.WithInitialTermSize(80, 20))
+	a := newAgent(failingProvider{err: errors.New("never asked")}, nil)
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil), teatest.WithInitialTermSize(80, 20))
 
 	tm.Send(ctrlC)
 	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
@@ -779,7 +787,7 @@ func newPickerModel(t *testing.T, provider agent.Provider) model {
 	if err := os.WriteFile(file, []byte(`{"anthropic_api_key":"key"}`), 0o600); err != nil {
 		t.Fatalf("writing config: %v", err)
 	}
-	m := newModel(agent.New(provider, nil), config.Config{Path: file, AnthropicAPIKey: "key"}, defaultCommands())
+	m := newModel(newAgent(provider, nil), config.Config{Path: file, AnthropicAPIKey: "key"}, defaultCommands(), provider)
 	return update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 }
 
@@ -1060,8 +1068,8 @@ func (p scriptedProvider) Models(ctx context.Context) ([]agent.Model, error) { r
 // only place the printing is real: Update hands back commands, and it is
 // bubbletea that turns them into lines above the frame.
 func TestProgramPrintsThePromptAndTheReply(t *testing.T) {
-	a := agent.New(scriptedProvider{deltas: []string{"Hel", "lo there, ", "how can I help?"}}, nil)
-	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands()), teatest.WithInitialTermSize(80, 20))
+	a := newAgent(scriptedProvider{deltas: []string{"Hel", "lo there, ", "how can I help?"}}, nil)
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil), teatest.WithInitialTermSize(80, 20))
 
 	tm.Type("hi")
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
