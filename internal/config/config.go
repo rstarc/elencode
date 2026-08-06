@@ -126,9 +126,11 @@ const (
 // Load loads the configuration file ($XDG_CONFIG_HOME/elencode/config.json) from disk
 // and unmarshals the contents into a Config, then reads any environment variables to check if they override any of the values
 func Load() (Config, error) {
-	// Defaults first: the file is unmarshalled over them, so a setting it does
-	// not mention keeps the value here rather than a zero one.
-	cfg := Config{ThinkingEnabled: true, Provider: ProviderAnthropic}
+	// Seeded before the file is unmarshalled over it, which is what a bool
+	// needs: false is both "off" and "not mentioned", so a default it does not
+	// carry into the unmarshal cannot be applied afterwards. A string can say
+	// "not mentioned" for itself, and is defaulted below instead.
+	cfg := Config{ThinkingEnabled: true}
 
 	userConfigDir, err := os.UserConfigDir()
 	if err != nil {
@@ -152,8 +154,9 @@ func Load() (Config, error) {
 		return cfg, err
 	}
 
-	// A key written as an explicit empty string means "unset", not "override the
-	// default with nothing".
+	// The one place the provider default lives: a file that never mentions it
+	// and one that writes it as an empty string both mean "unset", and both
+	// arrive here as the empty string.
 	if cfg.Provider == "" {
 		cfg.Provider = ProviderAnthropic
 	}

@@ -3,7 +3,6 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
-	"io"
 	"errors"
 	"fmt"
 	"io"
