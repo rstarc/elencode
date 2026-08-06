@@ -33,13 +33,11 @@ func NewBashTool(root fs.FS) agent.Tool {
 		RequiresApproval: true,
 		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
 			return executeBashTool(ctx, input)
-
 		},
 	}
 }
 
 func executeBashTool(ctx context.Context, input json.RawMessage) (string, error) {
-
 	// Decode input
 	var toolInput BashToolInput
 	if err := json.Unmarshal(input, &toolInput); err != nil {
@@ -62,7 +60,7 @@ func executeBashTool(ctx context.Context, input json.RawMessage) (string, error)
 	out, err := cmd.CombinedOutput()
 
 	if cmd.ProcessState == nil {
-		return "", fmt.Errorf("Failed to run command: %w", err)
+		return "", fmt.Errorf("failed to run command: %w", err)
 	}
 	// TODO: Limit tool output length, write full output to temp file instead
 	// TODO: Consider persisting the shell between tool calls instead of starting a new one each time

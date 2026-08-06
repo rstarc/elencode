@@ -636,10 +636,6 @@ func assertFitsWidth(t *testing.T, view string, width int) {
 	}
 }
 
-type errStub struct{}
-
-func (errStub) Error() string { return "stub failure" }
-
 // modelProvider serves a fixed model list.
 type modelProvider struct {
 	models []agent.Model
@@ -771,7 +767,6 @@ func TestEnterSelectsTheHighlightedModel(t *testing.T) {
 	if m.picker.Focused() {
 		t.Error("picker still open after a choice")
 	}
-
 }
 
 // TestSelectingAModelPersistsIt covers the choice outliving the session: the
