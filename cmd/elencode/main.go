@@ -54,7 +54,7 @@ func main() {
 	agentConfig := agent.New(tools)
 	agentConfig.SetModel(selectedModel, providers[selectedModel.Provider])
 
-	tui := tea.NewProgram(newModel(agentConfig, cfg, defaultCommands(), providers[selectedModel.Provider]))
+	tui := tea.NewProgram(newModel(agentConfig, cfg, defaultCommands(), providers, catalog()))
 	if _, err := tui.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
 		os.Exit(1)
@@ -142,9 +142,11 @@ func defaultCommands() commands.Registry {
 	)
 }
 
+// configWithEffectiveModel records what the session actually opened on, so the
+// config view and the picker's highlight show the model in use rather than
+// whatever the file happened to say — including nothing at all. Always the
+// qualified name: a bare id would not say who to ask for it.
 func configWithEffectiveModel(cfg config.Config, model agent.Model) config.Config {
-	if cfg.Model == "" {
-		cfg.Model = model.ID
-	}
+	cfg.Model = model.Qualified()
 	return cfg
 }

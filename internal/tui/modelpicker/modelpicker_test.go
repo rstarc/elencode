@@ -12,8 +12,8 @@ import (
 )
 
 var testModels = []agent.Model{
-	{ID: "model-one", DisplayName: "Model One"},
-	{ID: "model-two", DisplayName: "Model Two"},
+	{Provider: agent.ProviderAnthropic, ID: "model-one", DisplayName: "Model One"},
+	{Provider: agent.ProviderOpenAI, ID: "model-two", DisplayName: "Model Two"},
 }
 
 // shown builds an open picker, the state every key test starts from
@@ -50,10 +50,22 @@ func TestShowOpensThePicker(t *testing.T) {
 	}
 }
 
+// The list mixes providers, so a row that showed only the id would leave the
+// user guessing which API they are about to switch to.
+func TestEveryRowNamesItsProvider(t *testing.T) {
+	view := shown("").View()
+
+	for _, want := range testModels {
+		if !strings.Contains(view, string(want.Provider)) {
+			t.Errorf("picker does not say %q serves %q:\n%s", want.Provider, want.ID, view)
+		}
+	}
+}
+
 // TestShowStartsOnTheCurrentModel saves the user from hunting for where they
 // already are in a list of twenty.
 func TestShowStartsOnTheCurrentModel(t *testing.T) {
-	p := shown("model-two")
+	p := shown("openai/model-two")
 
 	if p.index != 1 {
 		t.Errorf("index = %d, want 1 (the model in use)", p.index)
@@ -61,7 +73,7 @@ func TestShowStartsOnTheCurrentModel(t *testing.T) {
 }
 
 func TestShowStartsAtTheTopForAnUnknownModel(t *testing.T) {
-	p := shown("model-nine")
+	p := shown("anthropic/model-nine")
 
 	if p.index != 0 {
 		t.Errorf("index = %d, want 0 when the model in use is not in the list", p.index)

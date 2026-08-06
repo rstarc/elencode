@@ -39,11 +39,14 @@ const (
 type model struct {
 	// agent state
 	agent *agent.Agent
-	// provider serves the models this session can switch to. Held here because
-	// switching models is what switches providers, and the agent is told which
+	// providers holds a client per API key found at startup, and models is
+	// every model this build knows about — including those whose provider has
+	// no key, so naming one of them can say that rather than "unknown model".
+	// Switching models is what switches providers, so the agent is told which
 	// client answers for the model it is given.
-	provider agent.Provider
-	config   config.Config // shown by /config, never otherwise read here
+	providers providerSet
+	models    []agent.Model
+	config    config.Config // shown by /config, never otherwise read here
 	// in-flight turn, valid only while state is uiStateProcessing.
 	// Both are handles to this turn specifically, not to the agent.
 	events <-chan agent.Event
@@ -66,9 +69,6 @@ type model struct {
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
 	headerPrinted bool // the session title has been printed
-	// modelsLoading drives the spinner while the list is fetched, which happens
-	// here rather than in the picker: it is an API call and needs the agent.
-	modelsLoading bool
 	// quit confirmation. quitGeneration counts armings so a disarm message left
 	// over from an earlier one cannot disarm the current one.
 	quitArmed      bool
@@ -100,10 +100,10 @@ func (m model) quitHint() string {
 	return lipgloss.NewStyle().Foreground(menu.DescriptionColor).Render("press ctrl+c again to exit")
 }
 
-// provider is passed alongside the agent because a model switch has to say
-// which client serves the model it switches to, and the clients are the
-// caller's.
-func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry, provider agent.Provider) model {
+// providers and models are passed alongside the agent because a model switch
+// has to say which client serves the model it switches to, and the clients are
+// the caller's to build.
+func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry, providers providerSet, models []agent.Model) model {
 
 	input := textinput.New()
 	input.Placeholder = "start typing..."
@@ -113,9 +113,10 @@ func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry,
 	input.CharLimit = 0
 
 	return model{
-		agent:    agent,
-		provider: provider,
-		config:   cfg,
+		agent:     agent,
+		providers: providers,
+		models:    models,
+		config:    cfg,
 		commands: registry,
 		menu:     commandmenu.New(registry),
 		picker:   modelpicker.New(),
@@ -128,16 +129,13 @@ func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry,
 // spinnerLine renders the "processing..." indicator shown above the input
 // while a turn is in flight.
 func (m model) spinnerLine() string {
-	if m.modelsLoading {
-		return "loading models" + m.spinner.View()
-	}
 	return "processing" + m.spinner.View()
 }
 
 // busy reports whether anything is in flight, and so whether the spinner row is
 // drawn rather than only reserved
 func (m model) busy() bool {
-	return m.state == uiStateProcessing || m.modelsLoading
+	return m.state == uiStateProcessing
 }
 
 // printAbove inserts rendered above the frame, where it stays: the terminal
@@ -234,51 +232,45 @@ func retryDelay(d time.Duration) string {
 	return d.Round(time.Second).String()
 }
 
-// modelsMsg carries the result of a /model lookup. choose is the model the user
-// named on the command line, empty when they asked for the picker instead.
-type modelsMsg struct {
-	models []agent.Model
-	choose string
-	err    error
-}
-
-// loadModels fetches the model list in the background, since it is an API call
-// and the UI must stay responsive while it runs.
-func (m model) loadModels(choose string) (model, tea.Cmd) {
-	m.modelsLoading = true
-
-	// Captured rather than read off m inside the closure: the command runs later,
-	// against whatever model value the loop happens to hold.
-	a := m.agent
-	fetch := func() tea.Msg {
-		models, err := a.Models(context.Background())
-		return modelsMsg{models: models, choose: choose, err: err}
-	}
-	return m, tea.Batch(fetch, m.spinner.Tick)
-}
-
-// showModels acts on a fetched model list: it either selects the model the user
-// named or opens the picker.
-func (m model) showModels(msg modelsMsg) (model, tea.Cmd) {
-	m.modelsLoading = false
-
-	if msg.err != nil {
-		return m, m.reportError(fmt.Errorf("listing models: %w", msg.err))
+// chooseModel selects the model the user named, or opens the picker when they
+// named none. Nothing is fetched: which models exist ships with the binary, and
+// which of them can be reached is whichever keys were found at startup.
+func (m model) chooseModel(name string) (model, tea.Cmd) {
+	if name == "" {
+		m.picker = m.picker.Show(m.availableModels(), m.config.Model)
+		return m, nil
 	}
 
-	if msg.choose != "" {
-		for _, candidate := range msg.models {
-			if strings.EqualFold(candidate.ID, msg.choose) {
-				return m.selectModel(candidate)
-			}
+	chosen, ok := agent.FindModel(m.models, name)
+	if !ok {
+		// The catalog is what this build knows, so an id it does not have is
+		// either a typo or a model newer than the binary — which "openai/" in
+		// front of it would reach.
+		return m, m.reportError(fmt.Errorf("unknown model: %s (name its provider, as in openai/%s, to use one this version does not know)", name, name))
+	}
+	if _, keyed := m.providers[chosen.Provider]; !keyed {
+		return m, m.reportError(fmt.Errorf("no API key for %s, so %s cannot be reached", chosen.Provider, chosen.ID))
+	}
+	return m.selectModel(chosen)
+}
+
+// unknownToTheCatalog reports whether chosen came from naming a provider
+// outright rather than from the list this build ships.
+func (m model) unknownToTheCatalog(chosen agent.Model) bool {
+	_, known := agent.FindModel(m.models, chosen.ID)
+	return !known
+}
+
+// availableModels is what the picker offers: a model whose provider has no key
+// cannot be talked to, so offering it would only produce a failed turn.
+func (m model) availableModels() []agent.Model {
+	var available []agent.Model
+	for _, candidate := range m.models {
+		if _, keyed := m.providers[candidate.Provider]; keyed {
+			available = append(available, candidate)
 		}
-		// The list was just fetched, so an unknown id is the user's typo rather
-		// than a stale cache
-		return m, m.reportError(fmt.Errorf("unknown model: %s", msg.choose))
 	}
-
-	m.picker = m.picker.Show(msg.models, m.config.Model)
-	return m, nil
+	return available
 }
 
 // selectModel switches to id, clearing the conversation the previous model
@@ -292,8 +284,8 @@ func (m model) selectModel(chosen agent.Model) (model, tea.Cmd) {
 		m = m.endTurn()
 	}
 
-	m.agent.SetModel(chosen, m.provider)
-	m.config.Model = chosen.ID
+	m.agent.SetModel(chosen, m.providers[chosen.Provider])
+	m.config.Model = chosen.Qualified()
 
 	// Reported but not fatal: the model is switched for this session either way
 	var failed tea.Cmd
@@ -303,8 +295,14 @@ func (m model) selectModel(chosen agent.Model) (model, tea.Cmd) {
 
 	// The switch changes nothing on screen by itself: what is printed stays
 	// printed, and the conversation above is no longer sent to anyone. The
-	// notice is the only thing that says so.
-	notice := transcript.Notice("switched to "+chosen.ID+" (context cleared)", m.width)
+	// notice is the only thing that says so — including that a model the
+	// catalog has never heard of runs without thinking, which otherwise looks
+	// like reasoning quietly breaking.
+	said := "switched to " + chosen.Qualified() + " (context cleared)"
+	if m.unknownToTheCatalog(chosen) {
+		said = "switched to " + chosen.Qualified() + " (context cleared, no thinking: unknown model)"
+	}
+	notice := transcript.Notice(said, m.width)
 
 	// Sequenced, not batched: these have to reach the scrollback in this order
 	return m, tea.Sequence(printAbove(interrupted), printAbove(notice), failed)
@@ -476,7 +474,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case commands.ChooseModelMsg:
-		return m.loadModels(msg.ID)
+		return m.chooseModel(msg.ID)
 
 	case commands.QuitMsg:
 		// Abandon any in-flight turn, as ctrl+c does, so its goroutine unblocks
@@ -497,9 +495,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case modelpicker.ClosedMsg:
 		// The picker closed itself; there is nothing left to undo here.
 		return m, nil
-
-	case modelsMsg:
-		return m.showModels(msg)
 
 	case quitDisarmMsg:
 		// Ignore a message from an earlier arming: the user has since disarmed and

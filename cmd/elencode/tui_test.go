@@ -32,7 +32,7 @@ func newAgent(provider agent.Provider, tools []agent.Tool) *agent.Agent {
 // newTestModel builds a model backed by an agent that is never Run, so it needs
 // no provider: only the transcript is read during rendering.
 func newTestModel() model {
-	return newModel(newAgent(nil, nil), config.Config{}, defaultCommands(), nil)
+	return newModel(newAgent(nil, nil), config.Config{}, defaultCommands(), nil, nil)
 }
 
 // update applies msg and asserts the result is still our model type
@@ -380,7 +380,7 @@ func TestProgramFitsErrorToTerminal(t *testing.T) {
 	for _, width := range []int{20, 30, 40, 80, 120} {
 		t.Run(fmt.Sprintf("width%d", width), func(t *testing.T) {
 			a := newAgent(failingProvider{err: errors.New("429 rate_limit_error: too many requests, slow down")}, nil)
-			tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil), teatest.WithInitialTermSize(width, 20))
+			tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil, nil), teatest.WithInitialTermSize(width, 20))
 
 			tm.Type("hi")
 			tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -436,7 +436,7 @@ func (p *rateLimitedProvider) Stream(ctx context.Context, req agent.Request) <-c
 
 func TestProgramReportsARetryAndCarriesOn(t *testing.T) {
 	a := newAgent(&rateLimitedProvider{}, nil)
-	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil), teatest.WithInitialTermSize(80, 20))
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil, nil), teatest.WithInitialTermSize(80, 20))
 
 	tm.Type("hi")
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -490,7 +490,7 @@ func (p *noisyRateLimitedProvider) Stream(ctx context.Context, req agent.Request
 // to say it is not part of the answer, or the reply reads as two answers.
 func TestRetryNoticeDisownsPrintedOutput(t *testing.T) {
 	a := newAgent(&noisyRateLimitedProvider{}, nil)
-	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil), teatest.WithInitialTermSize(80, 20))
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil, nil), teatest.WithInitialTermSize(80, 20))
 
 	tm.Type("hi")
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -542,7 +542,7 @@ func TestConfigViewShowsLoadedConfigWithoutTheKey(t *testing.T) {
 		AnthropicAPIKey:     config.Secret(key),
 		Path:                "/tmp/elencode/config.json",
 		AnthropicKeyFromEnv: true,
-	}, defaultCommands(), nil)
+	}, defaultCommands(), nil, nil)
 	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	m.configVisible = true
 
@@ -696,7 +696,7 @@ func TestStaleDisarmDoesNotDisarmAReArmedQuit(t *testing.T) {
 // while the agent is working: arming there would make an interrupt look like a
 // half-pressed quit.
 func TestCtrlCDuringATurnCancelsWithoutArming(t *testing.T) {
-	m := newModel(newAgent(failingProvider{err: errors.New("boom")}, nil), config.Config{}, defaultCommands(), nil)
+	m := newModel(newAgent(failingProvider{err: errors.New("boom")}, nil), config.Config{}, defaultCommands(), nil, nil)
 	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	m.input.SetValue("hello")
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -719,7 +719,7 @@ func TestCtrlCDuringATurnCancelsWithoutArming(t *testing.T) {
 // returning tea.Quit is not by itself proof the program exits.
 func TestProgramQuitsOnQuitCommand(t *testing.T) {
 	a := newAgent(failingProvider{err: errors.New("never asked")}, nil)
-	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil), teatest.WithInitialTermSize(80, 20))
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil, nil), teatest.WithInitialTermSize(80, 20))
 
 	tm.Type("/")
 	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
@@ -737,7 +737,7 @@ func TestProgramQuitsOnQuitCommand(t *testing.T) {
 // not end the event loop and the second must.
 func TestProgramQuitsOnSecondCtrlC(t *testing.T) {
 	a := newAgent(failingProvider{err: errors.New("never asked")}, nil)
-	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil), teatest.WithInitialTermSize(80, 20))
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil, nil), teatest.WithInitialTermSize(80, 20))
 
 	tm.Send(ctrlC)
 	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
@@ -759,85 +759,85 @@ func assertFitsWidth(t *testing.T, view string, width int) {
 	}
 }
 
-// modelProvider serves a fixed model list.
-type modelProvider struct {
-	models []agent.Model
-}
+type errStub struct{}
 
-func (p *modelProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
+func (errStub) Error() string { return "stub failure" }
+
+// recordingProvider answers every turn with the same reply and keeps the
+// requests it was given, so a test can tell which provider a turn went to.
+type recordingProvider struct{ requests []agent.Request }
+
+func (p *recordingProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
+	p.requests = append(p.requests, req)
+
 	events := make(chan agent.Event, 1)
-	events <- agent.ErrorEvent{Err: errors.New("never asked")}
+	events <- agent.ResponseEvent{Response: agent.Response{
+		Message:    agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{agent.TextBlock{Text: "hi"}}},
+		StopReason: agent.StopReasonEndTurn,
+	}}
 	close(events)
 	return events
 }
 
-func (p *modelProvider) Models(ctx context.Context) ([]agent.Model, error) { return p.models, nil }
+func (p *recordingProvider) Models(ctx context.Context) ([]agent.Model, error) { return nil, nil }
+
+// keyed is the provider set a test session was started with: which providers
+// have a client is the only thing that decides what the picker offers.
+func keyed(names ...agent.ProviderName) providerSet {
+	providers := providerSet{}
+	for _, name := range names {
+		providers[name] = &recordingProvider{}
+	}
+	return providers
+}
 
 var testModels = []agent.Model{
-	{ID: "model-one", DisplayName: "Model One"},
-	{ID: "model-two", DisplayName: "Model Two"},
+	{Provider: agent.ProviderAnthropic, ID: "model-one", DisplayName: "Model One"},
+	{Provider: agent.ProviderOpenAI, ID: "model-two", DisplayName: "Model Two"},
 }
 
 // newPickerModel builds a sized model whose config points at a writable file,
 // so selecting a model can save without failing on the path.
-func newPickerModel(t *testing.T, provider agent.Provider) model {
+func newPickerModel(t *testing.T, providers providerSet, models []agent.Model) model {
 	t.Helper()
 
 	file := path.Join(t.TempDir(), "config.json")
 	if err := os.WriteFile(file, []byte(`{"anthropic_api_key":"key"}`), 0o600); err != nil {
 		t.Fatalf("writing config: %v", err)
 	}
-	m := newModel(newAgent(provider, nil), config.Config{Path: file, AnthropicAPIKey: "key"}, defaultCommands(), provider)
+	cfg := config.Config{Path: file, AnthropicAPIKey: "key"}
+	m := newModel(agent.New(nil), cfg, defaultCommands(), providers, models)
 	return update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 }
 
-// modelsFrom runs cmd and returns the model list message it produced. It
-// follows a batch, since the fetch is issued alongside the spinner tick.
-func modelsFrom(t *testing.T, cmd tea.Cmd) modelsMsg {
+// openPicker runs /model with no argument, which is how the picker is opened
+func openPicker(t *testing.T, m model) model {
 	t.Helper()
 
-	if cmd == nil {
-		t.Fatal("command is nil, want one that fetches the model list")
-	}
-	switch msg := cmd().(type) {
-	case modelsMsg:
-		return msg
-	case tea.BatchMsg:
-		for _, sub := range msg {
-			if got, ok := sub().(modelsMsg); ok {
-				return got
-			}
-		}
-	}
-	t.Fatal("command produced no model list message")
-	return modelsMsg{}
+	m, _ = enter(t, typeText(t, m, "/model"))
+	return m
 }
 
-func TestModelCommandFetchesTheModelList(t *testing.T) {
-	m := typeText(t, newPickerModel(t, &modelProvider{models: testModels}), "/model")
+// Which models exist ships with the binary, so there is nothing to wait for:
+// no request, no spinner, no way for opening the picker to fail.
+func TestModelCommandOpensThePickerWithoutAnAPICall(t *testing.T) {
+	m := typeText(t, newPickerModel(t, keyed(agent.ProviderAnthropic), testModels), "/model")
 
-	m, cmd := enter(t, m)
+	m, _ = enter(t, m)
 
-	if !m.modelsLoading {
-		t.Error("/model did not start loading the model list")
+	if !m.picker.Focused() {
+		t.Error("/model did not open the picker")
 	}
 	if m.input.Value() != "" {
 		t.Errorf("input = %q, want it cleared once the command ran", m.input.Value())
 	}
-	got := modelsFrom(t, cmd)
-	if len(got.models) != len(testModels) {
-		t.Errorf("fetched %d models, want %d", len(got.models), len(testModels))
-	}
 }
 
-func TestModelListOpensThePicker(t *testing.T) {
-	m := newPickerModel(t, &modelProvider{models: testModels})
+func TestThePickerOffersEveryKeyedProvidersModels(t *testing.T) {
+	m := newPickerModel(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI), testModels)
 
-	m = update(t, m, modelsMsg{models: testModels})
+	m = openPicker(t, m)
 
-	if m.modelsLoading {
-		t.Error("still loading once the list arrived")
-	}
 	view := m.View().Content
 	for _, want := range testModels {
 		if !strings.Contains(view, want.ID) {
@@ -846,56 +846,85 @@ func TestModelListOpensThePicker(t *testing.T) {
 	}
 }
 
+// A model nobody has a key for cannot be talked to, so offering it would only
+// produce a failed turn.
+func TestThePickerOmitsModelsOfAProviderWithoutAKey(t *testing.T) {
+	m := newPickerModel(t, keyed(agent.ProviderAnthropic), testModels)
+
+	m = openPicker(t, m)
+
+	view := m.View().Content
+	if !strings.Contains(view, "model-one") {
+		t.Errorf("picker does not offer the keyed provider's model:\n%s", view)
+	}
+	if strings.Contains(view, "model-two") {
+		t.Errorf("picker offers a model whose provider has no key:\n%s", view)
+	}
+}
+
+// Naming it outright deserves a better answer than "unknown model": the model
+// exists, the key does not.
+func TestChoosingAModelWhoseProviderHasNoKeyIsReported(t *testing.T) {
+	m := typeText(t, newPickerModel(t, keyed(agent.ProviderAnthropic), testModels), "/model model-two")
+
+	_, cmd := enter(t, m)
+
+	got := printed(t, cmd)
+	if !strings.Contains(got, "openai") || !strings.Contains(got, "key") {
+		t.Errorf("printed %q, want it to say openai has no API key", got)
+	}
+}
+
 // TestModelPickerStartsOnTheCurrentModel saves the user from hunting for where
 // they already are in a list of twenty.
 func TestModelPickerStartsOnTheCurrentModel(t *testing.T) {
-	m := newPickerModel(t, &modelProvider{models: testModels})
-	m.config.Model = "model-two"
+	m := newPickerModel(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI), testModels)
+	m.config.Model = "openai/model-two"
 
-	m = update(t, m, modelsMsg{models: testModels})
+	m = openPicker(t, m)
 
 	// Where the highlight starts is the picker's own business; what it means
 	// here is that Enter, pressed without arrowing, keeps the model in use.
 	m, _ = enter(t, m)
-	if m.config.Model != "model-two" {
+	if m.config.Model != "openai/model-two" {
 		t.Errorf("config model = %q, want the picker to open on the model in use", m.config.Model)
 	}
 }
 
 func TestEffectiveDefaultModelIsShownAndSelected(t *testing.T) {
-	m := newPickerModel(t, &modelProvider{models: testModels})
-	m.config = configWithEffectiveModel(m.config, agent.Model{ID: "model-two"})
+	m := newPickerModel(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI), testModels)
+	m.config = configWithEffectiveModel(m.config, testModels[1])
 
 	if view := renderConfig(m.config, 80); !strings.Contains(view, "model-two") {
 		t.Errorf("config view does not show the effective model:\n%s", view)
 	}
 
-	m = update(t, m, modelsMsg{models: testModels})
+	m = openPicker(t, m)
 	m, _ = enter(t, m)
-	if m.config.Model != "model-two" {
+	if m.config.Model != "openai/model-two" {
 		t.Errorf("config model = %q, want the picker to open on the effective default", m.config.Model)
 	}
 }
 
 func TestEnterSelectsTheHighlightedModel(t *testing.T) {
-	provider := &modelProvider{models: testModels}
-	m := update(t, newPickerModel(t, provider), modelsMsg{models: testModels})
+	m := openPicker(t, newPickerModel(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI), testModels))
 
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
 	m, _ = enter(t, m)
 
-	if m.config.Model != "model-two" {
-		t.Errorf("config model = %q, want %q", m.config.Model, "model-two")
+	if m.config.Model != "openai/model-two" {
+		t.Errorf("config model = %q, want %q", m.config.Model, "openai/model-two")
 	}
 	if m.picker.Focused() {
 		t.Error("picker still open after a choice")
 	}
 }
 
-// TestSelectingAModelPersistsIt covers the choice outliving the session: the
-// config file is what the next start reads.
-func TestSelectingAModelPersistsIt(t *testing.T) {
-	m := update(t, newPickerModel(t, &modelProvider{models: testModels}), modelsMsg{models: testModels})
+// TestSelectingAModelSavesItsQualifiedName covers the choice outliving the
+// session: the config file is what the next start reads, and a bare id would
+// not say who to ask for it.
+func TestSelectingAModelSavesItsQualifiedName(t *testing.T) {
+	m := openPicker(t, newPickerModel(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI), testModels))
 
 	m, _ = enter(t, m)
 
@@ -903,57 +932,75 @@ func TestSelectingAModelPersistsIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading the saved config: %v", err)
 	}
-	if !strings.Contains(string(body), "model-one") {
+	if !strings.Contains(string(body), "anthropic/model-one") {
 		t.Errorf("config file does not name the chosen model:\n%s", body)
 	}
 }
 
-// TestSelectingAModelClearsTheTranscript covers what a switch means: the
-// conversation so far belongs to the model that produced it.
+// Switching models is what switches providers: the next turn has to go to
+// whoever serves the model just chosen.
+func TestSelectingAModelSwitchesTheProviderItStreamsTo(t *testing.T) {
+	providers := keyed(agent.ProviderAnthropic, agent.ProviderOpenAI)
+	m := openPicker(t, newPickerModel(t, providers, testModels))
+
+	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = enter(t, m)
+
+	for range m.agent.Run(context.Background(), "hi") {
+	}
+
+	openaiClient := providers[agent.ProviderOpenAI].(*recordingProvider)
+	anthropicClient := providers[agent.ProviderAnthropic].(*recordingProvider)
+	if len(openaiClient.requests) != 1 {
+		t.Errorf("the chosen model's provider served %d turns, want 1", len(openaiClient.requests))
+	}
+	if len(anthropicClient.requests) != 0 {
+		t.Errorf("the previous provider served %d turns after the switch", len(anthropicClient.requests))
+	}
+}
 
 func TestModelArgumentSelectsWithoutOpeningThePicker(t *testing.T) {
-	provider := &modelProvider{models: testModels}
-	m := typeText(t, newPickerModel(t, provider), "/model model-two")
+	m := typeText(t, newPickerModel(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI), testModels), "/model model-two")
 
-	m, cmd := enter(t, m)
-	m = update(t, m, modelsFrom(t, cmd))
+	m, _ = enter(t, m)
 
 	if m.picker.Focused() {
 		t.Error("picker opened for a model named on the command line")
 	}
+	if m.config.Model != "openai/model-two" {
+		t.Errorf("config model = %q, want the model named on the command line", m.config.Model)
+	}
+}
+
+// The qualified form reaches a model released since this build: the catalog
+// cannot know it, but its provider can still be named.
+func TestAQualifiedModelOutsideTheCatalogIsSelected(t *testing.T) {
+	m := typeText(t, newPickerModel(t, keyed(agent.ProviderOpenAI), testModels), "/model openai/gpt-brand-new")
+
+	m, cmd := enter(t, m)
+
+	if m.config.Model != "openai/gpt-brand-new" {
+		t.Errorf("config model = %q, want the model named on the command line", m.config.Model)
+	}
+	// Nothing is known about it, so it is run without thinking — silently
+	// enough to look like a bug unless the notice says so.
+	if got := printed(t, cmd); !strings.Contains(got, "thinking") {
+		t.Errorf("printed %q, want it to say the model runs without thinking", got)
+	}
 }
 
 func TestUnknownModelArgumentIsReported(t *testing.T) {
-	provider := &modelProvider{models: testModels}
-	m := typeText(t, newPickerModel(t, provider), "/model model-nine")
+	m := typeText(t, newPickerModel(t, keyed(agent.ProviderAnthropic), testModels), "/model model-nine")
 
-	m, cmd := enter(t, m)
-	_, cmd = updateCmd(t, m, modelsFrom(t, cmd))
+	_, cmd := enter(t, m)
 
 	if got := printed(t, cmd); !strings.Contains(got, "model-nine") {
 		t.Errorf("printed %q, want it to name the model asked for", got)
 	}
 }
 
-func TestFailureToListModelsIsReported(t *testing.T) {
-	m := newPickerModel(t, failingProvider{err: errors.New("503 overloaded")})
-
-	m, cmd := updateCmd(t, m, modelsMsg{err: errors.New("503 overloaded")})
-
-	if m.modelsLoading {
-		t.Error("still loading after the request failed")
-	}
-	if m.picker.Focused() {
-		t.Error("picker opened with no models to show")
-	}
-	if got := printed(t, cmd); !strings.Contains(got, "503 overloaded") {
-		t.Errorf("printed %q, want it to say why the model list failed", got)
-	}
-}
-
 func TestEscClosesTheModelPicker(t *testing.T) {
-	provider := &modelProvider{models: testModels}
-	m := update(t, newPickerModel(t, provider), modelsMsg{models: testModels})
+	m := openPicker(t, newPickerModel(t, keyed(agent.ProviderAnthropic), testModels))
 
 	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 
@@ -965,7 +1012,7 @@ func TestEscClosesTheModelPicker(t *testing.T) {
 // TestModelPickerSwallowsTypedKeys keeps the picker's keyboard to itself: a
 // keystroke that reached the input would open the command menu underneath it.
 func TestModelPickerSwallowsTypedKeys(t *testing.T) {
-	m := update(t, newPickerModel(t, &modelProvider{models: testModels}), modelsMsg{models: testModels})
+	m := openPicker(t, newPickerModel(t, keyed(agent.ProviderAnthropic), testModels))
 
 	m = typeText(t, m, "/")
 
@@ -982,21 +1029,12 @@ func TestModelPickerFitsTheTerminal(t *testing.T) {
 
 	var many []agent.Model
 	for i := range 40 {
-		many = append(many, agent.Model{ID: fmt.Sprintf("model-%d", i), DisplayName: "Model"})
+		many = append(many, agent.Model{Provider: agent.ProviderAnthropic, ID: fmt.Sprintf("model-%d", i), DisplayName: "Model"})
 	}
-	m := update(t, newPickerModel(t, &modelProvider{models: many}), modelsMsg{models: many})
+	m := openPicker(t, newPickerModel(t, keyed(agent.ProviderAnthropic), many))
 
 	if got := lipgloss.Height(m.View().Content); got > height {
 		t.Errorf("view is %d rows tall with the picker open, want <= %d", got, height)
-	}
-}
-
-func TestViewShowsSpinnerWhileLoadingModels(t *testing.T) {
-	m := newPickerModel(t, &modelProvider{models: testModels})
-	m.modelsLoading = true
-
-	if view := m.View().Content; !strings.Contains(view, "loading models") {
-		t.Errorf("view does not say the model list is loading:\n%s", view)
 	}
 }
 
@@ -1069,7 +1107,7 @@ func (p scriptedProvider) Models(ctx context.Context) ([]agent.Model, error) { r
 // bubbletea that turns them into lines above the frame.
 func TestProgramPrintsThePromptAndTheReply(t *testing.T) {
 	a := newAgent(scriptedProvider{deltas: []string{"Hel", "lo there, ", "how can I help?"}}, nil)
-	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil), teatest.WithInitialTermSize(80, 20))
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil, nil), teatest.WithInitialTermSize(80, 20))
 
 	tm.Type("hi")
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -1091,7 +1129,7 @@ func TestProgramPrintsThePromptAndTheReply(t *testing.T) {
 // TestSelectingAModelSaysSo covers the only feedback there is: the switch
 // changes nothing on screen by itself, since what is already printed stays.
 func TestSelectingAModelSaysSo(t *testing.T) {
-	m := update(t, newPickerModel(t, &modelProvider{models: testModels}), modelsMsg{models: testModels})
+	m := openPicker(t, newPickerModel(t, keyed(agent.ProviderAnthropic), testModels))
 
 	_, cmd := enter(t, m)
 

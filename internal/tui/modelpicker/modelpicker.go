@@ -34,13 +34,15 @@ func (m *Model) SetWidth(width int) { m.width = width }
 func (m Model) Focused() bool { return m.visible }
 
 // Show opens the picker on models, highlighting current so the user starts
-// where they already are rather than having to find it.
+// where they already are rather than having to find it. current is the
+// qualified name, since the list mixes providers and two of them could offer
+// the same id.
 func (m Model) Show(models []agent.Model, current string) Model {
 	m.models = models
 	m.visible = true
 	m.index = 0
 	for i, candidate := range models {
-		if candidate.ID == current {
+		if candidate.Qualified() == current {
 			m.index = i
 		}
 	}
@@ -86,8 +88,9 @@ func (m Model) close() Model {
 }
 
 // View renders the picker, or "" while it is closed. The id is shown first
-// because it is what the user types after /model; the display name is only
-// there to recognise it by.
+// because it is what the user types after /model; the provider and display
+// name are there to recognise it by, and the list mixes providers, so which
+// one a model belongs to has to be on the row.
 func (m Model) View() string {
 	if !m.visible {
 		return ""
@@ -95,7 +98,7 @@ func (m Model) View() string {
 
 	items := make([]menu.Item, len(m.models))
 	for i, model := range m.models {
-		items[i] = menu.Item{Name: model.ID, Description: model.DisplayName}
+		items[i] = menu.Item{Name: model.ID, Description: string(model.Provider) + " · " + model.DisplayName}
 	}
-	return menu.Render(menu.Align(items), m.index, m.width, "the API offered no models")
+	return menu.Render(menu.Align(items), m.index, m.width, "no models available")
 }
