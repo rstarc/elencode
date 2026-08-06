@@ -17,8 +17,10 @@ const (
 	Marker         = "│"
 )
 
-var MarkerColor = lipgloss.BrightBlue
-var NameColor = lipgloss.BrightBlue
+var (
+	MarkerColor = lipgloss.BrightBlue
+	NameColor   = lipgloss.BrightBlue
+)
 
 // DescriptionColor is the dim gray used for text that is there to be glanced
 // at rather than read: descriptions, key hints.
@@ -28,8 +30,10 @@ var DescriptionColor = lipgloss.BrightBlack
 // selection hard to pick out, since the highlight then differed by its marker
 // alone; leaving the rest in the terminal's default text color lets the
 // selected row stand out on both columns.
-var selectedNameColor = lipgloss.BrightCyan
-var selectedDescriptionColor = lipgloss.White
+var (
+	selectedNameColor        = lipgloss.BrightCyan
+	selectedDescriptionColor = lipgloss.White
+)
 
 // MaxRows caps how tall a menu may grow, leaving the transcript some room
 const MaxRows = 10

@@ -90,7 +90,6 @@ const ANTHROPIC_API_KEY_ENV_VAR_NAME = "ANTHROPIC_API_KEY"
 // Load loads the configuration file ($XDG_CONFIG_HOME/elencode/config.json) from disk
 // and unmarshals the contents into a Config, then reads any environment variables to check if they override any of the values
 func Load() (Config, error) {
-
 	// Defaults first: the file is unmarshalled over them, so a setting it does
 	// not mention keeps the value here rather than a zero one.
 	cfg := Config{ThinkingEnabled: true}

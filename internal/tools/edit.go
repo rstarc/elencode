@@ -35,13 +35,11 @@ func NewEditTool(root fs.FS) agent.Tool {
 		RequiresApproval: true,
 		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
 			return editFile(ctx, input, root)
-
 		},
 	}
 }
 
 func editFile(ctx context.Context, input json.RawMessage, root fs.FS) (string, error) {
-
 	// Decode input
 	var toolInput EditToolInput
 	if err := json.Unmarshal(input, &toolInput); err != nil {

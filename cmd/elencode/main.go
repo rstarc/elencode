@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"runtime/debug"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/rstarc/elencode/internal/agent"
@@ -14,6 +15,12 @@ import (
 )
 
 func main() {
+	// Before the config load, so `elencode version` works without an API key.
+	if len(os.Args) > 1 && os.Args[1] == "version" {
+		bi, ok := debug.ReadBuildInfo()
+		fmt.Println(versionLine(version, bi, ok))
+		return
+	}
 
 	// Load config
 	cfg, err := config.Load()
@@ -56,7 +63,6 @@ func main() {
 		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
 		os.Exit(1)
 	}
-
 }
 
 // defaultCommands is the set of slash commands a session offers. Assembled here

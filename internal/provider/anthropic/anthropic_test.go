@@ -3,7 +3,7 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
-	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -54,7 +54,6 @@ func TestToBlocksConvertsKnownVariants(t *testing.T) {
 	]}`)
 
 	blocks, err := toBlocks(msg)
-
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -86,7 +85,6 @@ func TestToStopReasonRejectsUnknown(t *testing.T) {
 
 func TestToStopReasonConvertsKnown(t *testing.T) {
 	got, err := toStopReason(sdk.StopReasonToolUse)
-
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -118,7 +116,6 @@ func TestToMessagesConvertsEveryBlockKind(t *testing.T) {
 	}
 
 	got, err := toMessages(msgs)
-
 	if err != nil {
 		t.Fatalf("err = %v, want nil", err)
 	}
@@ -146,7 +143,9 @@ func TestModelsListsWhatTheAPIReturns(t *testing.T) {
 			t.Errorf("requested %q, want the models endpoint", r.URL.Path)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, body)
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer server.Close()
 
@@ -342,7 +341,9 @@ func TestModelsReportWhatThinkingTheyAccept(t *testing.T) {
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, body)
+		if _, err := io.WriteString(w, body); err != nil {
+			t.Errorf("write response: %v", err)
+		}
 	}))
 	defer server.Close()
 

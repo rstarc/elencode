@@ -5,11 +5,17 @@ simple, concrete solution over the general one.
 
 ## Commands
 
-- `make build` — builds `./bin/elencode`
+- `make build` — builds `./bin/elencode`, stamping in the version
 - `make test` — runs `go vet ./...` and `go test -race ./...`; must pass before a change is done
 - `make run` — builds and runs the TUI (needs an API key)
+- `make lint` — `golangci-lint run`, which reports gofumpt formatting too
+- `make fmt` — applies the formatting `make lint` checks for
+- `make vuln` — `govulncheck ./...`
 
-Do not call `go build`/`go test` directly; use the Makefile targets.
+Do not call `go build`/`go test` directly; use the Makefile targets. This applies to
+local development only — CI calls the Go toolchain directly, see
+`.github/workflows/ci.yml`. Versioning and the checks are documented in
+`docs/development.md`.
 
 ## Working agreement
 

@@ -97,7 +97,6 @@ func (m model) quitHint() string {
 }
 
 func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry) model {
-
 	input := textinput.New()
 	input.Placeholder = "start typing..."
 	input.SetVirtualCursor(false)

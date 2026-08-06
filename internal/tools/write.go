@@ -38,7 +38,6 @@ func NewWriteTool(root fs.FS) agent.Tool {
 }
 
 func createOrReplaceFile(ctx context.Context, input json.RawMessage) (string, error) {
-
 	// Decode input
 	var toolInput writeToolInput
 	err := json.Unmarshal(input, &toolInput)

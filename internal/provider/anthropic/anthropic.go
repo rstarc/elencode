@@ -213,7 +213,6 @@ func emit(ctx context.Context, events chan<- agent.Event, ev agent.Event) bool {
 }
 
 func toolParam(t agent.Tool) *sdk.ToolParam {
-
 	toolSchema := t.InputSchema
 
 	return &sdk.ToolParam{

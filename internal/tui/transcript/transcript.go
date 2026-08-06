@@ -41,17 +41,23 @@ var textBlockColor = lipgloss.BrightBlack
 
 // thinkingColor is the dim gray the UI uses everywhere for text that is there
 // to be glanced at rather than read: menu descriptions, key hints.
-var thinkingColor = lipgloss.BrightBlack
-var toolUseColor = lipgloss.BrightBlue
-var errorColor = lipgloss.Red
+var (
+	thinkingColor = lipgloss.BrightBlack
+	toolUseColor  = lipgloss.BrightBlue
+	errorColor    = lipgloss.Red
+)
 
 // userBackground and userForeground give a user message a light gray
 // background, like a chat bubble, to set it apart from the assistant's.
-var userBackground = lipgloss.White
-var userForeground = lipgloss.Black
+var (
+	userBackground = lipgloss.White
+	userForeground = lipgloss.Black
+)
 
-var noticeColor = lipgloss.BrightBlack
-var headerColor = lipgloss.BrightBlue
+var (
+	noticeColor = lipgloss.BrightBlack
+	headerColor = lipgloss.BrightBlue
+)
 
 // thinkingStyle is how reasoning is set apart from the answer it led to
 func thinkingStyle() lipgloss.Style {
