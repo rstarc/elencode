@@ -19,6 +19,9 @@ import (
 // assumes no thinking. Deliberately absent: the -pro tiers and the codex
 // variants, which this build has never been run against.
 var models = []agent.Model{
+	{ID: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna", Thinking: agent.ThinkingEffort},
+	{ID: "gpt-5.6-sol", DisplayName: "GPT-5.6 Sol", Thinking: agent.ThinkingEffort},
+	{ID: "gpt-5.6-terra", DisplayName: "GPT-5.6 Terra", Thinking: agent.ThinkingEffort},
 	{ID: "gpt-5.5", DisplayName: "GPT-5.5", Thinking: agent.ThinkingEffort},
 	{ID: "gpt-5.4", DisplayName: "GPT-5.4", Thinking: agent.ThinkingEffort},
 	{ID: "gpt-5.4-mini", DisplayName: "GPT-5.4 mini", Thinking: agent.ThinkingEffort},
