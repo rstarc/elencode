@@ -28,11 +28,17 @@ local development only — CI calls the Go toolchain directly, see
 
 ## Layout
 
-- `cmd/elencode` — entrypoint and the Bubble Tea TUI model
+- `cmd/elencode` — entrypoint and the Bubble Tea TUI model. Owns the provider
+  clients: it builds one per API key found and hands the agent whichever serves the
+  model in use.
 - `internal/agent` — provider-agnostic agent loop, message/block types, `Event` stream
-- `internal/provider/anthropic` — Anthropic implementation of `agent.Provider`
+- `internal/provider/anthropic`, `internal/provider/openai` — implementations of
+  `agent.Provider`, each with the hand-maintained catalog of its own models
+- `internal/provider/retry` — the parts of "is this failure worth another attempt"
+  that do not depend on which API answered
 - `internal/tools` — read, write, edit and bash tools, rooted at the working directory
-- `internal/config` — `$XDG_CONFIG_HOME/elencode/config.json`, overridden by `ANTHROPIC_API_KEY`
+- `internal/config` — `$XDG_CONFIG_HOME/elencode/config.json`, overridden by
+  `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
 
 ## TUI
 
@@ -52,6 +58,13 @@ local development only — CI calls the Go toolchain directly, see
 
 - `internal/agent` must not import a provider SDK. `agent.Provider` is the boundary;
   anything vendor-specific is translated inside `internal/provider/...`.
+- The config file names no provider: every provider with an API key is loaded, and a
+  model says which one serves it (`agent.Model.Provider`). Switching models is what
+  switches providers, so `SetModel` takes both, and a turn keeps the provider it
+  started on — retries included.
+- Which models exist is shipped, not fetched: each provider's `Catalog()` is edited by
+  hand. A model missing from it is still reachable as `provider/id`, which assumes it
+  cannot reason — the assumption no request is ever rejected for.
 - Tests use the standard library only (plus `teatest` for the TUI). Fakes such as
   `scriptedProvider` are hand-written in the test file that needs them — no mocking library.
 - Sum types are emulated as an interface with an unexported marker method (see `agent.Event`).

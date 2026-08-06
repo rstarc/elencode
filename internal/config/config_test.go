@@ -446,6 +446,31 @@ func TestSaveWritesNeitherEnvironmentKey(t *testing.T) {
 	}
 }
 
+// A setting this version no longer has means nothing, and leaving it in the
+// file only invites the reader to think it still does something.
+func TestSaveDropsTheRetiredProviderSetting(t *testing.T) {
+	file := writeConfig(t, `{"provider":"openai","anthropic_api_key":"`+realKey+`","keep-me":"yes"}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	saved := readConfig(t, file)
+	if _, ok := saved["provider"]; ok {
+		t.Error("the retired provider setting survived a save")
+	}
+	// Only this one: a setting a later version might know still has to survive
+	if saved["keep-me"] != "yes" {
+		t.Errorf("keep-me = %v, want an unknown setting left alone", saved["keep-me"])
+	}
+}
+
 // TestLoadRejectsUnknownThinkingEffort: a typo like "hihg" must fail loudly
 // rather than silently clamping to medium.
 func TestLoadRejectsUnknownThinkingEffort(t *testing.T) {

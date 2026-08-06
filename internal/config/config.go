@@ -78,6 +78,11 @@ func (c Config) Save() error {
 	if err := json.Unmarshal(updates, &settings); err != nil {
 		return err
 	}
+	// "provider" used to name the one API a session talked to. A model names
+	// its own now, so the setting does nothing — and a setting that does
+	// nothing is worse left in the file than removed, since the next reader
+	// will believe it.
+	delete(settings, "provider")
 
 	body, err := json.MarshalIndent(settings, "", "  ")
 	if err != nil {
