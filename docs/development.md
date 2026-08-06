@@ -50,3 +50,7 @@ changes.
 golangci-lint is built from source against this module's toolchain instead of using
 `golangci-lint-action`: the released binaries are built with an older Go than
 `go.mod` targets, and golangci-lint refuses to run in that case.
+
+The `go` directive in `go.mod` is what CI installs, so it doubles as the toolchain
+floor. govulncheck reports standard library vulnerabilities against that version,
+which means a Go patch release is sometimes the fix for a red `vuln` job.
