@@ -25,7 +25,7 @@ const eventBuffer = 64
 const defaultModel = "gpt-5"
 
 // DefaultModelID is the model used when configuration names none.
-func DefaultModelID() string { return defaultModel }
+func DefaultModelID() string { return Default().ID }
 
 type Client struct {
 	client openai.Client

@@ -19,9 +19,6 @@ import (
 // renders, without letting an unread stream grow without bound.
 const eventBuffer = 64
 
-// defaultModel is used when the config file names none.
-const defaultModel = sdk.ModelClaudeHaiku4_5
-
 type Client struct {
 	client sdk.Client
 	// thinking asks for the model's reasoning, and effort says how hard an
@@ -45,7 +42,7 @@ func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...o
 }
 
 // DefaultModelID is the model used when configuration names none.
-func DefaultModelID() string { return string(defaultModel) }
+func DefaultModelID() string { return Default().ID }
 
 // Resolve looks up what model accepts, so the agent can put the correct
 // thinking mode into each request.
