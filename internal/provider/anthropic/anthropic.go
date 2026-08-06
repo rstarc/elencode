@@ -5,10 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
-	"time"
 
 	"github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/provider/retry"
 
 	sdk "github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -281,53 +280,27 @@ func classify(err error) error {
 	if !retryableResponse(apiErr.Type(), apiErr.StatusCode, apiErr.Response) {
 		return err
 	}
-	return &agent.RetryableError{Err: err, After: retryAfter(apiErr.Response)}
+	return &agent.RetryableError{Err: err, After: retry.After(apiErr.Response)}
 }
 
-// retryableResponse mirrors the judgement the SDK makes when it retries for
-// itself, which we switched off: the same statuses, and the same deference to
-// x-should-retry, which is the API saying so outright and overrules everything
-// else. Diverging would mean giving up on failures the vendor calls transient.
+// retryableResponse is the shared judgement plus the one thing only this API
+// has: an error type.
 //
-// The error type is consulted on top of that, and before the status, because an
+// The type is consulted after the header override and before the status, because an
 // error the API reported mid-stream carries the 200 the stream opened with
 // rather than a failure code. Judging by status alone would mark none of them,
 // and an overload arriving once a turn is under way is exactly the case the
 // agent cannot otherwise recover from.
 func retryableResponse(errType shared.ErrorType, status int, resp *http.Response) bool {
-	if resp != nil {
-		switch resp.Header.Get("x-should-retry") {
-		case "true":
-			return true
-		case "false":
-			return false
-		}
+	if override, ok := retry.HeaderOverride(resp); ok {
+		return override
 	}
 
 	if retryableTypes[errType] {
 		return true
 	}
 
-	return status == http.StatusRequestTimeout ||
-		status == http.StatusConflict ||
-		status == http.StatusTooManyRequests ||
-		status >= http.StatusInternalServerError
-}
-
-// retryAfter reads how long the API asked us to wait. Zero means it said
-// nothing and the agent should fall back to its own backoff.
-func retryAfter(resp *http.Response) time.Duration {
-	if resp == nil {
-		return 0
-	}
-	// Milliseconds first: it is the more precise of the two when both are sent.
-	if ms, err := strconv.Atoi(resp.Header.Get("Retry-After-Ms")); err == nil && ms > 0 {
-		return time.Duration(ms) * time.Millisecond
-	}
-	if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && s > 0 {
-		return time.Duration(s) * time.Second
-	}
-	return 0
+	return retry.RetryableStatus(status)
 }
 
 // emit sends ev unless the consumer has abandoned the turn. It reports whether

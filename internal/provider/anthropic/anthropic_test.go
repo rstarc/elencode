@@ -722,24 +722,6 @@ func TestStreamMarksTransientFailuresRetryable(t *testing.T) {
 	}
 }
 
-// The set matches what the SDK retries when left to itself. Diverging would
-// mean this build gives up on failures the vendor considers transient.
-func TestStreamMarksEveryStatusTheSDKWouldRetry(t *testing.T) {
-	for _, status := range []int{
-		http.StatusRequestTimeout,
-		http.StatusConflict,
-		http.StatusTooManyRequests,
-		http.StatusInternalServerError,
-		http.StatusBadGateway,
-		http.StatusServiceUnavailable,
-	} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
-			// A type the table does not know, so only the status can mark it
-			retryableError(t, streamAgainst(t, errorStatus(status, "something_new", nil)))
-		})
-	}
-}
-
 // A request that never reached the API is retried too, matching the SDK's own
 // treatment of a connection error. Cancellation is the exception: the user
 // asked for the turn to stop, so there is nothing to recover.
@@ -795,17 +777,6 @@ func TestStreamReadsRetryAfter(t *testing.T) {
 
 	if retryable.After != 9*time.Second {
 		t.Errorf("After = %s, want 9s from the Retry-After header", retryable.After)
-	}
-}
-
-func TestStreamPrefersRetryAfterMs(t *testing.T) {
-	retryable := retryableError(t, streamAgainst(t, errorStatus(
-		http.StatusTooManyRequests, "rate_limit_error",
-		map[string]string{"Retry-After-Ms": "2500", "Retry-After": "9"},
-	)))
-
-	if retryable.After != 2500*time.Millisecond {
-		t.Errorf("After = %s, want the finer-grained header to win", retryable.After)
 	}
 }
 

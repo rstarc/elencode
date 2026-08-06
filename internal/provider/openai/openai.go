@@ -6,15 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strconv"
 	"strings"
-	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/responses"
 	"github.com/openai/openai-go/shared"
 	"github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/provider/retry"
 )
 
 // eventBuffer is the capacity of the Event channel returned by Stream. It
@@ -280,27 +279,17 @@ func classify(err error) error {
 	if !retryableResponse(apiErr.StatusCode, apiErr.Response) {
 		return err
 	}
-	return &agent.RetryableError{Err: err, After: retryAfter(apiErr.Response)}
+	return &agent.RetryableError{Err: err, After: retry.After(apiErr.Response)}
 }
 
-// retryableResponse mirrors the judgement the SDK makes when it retries for
-// itself, which we switched off: the same statuses, and the same deference to
-// x-should-retry, which is the API saying so outright and overrules them.
-// Diverging would mean giving up on failures the vendor calls transient.
+// retryableResponse is the shared judgement and nothing else: this API reports
+// a failed request with a status, so there is no vendor-specific case to add
+// on top of the header override.
 func retryableResponse(status int, resp *http.Response) bool {
-	if resp != nil {
-		switch resp.Header.Get("x-should-retry") {
-		case "true":
-			return true
-		case "false":
-			return false
-		}
+	if override, ok := retry.HeaderOverride(resp); ok {
+		return override
 	}
-
-	return status == http.StatusRequestTimeout ||
-		status == http.StatusConflict ||
-		status == http.StatusTooManyRequests ||
-		status >= http.StatusInternalServerError
+	return retry.RetryableStatus(status)
 }
 
 // classifyCode marks a failure reported inside the stream, where there is no
@@ -311,22 +300,6 @@ func classifyCode(code string, err error) error {
 		return err
 	}
 	return &agent.RetryableError{Err: err}
-}
-
-// retryAfter reads how long the API asked us to wait. Zero means it said
-// nothing and the agent should fall back to its own backoff.
-func retryAfter(resp *http.Response) time.Duration {
-	if resp == nil {
-		return 0
-	}
-	// Milliseconds first: it is the more precise of the two when both are sent.
-	if ms, err := strconv.Atoi(resp.Header.Get("Retry-After-Ms")); err == nil && ms > 0 {
-		return time.Duration(ms) * time.Millisecond
-	}
-	if s, err := strconv.Atoi(resp.Header.Get("Retry-After")); err == nil && s > 0 {
-		return time.Duration(s) * time.Second
-	}
-	return 0
 }
 
 // emit sends ev unless the consumer has abandoned the turn. It reports whether

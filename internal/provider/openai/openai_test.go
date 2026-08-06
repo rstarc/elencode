@@ -228,40 +228,12 @@ func TestStreamMarksRateLimitsRetryable(t *testing.T) {
 	}
 }
 
-func TestStreamPrefersRetryAfterMs(t *testing.T) {
-	retryable := retryableError(t, streamStatus(t, http.StatusTooManyRequests, map[string]string{
-		"Retry-After-Ms": "1500",
-		"Retry-After":    "7",
-	}))
-
-	if retryable.After != 1500*time.Millisecond {
-		t.Errorf("After = %s, want the finer-grained header to win", retryable.After)
-	}
-}
-
 func TestStreamMarksServerErrorsRetryable(t *testing.T) {
 	retryable := retryableError(t, streamStatus(t, http.StatusInternalServerError, nil))
 
 	// No header, so the agent falls back to its own backoff
 	if retryable.After != 0 {
 		t.Errorf("After = %s, want 0 when the API gave no hint", retryable.After)
-	}
-}
-
-// The set matches what the SDK retries when left to itself. Diverging would
-// mean this build gives up on failures the vendor considers transient.
-func TestStreamMarksEveryStatusTheSDKWouldRetry(t *testing.T) {
-	for _, status := range []int{
-		http.StatusRequestTimeout,
-		http.StatusConflict,
-		http.StatusTooManyRequests,
-		http.StatusInternalServerError,
-		http.StatusBadGateway,
-		http.StatusServiceUnavailable,
-	} {
-		t.Run(http.StatusText(status), func(t *testing.T) {
-			retryableError(t, streamStatus(t, status, nil))
-		})
 	}
 }
 
