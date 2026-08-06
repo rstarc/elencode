@@ -117,12 +117,12 @@ func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry,
 		providers: providers,
 		models:    models,
 		config:    cfg,
-		commands: registry,
-		menu:     commandmenu.New(registry),
-		picker:   modelpicker.New(),
-		input:    input,
-		spinner:  spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
-		state:    uiStateIdle,
+		commands:  registry,
+		menu:      commandmenu.New(registry),
+		picker:    modelpicker.New(),
+		input:     input,
+		spinner:   spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
+		state:     uiStateIdle,
 	}
 }
 

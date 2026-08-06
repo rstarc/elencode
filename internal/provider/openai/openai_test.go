@@ -707,69 +707,6 @@ func TestResubmittedReasoningMarshalsAnEmptySummary(t *testing.T) {
 	}
 }
 
-func TestResolveThinkingByModelFamily(t *testing.T) {
-	c := newWithOptions("key", true, agent.EffortMedium)
-
-	reasoning, err := c.Resolve(context.Background(), "gpt-5")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if reasoning.Thinking != agent.ThinkingEffort {
-		t.Fatalf("gpt-5 thinking = %q, want effort", reasoning.Thinking)
-	}
-
-	plain, err := c.Resolve(context.Background(), "gpt-4o")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if plain.Thinking != agent.ThinkingNone {
-		t.Fatalf("gpt-4o thinking = %q, want none", plain.Thinking)
-	}
-}
-
-// Resolve is a table lookup, not an API call: an id the table does not know
-// still resolves, so the config can name a model this build has not heard of.
-func TestResolveAcceptsAnUnknownModel(t *testing.T) {
-	c := newWithOptions("key", true, agent.EffortMedium)
-
-	got, err := c.Resolve(context.Background(), "gpt-9-turbo")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got.ID != "gpt-9-turbo" {
-		t.Fatalf("model = %+v, want the id passed through", got)
-	}
-}
-
-// /v1/models lists audio, image and embedding models too; the picker must
-// only offer models that can hold a conversation.
-func TestModelsFiltersToChatModels(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"object":"list","data":[
-			{"id":"gpt-5","object":"model","created":1,"owned_by":"openai"},
-			{"id":"whisper-1","object":"model","created":1,"owned_by":"openai"},
-			{"id":"text-embedding-3-small","object":"model","created":1,"owned_by":"openai"},
-			{"id":"gpt-4o","object":"model","created":1,"owned_by":"openai"}
-		]}`)
-	}))
-	defer server.Close()
-
-	c := newWithOptions("key", true, agent.EffortMedium, option.WithBaseURL(server.URL))
-	got, err := c.Models(context.Background())
-	if err != nil {
-		t.Fatalf("Models: %v", err)
-	}
-
-	want := []agent.Model{
-		{ID: "gpt-5", DisplayName: "gpt-5", Thinking: agent.ThinkingEffort},
-		{ID: "gpt-4o", DisplayName: "gpt-4o"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Models() = %#v, want %#v", got, want)
-	}
-}
-
 // TestAgentLoopRoundTripsReasoningAndTools proves the composition the unit
 // tests cannot: a full turn — reasoning, a tool call, the tool result, a second
 // inference — through the real Agent, asserting on the bytes of the second

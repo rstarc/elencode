@@ -21,10 +21,7 @@ type scriptedProvider struct {
 	turns    [][]Event
 	calls    int
 	requests []Request
-	models   []Model // what Models returns
 }
-
-func (p *scriptedProvider) Models(ctx context.Context) ([]Model, error) { return p.models, nil }
 
 func (p *scriptedProvider) Stream(ctx context.Context, req Request) <-chan Event {
 	p.requests = append(p.requests, req)
@@ -53,8 +50,6 @@ func (p *scriptedProvider) Stream(ctx context.Context, req Request) <-chan Event
 // and only returns once ctx is cancelled.
 type blockingProvider struct{ started chan struct{} }
 
-func (p *blockingProvider) Models(ctx context.Context) ([]Model, error) { return nil, nil }
-
 func (p *blockingProvider) Stream(ctx context.Context, req Request) <-chan Event {
 	events := make(chan Event)
 	go func() {
@@ -74,8 +69,6 @@ type switchProvider struct {
 	requests []Request
 	response Response
 }
-
-func (p *switchProvider) Models(ctx context.Context) ([]Model, error) { return nil, nil }
 
 func (p *switchProvider) Stream(ctx context.Context, req Request) <-chan Event {
 	call := p.calls
@@ -560,20 +553,6 @@ func TestRunStopsWhenContextIsCancelled(t *testing.T) {
 	}
 }
 
-func TestModelsComeFromTheProvider(t *testing.T) {
-	provider := &scriptedProvider{models: []Model{{ID: "a", DisplayName: "A"}}}
-	a := newAgent(provider, nil)
-
-	got, err := a.Models(context.Background())
-	if err != nil {
-		t.Fatalf("Models: %v", err)
-	}
-
-	if len(got) != 1 || got[0].ID != "a" {
-		t.Errorf("Models() = %v, want the provider's list", got)
-	}
-}
-
 // A model is served by exactly one API, so switching models is what switches
 // providers: nothing else says which one a turn talks to.
 func TestSetModelSwitchesTheProviderStreamedAgainst(t *testing.T) {
@@ -609,8 +588,6 @@ type heldRetryProvider struct {
 	calls    int
 	requests []Request
 }
-
-func (p *heldRetryProvider) Models(ctx context.Context) ([]Model, error) { return nil, nil }
 
 func (p *heldRetryProvider) Stream(ctx context.Context, req Request) <-chan Event {
 	p.calls++

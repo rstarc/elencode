@@ -360,8 +360,6 @@ func TestViewPutsCursorBelowTheMenu(t *testing.T) {
 // real program reaches the error path.
 type failingProvider struct{ err error }
 
-func (p failingProvider) Models(ctx context.Context) ([]agent.Model, error) { return nil, p.err }
-
 func (p failingProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
 	events := make(chan agent.Event, 1)
 	events <- agent.ErrorEvent{Err: p.err}
@@ -407,8 +405,6 @@ func TestProgramFitsErrorToTerminal(t *testing.T) {
 // rateLimitedProvider is rate limited once and answers on the retry, which is
 // the whole point of the retry: the user gets a notice and then their reply.
 type rateLimitedProvider struct{ calls int }
-
-func (p *rateLimitedProvider) Models(ctx context.Context) ([]agent.Model, error) { return nil, nil }
 
 func (p *rateLimitedProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
 	events := make(chan agent.Event, 2)
@@ -461,10 +457,6 @@ func TestProgramReportsARetryAndCarriesOn(t *testing.T) {
 // scrollback before the failure, which the unflushed tail of the other retry
 // test never does.
 type noisyRateLimitedProvider struct{ calls int }
-
-func (p *noisyRateLimitedProvider) Models(ctx context.Context) ([]agent.Model, error) {
-	return nil, nil
-}
 
 func (p *noisyRateLimitedProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
 	events := make(chan agent.Event, 2)
@@ -778,8 +770,6 @@ func (p *recordingProvider) Stream(ctx context.Context, req agent.Request) <-cha
 	close(events)
 	return events
 }
-
-func (p *recordingProvider) Models(ctx context.Context) ([]agent.Model, error) { return nil, nil }
 
 // keyed is the provider set a test session was started with: which providers
 // have a client is the only thing that decides what the picker offers.
@@ -1099,8 +1089,6 @@ func (p scriptedProvider) Stream(ctx context.Context, req agent.Request) <-chan 
 	close(events)
 	return events
 }
-
-func (p scriptedProvider) Models(ctx context.Context) ([]agent.Model, error) { return nil, nil }
 
 // TestProgramPrintsThePromptAndTheReply drives the whole program, which is the
 // only place the printing is real: Update hands back commands, and it is

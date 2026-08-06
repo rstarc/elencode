@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -126,46 +125,6 @@ func TestToMessagesConvertsEveryBlockKind(t *testing.T) {
 	}
 	if len(got) != len(msgs) {
 		t.Errorf("converted %d messages, want %d", len(got), len(msgs))
-	}
-}
-
-func TestDefaultModelIDIsAvailableToStartup(t *testing.T) {
-	if got := DefaultModelID(); got != "claude-haiku-4-5" {
-		t.Errorf("default model = %q, want claude-haiku-4-5", got)
-	}
-}
-
-// TestModelsListsWhatTheAPIReturns runs against a stub of the models endpoint,
-// so it covers the request path and the conversion without a network call.
-func TestModelsListsWhatTheAPIReturns(t *testing.T) {
-	const body = `{"data":[
-		{"type":"model","id":"claude-opus-4-5","display_name":"Claude Opus 4.5","created_at":"2025-11-01T00:00:00Z"},
-		{"type":"model","id":"claude-haiku-4-5","display_name":"Claude Haiku 4.5","created_at":"2025-10-01T00:00:00Z"}
-	],"has_more":false}`
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/v1/models") {
-			t.Errorf("requested %q, want the models endpoint", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		if _, err := io.WriteString(w, body); err != nil {
-			t.Errorf("write response: %v", err)
-		}
-	}))
-	defer server.Close()
-
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
-	got, err := c.Models(context.Background())
-	if err != nil {
-		t.Fatalf("Models: %v", err)
-	}
-
-	want := []agent.Model{
-		{ID: "claude-opus-4-5", DisplayName: "Claude Opus 4.5"},
-		{ID: "claude-haiku-4-5", DisplayName: "Claude Haiku 4.5"},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Models() = %v, want %v", got, want)
 	}
 }
 
@@ -334,39 +293,6 @@ func TestDeltaEventCarriesEachStreamedKind(t *testing.T) {
 	}
 }
 
-func TestModelsReportWhatThinkingTheyAccept(t *testing.T) {
-	const body = `{"data":[
-		{"type":"model","id":"new","display_name":"New","created_at":"2026-01-01T00:00:00Z",
-		 "capabilities":{"thinking":{"supported":true,"types":{"adaptive":{"supported":true},"enabled":{"supported":false}}}}},
-		{"type":"model","id":"old","display_name":"Old","created_at":"2025-01-01T00:00:00Z",
-		 "capabilities":{"thinking":{"supported":true,"types":{"adaptive":{"supported":false},"enabled":{"supported":true}}}}},
-		{"type":"model","id":"none","display_name":"None","created_at":"2024-01-01T00:00:00Z",
-		 "capabilities":{"thinking":{"supported":false,"types":{"adaptive":{"supported":false},"enabled":{"supported":false}}}}}
-	],"has_more":false}`
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if _, err := io.WriteString(w, body); err != nil {
-			t.Errorf("write response: %v", err)
-		}
-	}))
-	defer server.Close()
-
-	got, err := newWithOptions("key", true, agent.EffortMedium, option.WithBaseURL(server.URL)).Models(context.Background())
-	if err != nil {
-		t.Fatalf("Models: %v", err)
-	}
-
-	want := []agent.Model{
-		{ID: "new", DisplayName: "New", Thinking: agent.ThinkingAdaptive},
-		{ID: "old", DisplayName: "Old", Thinking: agent.ThinkingBudgeted},
-		{ID: "none", DisplayName: "None", Thinking: agent.ThinkingNone},
-	}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("Models() = %#v\nwant %#v", got, want)
-	}
-}
-
 // TestThinkingMatchesWhatTheModelAccepts is the point of carrying the mode
 // around: the API rejects the wrong kind rather than ignoring it.
 func TestThinkingMatchesWhatTheModelAccepts(t *testing.T) {
@@ -439,19 +365,6 @@ func TestBudgetLeavesRoomForAnAnswer(t *testing.T) {
 
 	if budget := params.Thinking.OfEnabled.BudgetTokens; budget < 1024 || budget >= params.MaxTokens {
 		t.Errorf("budget = %d, want between 1024 and the %d token limit", budget, params.MaxTokens)
-	}
-}
-
-// TestToModelPrefersEffortCapability: a model that reasons at an effort level
-// takes that over the adaptive or budgeted kinds, so the caller's configured
-// level is the one that reaches the API.
-func TestToModelPrefersEffortCapability(t *testing.T) {
-	info := sdk.ModelInfo{ID: "claude-x", DisplayName: "Claude X"}
-	info.Capabilities.Effort.Supported = true
-	info.Capabilities.Thinking.Types.Adaptive.Supported = true
-
-	if got := toModel(info); got.Thinking != agent.ThinkingEffort {
-		t.Fatalf("Thinking = %q, want effort", got.Thinking)
 	}
 }
 

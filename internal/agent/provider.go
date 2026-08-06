@@ -9,9 +9,6 @@ type Provider interface {
 	// Stream starts a turn and returns a channel of incremental Events.
 	// The turn is terminated by exactly one ResponseEvent or ErrorEvent.
 	Stream(ctx context.Context, req Request) <-chan Event
-	// Models lists the models this provider can be pointed at. It talks to the
-	// API, so it blocks and takes a ctx.
-	Models(ctx context.Context) ([]Model, error)
 }
 
 // Effort is how hard an effort-based model is asked to reason. Providers clamp

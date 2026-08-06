@@ -41,19 +41,6 @@ func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...o
 	return &Client{client: sdk.NewClient(opts...), thinking: thinking, effort: effort}
 }
 
-// DefaultModelID is the model used when configuration names none.
-func DefaultModelID() string { return Default().ID }
-
-// Resolve looks up what model accepts, so the agent can put the correct
-// thinking mode into each request.
-func (c *Client) Resolve(ctx context.Context, modelID string) (agent.Model, error) {
-	info, err := c.client.Models.Get(ctx, modelID, sdk.ModelGetParams{})
-	if err != nil {
-		return agent.Model{ID: modelID}, err
-	}
-	return toModel(*info), nil
-}
-
 // thinkingBudget is how many tokens a model of the older kind may reason with.
 // Fixed rather than configurable: the setting is a yes or no, and a budget has
 // to stay under the request's own token limit to leave room for an answer.
@@ -119,39 +106,6 @@ func (c *Client) thinkingParam(model agent.Model) sdk.ThinkingConfigParamUnion {
 	default:
 		return sdk.ThinkingConfigParamUnion{}
 	}
-}
-
-// Models lists every model the API offers, newest first, following pagination
-// so a model past the first page is still selectable.
-func (c *Client) Models(ctx context.Context) ([]agent.Model, error) {
-	var models []agent.Model
-
-	pager := c.client.Models.ListAutoPaging(ctx, sdk.ModelListParams{})
-	for pager.Next() {
-		models = append(models, toModel(pager.Current()))
-	}
-	if err := pager.Err(); err != nil {
-		return nil, err
-	}
-	return models, nil
-}
-
-// toModel reads what a model is and what it accepts. The thinking kinds are
-// mutually exclusive in practice — a model takes the adaptive kind or the
-// budgeted one, not both — and adaptive is preferred where there is a choice,
-// since the model then decides how much reasoning the turn is worth.
-func toModel(info sdk.ModelInfo) agent.Model {
-	model := agent.Model{ID: info.ID, DisplayName: info.DisplayName}
-
-	switch thinking := info.Capabilities.Thinking; {
-	case info.Capabilities.Effort.Supported:
-		model.Thinking = agent.ThinkingEffort
-	case thinking.Types.Adaptive.Supported:
-		model.Thinking = agent.ThinkingAdaptive
-	case thinking.Types.Enabled.Supported:
-		model.Thinking = agent.ThinkingBudgeted
-	}
-	return model
 }
 
 // Stream sends every event through a select on ctx.Done. Buffering delays a

@@ -290,14 +290,6 @@ func send(ctx context.Context, events chan<- Event, ev Event) bool {
 	}
 }
 
-// Models lists the models the current provider offers
-func (a *Agent) Models(ctx context.Context) ([]Model, error) {
-	a.mu.Lock()
-	provider := a.provider
-	a.mu.Unlock()
-	return provider.Models(ctx)
-}
-
 // SetModel switches models and drops the conversation so far, which was
 // produced by the previous model and does not carry over.
 //
