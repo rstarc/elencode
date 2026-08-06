@@ -14,30 +14,6 @@ type Provider interface {
 	Models(ctx context.Context) ([]Model, error)
 }
 
-// Model is one model the provider offers, as shown in the picker
-type Model struct {
-	ID          string
-	DisplayName string
-	Thinking    ThinkingMode
-}
-
-// ThinkingMode is how a model can be asked to reason, if at all. Models differ,
-// and asking for the wrong kind is rejected outright rather than ignored, so
-// the request has to be built from what the model actually accepts.
-type ThinkingMode string
-
-const (
-	// ThinkingNone: the model cannot be asked to reason
-	ThinkingNone ThinkingMode = ""
-	// ThinkingAdaptive: the model decides for itself how much to reason
-	ThinkingAdaptive ThinkingMode = "adaptive"
-	// ThinkingBudgeted: the model reasons within a token budget the caller sets
-	ThinkingBudgeted ThinkingMode = "budgeted"
-	// ThinkingEffort: the model reasons at a discrete effort level the caller
-	// picks (OpenAI reasoning_effort; Anthropic OutputConfig.Effort).
-	ThinkingEffort ThinkingMode = "effort"
-)
-
 // Effort is how hard an effort-based model is asked to reason. Providers clamp
 // it to the levels their own API accepts, and send nothing at all for the zero
 // value, which leaves the level to the API.
