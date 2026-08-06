@@ -6,7 +6,20 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"strings"
+
+	"github.com/rstarc/elencode/internal/agent"
 )
+
+// effortList names the levels a user may write, for the error that rejects the
+// ones they may not.
+func effortList() string {
+	names := make([]string, 0, len(agent.Efforts))
+	for _, effort := range agent.Efforts {
+		names = append(names, string(effort))
+	}
+	return strings.Join(names, ", ")
+}
 
 // Config represents the configuration options exposed to the user
 type Config struct {
@@ -169,12 +182,11 @@ func Load() (Config, error) {
 		return cfg, fmt.Errorf("unknown provider %q in %q (valid: %q, %q)", cfg.Provider, configFilePath, ProviderAnthropic, ProviderOpenAI)
 	}
 
-	// Unset is a value of its own: it means the API picks, and the two APIs do
-	// not pick the same level, so there is no one default to fill in here.
-	switch cfg.ThinkingEffort {
-	case "", "low", "medium", "high", "xhigh", "max":
-	default:
-		return cfg, fmt.Errorf("unknown thinking_effort %q in %q (valid: low, medium, high, xhigh, max)", cfg.ThinkingEffort, configFilePath)
+	// Validated against the agent's own vocabulary rather than a copy of it:
+	// which levels exist is the agent's to say, and a copy here would be one
+	// more place to forget when a level is added.
+	if _, ok := agent.ParseEffort(cfg.ThinkingEffort); !ok {
+		return cfg, fmt.Errorf("unknown thinking_effort %q in %q (valid: %s)", cfg.ThinkingEffort, configFilePath, effortList())
 	}
 
 	return cfg, nil

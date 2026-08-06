@@ -52,6 +52,26 @@ const (
 	EffortMax    Effort = "max"
 )
 
+// Efforts are the levels that can be asked for, weakest first. EffortNone is
+// not among them: it is the absence of a choice, not a level.
+var Efforts = []Effort{EffortLow, EffortMedium, EffortHigh, EffortXHigh, EffortMax}
+
+// ParseEffort reads a configured level, reporting whether it names one. The
+// empty string is EffortNone rather than a failure: it is how "let the API
+// decide" is written. This is the only place a level is recognised, so a
+// caller reading one from a file does not need its own copy of the vocabulary.
+func ParseEffort(s string) (Effort, bool) {
+	if s == "" {
+		return EffortNone, true
+	}
+	for _, effort := range Efforts {
+		if string(effort) == s {
+			return effort, true
+		}
+	}
+	return EffortNone, false
+}
+
 // Event is an incremental update emitted while a turn is being processed.
 // By defining it as an interface with an unexported function, we emulate a sum type in Go
 type Event interface{ event() }
