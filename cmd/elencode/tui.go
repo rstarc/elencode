@@ -14,9 +14,8 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
-	"github.com/rstarc/elencode/internal/tui/commandmenu"
 	"github.com/rstarc/elencode/internal/tui/menu"
-	"github.com/rstarc/elencode/internal/tui/modelpicker"
+	"github.com/rstarc/elencode/internal/tui/picker"
 	"github.com/rstarc/elencode/internal/tui/transcript"
 )
 
@@ -63,9 +62,9 @@ type model struct {
 	state   uiState
 	// Sub-components. Each owns its own state and reports what the user did as
 	// a message, which Update handles below.
-	commands commands.Registry // the slash commands this session knows
-	menu     commandmenu.Model // the command menu under the input
-	picker   modelpicker.Model // the model list /model opens
+	commands  commands.Registry              // the slash commands this session knows
+	menu      picker.Model[commands.Command] // the command menu under the input
+	modelList picker.Model[agent.Model]      // the model list /model opens
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
 	headerPrinted bool // the session title has been printed
@@ -118,8 +117,8 @@ func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry,
 		models:    models,
 		config:    cfg,
 		commands:  registry,
-		menu:      commandmenu.New(registry),
-		picker:    modelpicker.New(),
+		menu:      newCommandMenu(registry),
+		modelList: newModelList(),
 		input:     input,
 		spinner:   spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
 		state:     uiStateIdle,
@@ -175,28 +174,44 @@ func waitForEvent(events <-chan agent.Event, turnID int) tea.Cmd {
 	}
 }
 
-// forwardToInput hands a keypress to the text input and settles the menu around
-// the edit it made.
+// forwardToInput hands a keypress to the text input and settles the list the
+// edit it made belongs to.
 func (m model) forwardToInput(msg tea.Msg) (model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
-	m.menu = m.menu.SetQuery(m.input.Value())
+	// Whichever list is open is the one the typing filters. The command menu
+	// must not see the text while the model list is up, or a slash would open it
+	// behind the list.
+	if m.modelList.Open() {
+		m.modelList = m.modelList.SetQuery(m.input.Value())
+	} else {
+		m.menu = m.menu.SetQuery(m.input.Value())
+	}
 	return m, cmd
 }
 
-// runCommand handles Enter on a command line: it runs the command the input
-// names exactly, or reports that there is no such command. What the command
-// does arrives back as a message, so the effect is handled in Update alongside
-// every other one rather than here.
+// runCommand handles Enter on a command line: it runs the command the menu is
+// pointing at, passing the rest of the line as its argument, or reports that
+// the line names no command. Resolving through the menu rather than looking the
+// name up again is what keeps Enter to one rule — what is highlighted is what
+// runs, and the user can see it.
+//
+// What the command does arrives back as a message, so the effect is handled in
+// Update alongside every other one rather than here.
 func (m model) runCommand() (model, tea.Cmd) {
-	cmd, ok := m.commands.Run(m.input.Value())
-	if !ok {
-		cmd = m.reportError(fmt.Errorf("unknown command: %s", m.input.Value()))
-	}
+	line := m.input.Value()
+	highlighted, ok := m.menu.Highlighted()
 
 	m.input.Reset()
 	m.menu = m.menu.SetQuery("")
-	return m, cmd
+
+	if !ok {
+		return m, m.reportError(fmt.Errorf("unknown command: %s", line))
+	}
+	// "/model   some-id" runs /model with some-id rather than being looked up
+	// whole
+	_, arg, _ := strings.Cut(strings.TrimSpace(line), " ")
+	return m, highlighted.Execute(strings.TrimSpace(arg))
 }
 
 // reportError prints a failure into the transcript, where it stays: the user
@@ -232,12 +247,18 @@ func retryDelay(d time.Duration) string {
 	return d.Round(time.Second).String()
 }
 
-// chooseModel selects the model the user named, or opens the picker when they
+// chooseModel selects the model the user named, or opens the list when they
 // named none. Nothing is fetched: which models exist ships with the binary, and
 // which of them can be reached is whichever keys were found at startup.
 func (m model) chooseModel(name string) (model, tea.Cmd) {
 	if name == "" {
-		m.picker = m.picker.Show(m.availableModels(), m.config.Model)
+		// The list borrows the input to filter with, so it starts on an empty
+		// one: whatever was left on the command line belongs to what it replaces.
+		m.input.Reset()
+		m.menu = m.menu.SetQuery("")
+		m.modelList = m.modelList.Show(m.availableModels(), func(candidate agent.Model) bool {
+			return candidate.Qualified() == m.config.Model
+		})
 		return m, nil
 	}
 
@@ -261,7 +282,7 @@ func (m model) unknownToTheCatalog(chosen agent.Model) bool {
 	return !known
 }
 
-// availableModels is what the picker offers: a model whose provider has no key
+// availableModels is what the list offers: a model whose provider has no key
 // cannot be talked to, so offering it would only produce a failed turn.
 func (m model) availableModels() []agent.Model {
 	var available []agent.Model
@@ -271,6 +292,21 @@ func (m model) availableModels() []agent.Model {
 		}
 	}
 	return available
+}
+
+// pickModel switches to the model the list is pointing at, or does nothing
+// when the filter leaves nothing to point at: Esc stays the way out of a list
+// that has no answer in it.
+func (m model) pickModel() (model, tea.Cmd) {
+	chosen, ok := m.modelList.Highlighted()
+	if !ok {
+		return m, nil
+	}
+
+	m.modelList = m.modelList.Close()
+	// The arrow keys left the id in the input, and it has now been acted on
+	m.input.Reset()
+	return m.selectModel(chosen)
 }
 
 // selectModel switches to id, clearing the conversation the previous model
@@ -359,7 +395,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.SetWidth(max(msg.Width-lipgloss.Width(m.input.Prompt)-1, 1))
 		m.stream.SetWidth(msg.Width)
 		m.menu.SetWidth(msg.Width)
-		m.picker.SetWidth(msg.Width)
+		m.modelList.SetWidth(msg.Width)
 		// Only the frame follows the new width. What is already printed keeps
 		// the width it was printed at, as the terminal owns those lines now.
 
@@ -387,14 +423,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.quitArmed && msg.String() != "ctrl+c" {
 			m.quitArmed = false
 		}
-		// The picker takes every key but ctrl+c, which keeps meaning "quit"
-		// wherever the user is. A keystroke reaching the input underneath would
-		// open the command menu behind the picker.
-		if m.picker.Focused() && msg.String() != "ctrl+c" {
-			var cmd tea.Cmd
-			m.picker, cmd = m.picker.Update(msg)
-			return m, cmd
-		}
 		// handle user input
 		switch msg.String() {
 		case "ctrl+c":
@@ -417,18 +445,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m.armQuit()
 		case "esc", "up", "down", "tab":
-			// These belong to the menu while it is showing, and to the input
-			// otherwise: an arrow key still has to move the cursor.
-			if !m.menu.Visible() {
+			// These drive whichever list is open, and the input when none is: an
+			// arrow key still has to move the cursor.
+			var cmd tea.Cmd
+			switch {
+			case m.modelList.Open():
+				m.modelList, cmd = m.modelList.Update(msg)
+			case m.menu.Open():
+				m.menu, cmd = m.menu.Update(msg)
+			default:
 				return m.forwardToInput(msg)
 			}
-			var cmd tea.Cmd
-			m.menu, cmd = m.menu.Update(msg)
 			return m, cmd
 		case "enter":
+			// The model list holds Enter until something is chosen or Esc closes
+			// it, so a filter that matches nothing cannot start a turn by accident.
+			if m.modelList.Open() {
+				return m.pickModel()
+			}
 			// A command line never reaches the agent, in either UI state: /quit
-			// is an escape hatch, so it must work while a turn is in flight.
-			if strings.HasPrefix(m.input.Value(), commands.Prefix) {
+			// is an escape hatch, so it must work while a turn is in flight. The
+			// menu being open is that test — it is open exactly while the input
+			// holds a command line.
+			if m.menu.Open() {
 				return m.runCommand()
 			}
 			// only actually do anything if we are not currently waiting and there is actual input
@@ -483,17 +522,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 
-	case commandmenu.CompleteMsg:
-		m.input.SetValue(msg.Input)
+	case picker.PreviewMsg:
+		// Only the input follows the highlight. The query behind the list stays
+		// as the user typed it, so the input can read "/quit" while the list is
+		// still the one "/q" matched — filtering by the name under the highlight
+		// would narrow it to that row and leave nowhere to move.
+		m.input.SetValue(msg.Text)
 		m.input.CursorEnd()
-		m.menu = m.menu.SetQuery(msg.Input)
 		return m, nil
 
-	case modelpicker.SelectedMsg:
-		return m.selectModel(msg.Model)
-
-	case modelpicker.ClosedMsg:
-		// The picker closed itself; there is nothing left to undo here.
+	case picker.ClosedMsg:
+		// The list closed itself and forgot its query; clearing the input is what
+		// keeps the two saying the same thing.
+		m.input.Reset()
 		return m, nil
 
 	case quitDisarmMsg:
@@ -560,7 +601,7 @@ func (m model) View() tea.View {
 	if view := m.menu.View(); view != "" {
 		rows = append(rows, view)
 	}
-	if view := m.picker.View(); view != "" {
+	if view := m.modelList.View(); view != "" {
 		rows = append(rows, view)
 	}
 	rows = append(rows, inputView)
