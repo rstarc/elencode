@@ -62,7 +62,8 @@ type model struct {
 	state   uiState
 	// Sub-components. Each owns its own state and reports what the user did as
 	// a message, which Update handles below.
-	commands  commands.Registry              // the slash commands this session knows
+	// menu holds the slash commands this session knows: what Enter runs is what
+	// the menu is pointing at, so the menu is the only place they live.
 	menu      picker.Model[commands.Command] // the command menu under the input
 	modelList picker.Model[agent.Model]      // the model list /model opens
 	// configVisible replaces the whole frame with the read-only config view
@@ -115,7 +116,6 @@ func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry,
 		providers: providers,
 		models:    models,
 		config:    cfg,
-		commands:  registry,
 		menu:      newCommandMenu(registry),
 		modelList: newModelList(),
 		input:     input,
@@ -253,6 +253,8 @@ func (m model) chooseModel(name string) (model, tea.Cmd) {
 	if name == "" {
 		// The list borrows the input to filter with, so it starts on an empty
 		// one: whatever was left on the command line belongs to what it replaces.
+		// Running /model has cleared it already, but a message is an entry point
+		// of its own and this must not depend on which one it arrived from.
 		m.input.Reset()
 		m.menu = m.menu.SetQuery("")
 		m.modelList = m.modelList.Show(m.availableModels(), func(candidate agent.Model) bool {
