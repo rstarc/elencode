@@ -131,7 +131,7 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 		// Close is the only thing that closes the response body — Next never
 		// does, not even at the end of the stream — so without this every early
 		// return below leaves a connection out of the pool until it times out.
-		defer stream.Close()
+		defer func() { _ = stream.Close() }()
 
 		// The SDK has no GetFinalMessage; Accumulate folds each event into
 		// message, rebuilding what a non-streaming call would have returned.

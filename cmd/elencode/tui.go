@@ -103,7 +103,6 @@ func (m model) quitHint() string {
 // has to say which client serves the model it switches to, and the clients are
 // the caller's to build.
 func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry, providers providerSet, models []agent.Model) model {
-
 	input := textinput.New()
 	input.Placeholder = "start typing..."
 	input.SetVirtualCursor(false)

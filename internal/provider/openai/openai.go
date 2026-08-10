@@ -129,7 +129,7 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 		// Close is the only thing that closes the response body — Next never
 		// does, not even at the end of the stream — so without this every early
 		// return below leaves a connection out of the pool until it times out.
-		defer stream.Close()
+		defer func() { _ = stream.Close() }()
 
 		// Emit only what the UI needs to paint live. Everything else (tool
 		// inputs, status) is recovered from the terminal response, which

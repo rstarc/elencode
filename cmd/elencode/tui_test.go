@@ -882,10 +882,6 @@ func assertFitsWidth(t *testing.T, view string, width int) {
 	}
 }
 
-type errStub struct{}
-
-func (errStub) Error() string { return "stub failure" }
-
 // recordingProvider answers every turn with the same reply and keeps the
 // requests it was given, so a test can tell which provider a turn went to.
 type recordingProvider struct{ requests []agent.Request }

@@ -475,7 +475,7 @@ func TestStreamAssemblesAResponseFromSSE(t *testing.T) {
 			if err := json.Unmarshal([]byte(e), &typed); err != nil {
 				t.Errorf("bad scripted event %s: %v", e, err)
 			}
-			fmt.Fprintf(w, "event: %s\ndata: %s\n\n", typed.Type, e)
+			_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", typed.Type, e)
 		}
 	}))
 	defer server.Close()
@@ -546,7 +546,7 @@ func (b trackedBody) Close() error {
 func TestStreamClosesTheResponseBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-x\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-x\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
 	}))
 	defer server.Close()
 
@@ -589,7 +589,7 @@ func errorStatus(status int, errType string, hdr map[string]string) http.Handler
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		fmt.Fprintf(w, `{"type":"error","error":{"type":%q,"message":"boom"}}`, errType)
+		_, _ = fmt.Fprintf(w, `{"type":"error","error":{"type":%q,"message":"boom"}}`, errType)
 	}
 }
 
@@ -629,7 +629,7 @@ func TestStreamMarksTransientFailuresRetryable(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			retryableError(t, streamAgainst(t, errorStatus(test.status, test.errType, nil)))
+			_ = retryableError(t, streamAgainst(t, errorStatus(test.status, test.errType, nil)))
 		})
 	}
 }
@@ -643,7 +643,7 @@ func TestStreamMarksAConnectionFailureRetryable(t *testing.T) {
 	server.Close() // nothing is listening on that port now
 
 	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(serverURL))
-	retryableError(t, collectEvents(t, c.Stream(context.Background(), agent.Request{
+	_ = retryableError(t, collectEvents(t, c.Stream(context.Background(), agent.Request{
 		Model:     agent.Model{ID: "claude-x"},
 		MaxTokens: 100,
 		Messages:  []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
@@ -676,7 +676,7 @@ func TestStreamObeysTheShouldRetryHeader(t *testing.T) {
 	})
 
 	t.Run("true on a permanent status", func(t *testing.T) {
-		retryableError(t, streamAgainst(t, errorStatus(
+		_ = retryableError(t, streamAgainst(t, errorStatus(
 			http.StatusBadRequest, "invalid_request_error", map[string]string{"x-should-retry": "true"},
 		)))
 	})
@@ -726,8 +726,8 @@ func TestStreamLeavesPermanentFailuresUnmarked(t *testing.T) {
 func TestStreamMarksAMidStreamOverloadRetryable(t *testing.T) {
 	events := streamAgainst(t, func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-x\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
-		fmt.Fprint(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"claude-x\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+		_, _ = fmt.Fprint(w, "event: error\ndata: {\"type\":\"error\",\"error\":{\"type\":\"overloaded_error\",\"message\":\"overloaded\"}}\n\n")
 	})
 
 	if retryable := retryableError(t, events); !strings.Contains(retryable.Error(), "overloaded") {
@@ -790,9 +790,9 @@ func TestStreamSendsToolsWithDescriptions(t *testing.T) {
 			t.Errorf("request body did not decode: %v", err)
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
-		fmt.Fprint(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n")
-		fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"output_tokens\":1}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n")
 	}))
 	defer server.Close()
 
@@ -875,7 +875,7 @@ func TestStreamSurfacesAConversionError(t *testing.T) {
 func TestStreamSurfacesATruncatedStream(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
 	}))
 	defer server.Close()
 
@@ -897,7 +897,7 @@ func TestStreamStopsWhenContextCancelled(t *testing.T) {
 	started := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
+		_, _ = fmt.Fprint(w, "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"m\",\"type\":\"message\",\"role\":\"assistant\",\"model\":\"c\",\"content\":[],\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n\n")
 		w.(http.Flusher).Flush()
 		close(started)
 		<-r.Context().Done()
