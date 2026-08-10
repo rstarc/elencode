@@ -175,6 +175,21 @@ func TestTypingResetsTheHighlight(t *testing.T) {
 	}
 }
 
+// TestARepeatedQueryLeavesTheHighlightAlone is the other half: the input is
+// handed every key it might have edited, including the ones it did not — a
+// cursor key, a chord it ignores — and a match set that did not change must not
+// throw away where the user was.
+func TestARepeatedQueryLeavesTheHighlightAlone(t *testing.T) {
+	p := opened("/")
+	p, _ = p.Update(tea.KeyPressMsg{Code: tea.KeyDown})
+
+	p = p.SetQuery("/")
+
+	if p.index != 1 {
+		t.Errorf("index = %d, want the highlight left on row 1", p.index)
+	}
+}
+
 func TestArrowsMoveTheHighlight(t *testing.T) {
 	p := opened("/")
 

@@ -1008,6 +1008,22 @@ func TestModelPickerStartsOnTheCurrentModel(t *testing.T) {
 	}
 }
 
+// TestCursorKeysLeaveTheModelListHighlightAlone covers a key the input takes
+// but does not type: it reaches the input because the list only reserves the
+// keys it drives, and it must not move a highlight the user has not touched.
+func TestCursorKeysLeaveTheModelListHighlightAlone(t *testing.T) {
+	m := newPickerModel(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI), testModels)
+	m.config.Model = "openai/model-two"
+	m = openPicker(t, m)
+
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyLeft})
+
+	m, _ = enter(t, m)
+	if m.config.Model != "openai/model-two" {
+		t.Errorf("config model = %q, want a cursor key to leave the highlight on the model in use", m.config.Model)
+	}
+}
+
 func TestEffectiveDefaultModelIsShownAndSelected(t *testing.T) {
 	m := newPickerModel(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI), testModels)
 	m.config = configWithEffectiveModel(m.config, testModels[1])

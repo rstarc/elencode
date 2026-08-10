@@ -65,9 +65,16 @@ func (m *Model[T]) SetWidth(width int) { m.width = width }
 // text rather than storing it, so it and the input cannot disagree about
 // whether a command is being typed.
 func (m Model[T]) SetQuery(query string) Model[T] {
+	// The input is handed every key it might have edited, including the ones it
+	// did not: a cursor key, a chord it ignores. Those leave the match set as it
+	// was, so the highlight has to stay where the user put it.
+	if query == m.query {
+		return m
+	}
+
 	m.query = query
-	// The match set may have changed under the highlight, so it would otherwise
-	// point at a different entry than the one the user was looking at.
+	// The match set has changed under the highlight, so it would otherwise point
+	// at a different entry than the one the user was looking at.
 	m.index = 0
 	return m
 }
