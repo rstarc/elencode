@@ -56,7 +56,7 @@ func (s *stub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	s.calls++
 
 	w.Header().Set("Content-Type", "text/event-stream")
-	fmt.Fprint(w, events)
+	_, _ = fmt.Fprint(w, events)
 }
 
 // body returns the recorded JSON of request i.
@@ -206,7 +206,7 @@ func streamStatus(t *testing.T, status int, hdr map[string]string) []agent.Event
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		fmt.Fprint(w, `{"error":{"message":"boom","type":"rate_limit_error"}}`)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"boom","type":"rate_limit_error"}}`)
 	}))
 	t.Cleanup(server.Close)
 
@@ -246,7 +246,7 @@ func TestStreamMarksAConnectionFailureRetryable(t *testing.T) {
 	server.Close() // nothing is listening on that port now
 
 	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
-	retryableError(t, collect(t, c.Stream(context.Background(), agent.Request{
+	_ = retryableError(t, collect(t, c.Stream(context.Background(), agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
 	})))
@@ -276,7 +276,7 @@ func TestStreamObeysTheShouldRetryHeader(t *testing.T) {
 	})
 
 	t.Run("true on a permanent status", func(t *testing.T) {
-		retryableError(t, streamStatus(t, http.StatusBadRequest, map[string]string{"x-should-retry": "true"}))
+		_ = retryableError(t, streamStatus(t, http.StatusBadRequest, map[string]string{"x-should-retry": "true"}))
 	})
 }
 
@@ -340,7 +340,7 @@ func TestClientLeavesRetryingToTheAgent(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
 		w.WriteHeader(http.StatusTooManyRequests)
-		fmt.Fprint(w, `{"error":{"message":"boom"}}`)
+		_, _ = fmt.Fprint(w, `{"error":{"message":"boom"}}`)
 	}))
 	t.Cleanup(server.Close)
 
@@ -486,28 +486,40 @@ func TestStopReasonDerivation(t *testing.T) {
 		body string
 		want agent.StopReason
 	}{
-		{"end turn",
+		{
+			"end turn",
 			`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}]}`,
-			agent.StopReasonEndTurn},
-		{"tool use",
+			agent.StopReasonEndTurn,
+		},
+		{
+			"tool use",
 			`{"status":"completed","output":[{"type":"function_call","call_id":"c","name":"read","arguments":"{}"}]}`,
-			agent.StopReasonToolUse},
-		{"refusal",
+			agent.StopReasonToolUse,
+		},
+		{
+			"refusal",
 			`{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"no"}]}]}`,
-			agent.StopReasonRefusal},
-		{"max tokens",
+			agent.StopReasonRefusal,
+		},
+		{
+			"max tokens",
 			`{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[]}`,
-			agent.StopReasonMaxTokens},
+			agent.StopReasonMaxTokens,
+		},
 		// A response cut off mid tool call must not report ToolUse: the agent
 		// would execute the tool with truncated arguments.
-		{"truncated tool call",
+		{
+			"truncated tool call",
 			`{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"function_call","call_id":"c","name":"read","arguments":"{\"pa"}]}`,
-			agent.StopReasonMaxTokens},
+			agent.StopReasonMaxTokens,
+		},
 		// The other reason the API documents for an incomplete response. Its
 		// output is cut off the same way, so it must not report ToolUse either.
-		{"content filter",
+		{
+			"content filter",
 			`{"status":"incomplete","incomplete_details":{"reason":"content_filter"},"output":[{"type":"function_call","call_id":"c","name":"read","arguments":"{\"pa"}]}`,
-			agent.StopReasonRefusal},
+			agent.StopReasonRefusal,
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -803,17 +815,17 @@ func TestAgentLoopSurvivesARateLimitedRound(t *testing.T) {
 		switch round {
 		case 0: // a tool call, which succeeds
 			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, sse(
+			_, _ = fmt.Fprint(w, sse(
 				`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read","arguments":"{\"path\":\"go.mod\"}","id":"fc_1"}]}}`,
 			))
 		case 1: // the round that follows it is rate limited
 			w.Header().Set("Retry-After-Ms", "1")
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusTooManyRequests)
-			fmt.Fprint(w, `{"error":{"message":"Rate limit reached","type":"rate_limit_error"}}`)
+			_, _ = fmt.Fprint(w, `{"error":{"message":"Rate limit reached","type":"rate_limit_error"}}`)
 		default: // and succeeds on the retry
 			w.Header().Set("Content-Type", "text/event-stream")
-			fmt.Fprint(w, sse(
+			_, _ = fmt.Fprint(w, sse(
 				`{"type":"response.output_text.delta","delta":"go.mod reads"}`,
 				`{"type":"response.completed","response":{"id":"resp_3","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"go.mod reads"}]}]}}`,
 			))
@@ -867,7 +879,7 @@ func TestStreamStopsWhenContextCancelled(t *testing.T) {
 	started := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"He\"}\n\n")
+		_, _ = fmt.Fprint(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"He\"}\n\n")
 		w.(http.Flusher).Flush()
 		close(started)
 		<-r.Context().Done()

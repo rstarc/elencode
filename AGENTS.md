@@ -24,6 +24,7 @@ local development only — CI calls the Go toolchain directly, see
 - Keep changes minimalistic. Be hesitant to extend the scope of the request — if you
   spot adjacent work, mention it instead of doing it.
 - Write idiomatic Go and keep comments minimalistic: explain why, not what.
+- Optimize for readability: simple, verbose code over shorter (in lines-of-code) but more complex implementations.
 - Don't add third-party dependencies without asking.
 
 ## Layout

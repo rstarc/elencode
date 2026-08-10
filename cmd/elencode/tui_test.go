@@ -18,6 +18,7 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
+	"github.com/rstarc/elencode/internal/tui/menu"
 	"github.com/rstarc/elencode/internal/tui/transcript"
 )
 
@@ -236,34 +237,30 @@ func TestPlainTextDoesNotOpenTheCommandMenu(t *testing.T) {
 	}
 }
 
-func TestEscDismissesTheMenuForTheRestOfTheLine(t *testing.T) {
-	m := typeText(t, newSizedModel(t), commands.Prefix)
+// TestEscClearsTheCommandLine covers leaving a menu the user has changed their
+// mind about: the half-typed command goes with it, rather than being left for
+// them to delete.
+func TestEscClearsTheCommandLine(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/qu")
 
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
-	if m.menu.Visible() {
-		t.Error("menu still visible after Esc")
-	}
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 
-	// Typing on must not revive it, or Esc only hides the menu for one keystroke
-	m = typeText(t, m, "q")
-	if m.menu.Visible() {
-		t.Errorf("menu came back after typing, input = %q", m.input.Value())
+	if m.menu.Open() {
+		t.Error("menu still open after Esc")
 	}
-	if m.input.Value() != "/q" {
-		t.Errorf("input = %q, want %q: Esc must not swallow later keystrokes", m.input.Value(), "/q")
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want it cleared with the menu", m.input.Value())
 	}
 }
 
 func TestMenuReopensOnANewCommandLine(t *testing.T) {
 	m := typeText(t, newSizedModel(t), commands.Prefix)
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 
-	// Backspacing away the slash ends the dismissed line; the next one starts fresh
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyBackspace})
 	m = typeText(t, m, commands.Prefix)
 
-	if !m.menu.Visible() {
-		t.Error("menu stayed dismissed on a new command line")
+	if !m.menu.Open() {
+		t.Error("menu stayed closed on a new command line")
 	}
 }
 
@@ -277,14 +274,35 @@ func TestTabCompletesTheHighlightedCommand(t *testing.T) {
 	}
 }
 
-func TestArrowKeysDoNotReachTheInputWhileTheMenuIsOpen(t *testing.T) {
+// TestArrowsCompleteIntoTheInput is the point of the arrow keys: a slash and a
+// walk down the list is enough to type a command.
+func TestArrowsCompleteIntoTheInput(t *testing.T) {
 	m := typeText(t, newSizedModel(t), commands.Prefix)
 
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyUp})
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
 
-	if m.input.Value() != commands.Prefix {
-		t.Errorf("input = %q, want %q: arrows must drive the menu, not the input", m.input.Value(), commands.Prefix)
+	if want := commands.Prefix + "model"; m.input.Value() != want {
+		t.Errorf("input = %q, want %q", m.input.Value(), want)
+	}
+	// The list is filtered by what was typed, not by what the arrows wrote, or
+	// there would be one row left and nowhere to move
+	if got := len(m.menu.Matches()); got != 3 {
+		t.Errorf("%d commands left after arrowing, want all 3", got)
+	}
+}
+
+// TestEnterRunsTheHighlightedCommand covers picking a command without spelling
+// it out: what the menu is pointing at is what Enter runs.
+func TestEnterRunsTheHighlightedCommand(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/q")
+
+	m, cmd := enter(t, m)
+
+	if !quits(cmd) {
+		t.Error("Enter did not run the highlighted /quit")
+	}
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want it cleared once the command ran", m.input.Value())
 	}
 }
 
@@ -298,12 +316,97 @@ func TestEnterRunsQuitCommand(t *testing.T) {
 	}
 }
 
-func TestEnterOnUnknownCommandShowsAnError(t *testing.T) {
+// TestACommandLineWithAnArgumentKeepsItsCommand covers the menu telling the
+// truth while an argument is typed: "/model some-id" is still the /model
+// command line, and saying nothing matches would be a lie.
+func TestACommandLineWithAnArgumentKeepsItsCommand(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/model some-id")
+
+	highlighted, ok := m.menu.Highlighted()
+	if !ok {
+		t.Fatal("nothing highlighted, want the command the line names")
+	}
+	if highlighted.Name != "model" {
+		t.Errorf("highlighted %q, want %q", highlighted.Name, "model")
+	}
+	if view := m.View().Content; strings.Contains(view, "no matching command") {
+		t.Errorf("menu says nothing matches a valid command line:\n%s", view)
+	}
+}
+
+// TestArrowsLeaveATypedArgumentAlone is what the guard above is for, seen from
+// the outside: /model is the only match once an argument is being typed, so an
+// arrow key has nowhere to go and must not rewrite the line.
+func TestArrowsLeaveATypedArgumentAlone(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/model some-id")
+
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+
+	if want := "/model some-id"; m.input.Value() != want {
+		t.Errorf("input = %q, want %q", m.input.Value(), want)
+	}
+}
+
+// TestEnterPassesTheArgument covers "/model   some-id": the argument is the
+// command's input rather than part of its name, and the spacing between the two
+// is the user's business. It uses a registry of its own, since the real
+// commands do more than record what they were given.
+func TestEnterPassesTheArgument(t *testing.T) {
+	tests := []struct {
+		name string
+		line string
+		want string
+	}{
+		{"no argument", "/echo", ""},
+		{"argument", "/echo some-id", "some-id"},
+		{"extra spaces", "/echo   some-id  ", "some-id"},
+		{"trailing space alone", "/echo ", ""},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var got string
+			registry := commands.NewRegistry(commands.Command{
+				Name:        "echo",
+				Description: "records its argument",
+				Execute:     func(arg string) tea.Cmd { got = arg; return nil },
+			})
+			m := newModel(agent.New(nil), config.Config{}, registry, nil, nil)
+			m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
+			m = typeText(t, m, test.line)
+
+			updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+			if got != test.want {
+				t.Errorf("argument = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+// TestEnterOnATypoDoesNotRunTheNearestCommand is the point of matching on a
+// prefix: what Enter runs is spelled out far enough to be recognised.
+func TestEnterOnATypoDoesNotRunTheNearestCommand(t *testing.T) {
 	m := typeText(t, newSizedModel(t), "/qut")
+
+	_, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if quits(cmd) {
+		t.Fatal("Enter on /qut quit the program, want the typo reported")
+	}
+	if got := printed(t, cmd); !strings.Contains(got, "unknown command: /qut") {
+		t.Errorf("printed %q, want it to name the typo", got)
+	}
+}
+
+// TestEnterOnUnknownCommandShowsAnError uses a line the menu cannot match at
+// all: with nothing highlighted, Enter falls back to running what was typed.
+func TestEnterOnUnknownCommandShowsAnError(t *testing.T) {
+	m := typeText(t, newSizedModel(t), "/zzz")
 
 	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
-	if got := printed(t, cmd); !strings.Contains(got, "unknown command: /qut") {
+	if got := printed(t, cmd); !strings.Contains(got, "unknown command: /zzz") {
 		t.Errorf("printed %q, want it to name the unknown command", got)
 	}
 	if m.input.Value() != "" {
@@ -321,7 +424,7 @@ func TestQuitCommandWorksWhileProcessing(t *testing.T) {
 	m.state = uiStateProcessing
 	m = typeText(t, m, "/quit")
 
-	if !m.menu.Visible() {
+	if !m.menu.Open() {
 		t.Error("menu does not open while a turn is in flight")
 	}
 
@@ -725,6 +828,34 @@ func TestProgramQuitsOnQuitCommand(t *testing.T) {
 	tm.WaitFinished(t, teatest.WithFinalTimeout(3*time.Second))
 }
 
+// TestProgramPicksACommandWithTheArrowKeys drives the whole program: the
+// highlight travels to the input as a message, so only the real event loop
+// shows a command being completed without its name being typed.
+func TestProgramPicksACommandWithTheArrowKeys(t *testing.T) {
+	a := newAgent(failingProvider{err: errors.New("never asked")}, nil)
+	tm := teatest.NewTestModel(t, newModel(a, config.Config{}, defaultCommands(), nil, nil), teatest.WithInitialTermSize(80, 20))
+
+	tm.Type("/")
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return bytes.Contains(out, []byte("exit elencode"))
+	})
+
+	// Down the list to /quit, the last of the three
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyDown})
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyDown})
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		return strings.Contains(ansi.Strip(string(out)), menu.MarkerSelected+" /quit")
+	})
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("quitting the program: %v", err)
+	}
+	final := tm.FinalModel(t).(model)
+	if want := "/quit"; final.input.Value() != want {
+		t.Errorf("input = %q, want %q: the arrows must complete into it", final.input.Value(), want)
+	}
+}
+
 // TestProgramQuitsOnSecondCtrlC drives the whole program: the first press must
 // not end the event loop and the second must.
 func TestProgramQuitsOnSecondCtrlC(t *testing.T) {
@@ -750,10 +881,6 @@ func assertFitsWidth(t *testing.T, view string, width int) {
 		}
 	}
 }
-
-type errStub struct{}
-
-func (errStub) Error() string { return "stub failure" }
 
 // recordingProvider answers every turn with the same reply and keeps the
 // requests it was given, so a test can tell which provider a turn went to.
@@ -815,7 +942,7 @@ func TestModelCommandOpensThePickerWithoutAnAPICall(t *testing.T) {
 
 	m, _ = enter(t, m)
 
-	if !m.picker.Focused() {
+	if !m.modelList.Open() {
 		t.Error("/model did not open the picker")
 	}
 	if m.input.Value() != "" {
@@ -881,6 +1008,22 @@ func TestModelPickerStartsOnTheCurrentModel(t *testing.T) {
 	}
 }
 
+// TestCursorKeysLeaveTheModelListHighlightAlone covers a key the input takes
+// but does not type: it reaches the input because the list only reserves the
+// keys it drives, and it must not move a highlight the user has not touched.
+func TestCursorKeysLeaveTheModelListHighlightAlone(t *testing.T) {
+	m := newPickerModel(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI), testModels)
+	m.config.Model = "openai/model-two"
+	m = openPicker(t, m)
+
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyLeft})
+
+	m, _ = enter(t, m)
+	if m.config.Model != "openai/model-two" {
+		t.Errorf("config model = %q, want a cursor key to leave the highlight on the model in use", m.config.Model)
+	}
+}
+
 func TestEffectiveDefaultModelIsShownAndSelected(t *testing.T) {
 	m := newPickerModel(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI), testModels)
 	m.config = configWithEffectiveModel(m.config, testModels[1])
@@ -899,14 +1042,18 @@ func TestEffectiveDefaultModelIsShownAndSelected(t *testing.T) {
 func TestEnterSelectsTheHighlightedModel(t *testing.T) {
 	m := openPicker(t, newPickerModel(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI), testModels))
 
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
-	m, _ = enter(t, m)
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m, _ = updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if m.config.Model != "openai/model-two" {
 		t.Errorf("config model = %q, want %q", m.config.Model, "openai/model-two")
 	}
-	if m.picker.Focused() {
-		t.Error("picker still open after a choice")
+	if m.modelList.Open() {
+		t.Error("list still open after a choice")
+	}
+	// The arrow keys put the id there; the choice is made, so it goes
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want it cleared once the model was chosen", m.input.Value())
 	}
 }
 
@@ -954,8 +1101,8 @@ func TestModelArgumentSelectsWithoutOpeningThePicker(t *testing.T) {
 
 	m, _ = enter(t, m)
 
-	if m.picker.Focused() {
-		t.Error("picker opened for a model named on the command line")
+	if m.modelList.Open() {
+		t.Error("list opened for a model named on the command line")
 	}
 	if m.config.Model != "openai/model-two" {
 		t.Errorf("config model = %q, want the model named on the command line", m.config.Model)
@@ -991,26 +1138,76 @@ func TestUnknownModelArgumentIsReported(t *testing.T) {
 
 func TestEscClosesTheModelPicker(t *testing.T) {
 	m := openPicker(t, newPickerModel(t, keyed(agent.ProviderAnthropic), testModels))
+	// Arrowing first, so there is something left in the input to clear
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
 
-	m = update(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
+	m, _ = press(t, m, tea.KeyPressMsg{Code: tea.KeyEscape})
 
-	if m.picker.Focused() {
-		t.Error("picker still open after Esc")
+	if m.modelList.Open() {
+		t.Error("list still open after Esc")
+	}
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want it cleared with the list", m.input.Value())
 	}
 }
 
-// TestModelPickerSwallowsTypedKeys keeps the picker's keyboard to itself: a
-// keystroke that reached the input would open the command menu underneath it.
-func TestModelPickerSwallowsTypedKeys(t *testing.T) {
+// TestOpeningTheModelListTakesTheInputOver covers text left on the input when
+// the list opens: it belongs to the command line the list replaces, so it must
+// not linger behind the list as an open command menu.
+func TestOpeningTheModelListTakesTheInputOver(t *testing.T) {
+	m := typeText(t, newPickerModel(t, keyed(agent.ProviderAnthropic), testModels), commands.Prefix)
+
+	m = update(t, m, commands.ChooseModelMsg{})
+
+	if m.menu.Open() {
+		t.Error("the command menu is still open behind the model list")
+	}
+	if m.input.Value() != "" {
+		t.Errorf("input = %q, want the list to start on an empty one", m.input.Value())
+	}
+}
+
+// TestTypingNarrowsTheModelList is what the input is for while the list is up:
+// the catalog offers more models than the arrow keys are worth.
+func TestTypingNarrowsTheModelList(t *testing.T) {
+	m := openPicker(t, newPickerModel(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI), testModels))
+
+	m = typeText(t, m, "two")
+
+	view := m.View().Content
+	if !strings.Contains(view, "model-two") {
+		t.Errorf("list does not show the model typed for:\n%s", view)
+	}
+	if strings.Contains(view, "model-one") {
+		t.Errorf("list still shows a model the query rules out:\n%s", view)
+	}
+}
+
+// TestNarrowingTheModelListToNothingSaysSo covers the empty message doing
+// double duty now that there is a filter: an empty list is the query's doing,
+// not the catalog's.
+func TestNarrowingTheModelListToNothingSaysSo(t *testing.T) {
 	m := openPicker(t, newPickerModel(t, keyed(agent.ProviderAnthropic), testModels))
 
-	m = typeText(t, m, "/")
+	m = typeText(t, m, "zzz")
 
-	if m.input.Value() != "" {
-		t.Errorf("input = %q, want keystrokes swallowed while the picker is open", m.input.Value())
+	if view := m.View().Content; !strings.Contains(view, "no matching model") {
+		t.Errorf("list does not say nothing matched:\n%s", view)
 	}
-	if !m.picker.Focused() {
-		t.Error("typing closed the picker")
+}
+
+// TestSlashDoesNotOpenTheMenuBehindTheModelList covers the cost of letting
+// keystrokes reach the input: the input is also what opens the command menu.
+func TestSlashDoesNotOpenTheMenuBehindTheModelList(t *testing.T) {
+	m := openPicker(t, newPickerModel(t, keyed(agent.ProviderAnthropic), testModels))
+
+	m = typeText(t, m, commands.Prefix)
+
+	if m.menu.Open() {
+		t.Error("the command menu opened behind the model list")
+	}
+	if !m.modelList.Open() {
+		t.Error("typing closed the model list")
 	}
 }
 
@@ -1119,7 +1316,7 @@ func TestProgramPrintsThePromptAndTheReply(t *testing.T) {
 func TestSelectingAModelSaysSo(t *testing.T) {
 	m := openPicker(t, newPickerModel(t, keyed(agent.ProviderAnthropic), testModels))
 
-	_, cmd := enter(t, m)
+	_, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	got := printed(t, cmd)
 	if !strings.Contains(got, "model-one") {
