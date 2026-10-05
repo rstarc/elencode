@@ -4,10 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"runtime/debug"
+	"slices"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/chatgpt"
 	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
 	"github.com/rstarc/elencode/internal/provider/anthropic"
@@ -16,10 +17,14 @@ import (
 )
 
 func main() {
-	// Before the config load, so `elencode version` works without an API key.
-	if len(os.Args) > 1 && os.Args[1] == "version" {
-		bi, ok := debug.ReadBuildInfo()
-		fmt.Println(versionLine(version, bi, ok))
+	// A command runs instead of the session, and before the config load: it
+	// loads what it needs itself, so `elencode version` and signing in work
+	// without an API key.
+	if handled, err := runCLI(os.Args[1:], os.Stdout); handled {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
+			os.Exit(1)
+		}
 		return
 	}
 
@@ -30,9 +35,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	// One client per key found. Which of them a turn talks to is decided by the
-	// model, here and at every /model after it.
-	providers := loadProviders(cfg)
+	// One client per credential found. Which of them a turn talks to is
+	// decided by the model, here and at every /model after it.
+	providers, err := loadProviders(cfg)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
+		os.Exit(1)
+	}
 	selectedModel, notice, err := startupModel(cfg, providers)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
@@ -54,7 +63,15 @@ func main() {
 	agentConfig := agent.New(tools)
 	agentConfig.SetModel(selectedModel, providers[selectedModel.Provider])
 
-	tui := tea.NewProgram(newModel(agentConfig, cfg, defaultCommands(), providers, catalog()))
+	session := newModel(agentConfig, cfg, defaultCommands(), providers, catalog())
+	// Known before there is a login: /login is what writes it
+	loginPath, err := config.ChatGPTLoginPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
+		os.Exit(1)
+	}
+	session.signIn = defaultSignIn(loginPath)
+	tui := tea.NewProgram(session)
 	if _, err := tui.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
 		os.Exit(1)
@@ -66,11 +83,12 @@ func main() {
 // never the set.
 type providerSet map[agent.ProviderName]agent.Provider
 
-// loadProviders builds a client for each API key the config holds. No error to
-// return: which providers a session can reach is whichever keys were there,
-// and an empty set is the caller's to report. Kept to one function because a
-// key entered mid-session will want to run it again.
-func loadProviders(cfg config.Config) providerSet {
+// loadProviders builds a client for each API key the config holds, and for the
+// ChatGPT login if there is one. Which providers a session can reach is
+// whichever credentials were there, and an empty set is the caller's to
+// report; the only failure is a login that is there but cannot be read. Kept
+// to one function because a key entered mid-session will want to run it again.
+func loadProviders(cfg config.Config) (providerSet, error) {
 	effort := agent.Effort(cfg.ThinkingEffort)
 	providers := providerSet{}
 
@@ -80,14 +98,32 @@ func loadProviders(cfg config.Config) providerSet {
 	if cfg.OpenAIAPIKey != "" {
 		providers[agent.ProviderOpenAI] = openai.New(cfg.OpenAIAPIKey.Reveal(), cfg.ThinkingEnabled, effort)
 	}
-	return providers
+	if cfg.ChatGPTLoginPath != "" {
+		provider, err := newChatGPTProvider(cfg.ChatGPTLoginPath, cfg)
+		if err != nil {
+			return nil, err
+		}
+		providers[agent.ProviderChatGPT] = provider
+	}
+	return providers, nil
+}
+
+// newChatGPTProvider is the client for the login saved at path. Also run by
+// /login, which adds the provider to a session already under way.
+func newChatGPTProvider(path string, cfg config.Config) (agent.Provider, error) {
+	tokens, err := chatgpt.LoadTokens(path)
+	if err != nil {
+		return nil, err
+	}
+	login := chatgpt.NewSource(path, tokens, chatgpt.OAuth{})
+	return openai.NewChatGPT(login, cfg.ThinkingEnabled, agent.Effort(cfg.ThinkingEffort)), nil
 }
 
 // catalog is every model this build knows about, whether or not its provider
 // has a key: what to offer is a smaller question than what exists, and naming
 // a model nobody can reach deserves a better answer than "unknown model".
 func catalog() []agent.Model {
-	return append(anthropic.Catalog(), openai.Catalog()...)
+	return slices.Concat(anthropic.Catalog(), openai.Catalog(), openai.ChatGPTCatalog())
 }
 
 // startupModel decides which model the session opens on. The notice it returns
@@ -109,9 +145,18 @@ func startupModel(cfg config.Config, providers providerSet) (agent.Model, string
 		return fallback, fmt.Sprintf("no model named %s, starting on %s instead", cfg.Model, fallback.ID), nil
 	}
 	if _, keyed := providers[wanted.Provider]; !keyed {
-		return fallback, fmt.Sprintf("no API key for %s, so %s is out of reach: starting on %s instead", wanted.Provider, wanted.ID, fallback.ID), nil
+		return fallback, fmt.Sprintf("%s, so %s is out of reach: starting on %s instead", missingCredential(wanted.Provider), wanted.ID, fallback.ID), nil
 	}
 	return wanted, "", nil
+}
+
+// missingCredential says what a provider lacks for a session to reach it, in a
+// form that leads a sentence. ChatGPT has no key: what it lacks is a login.
+func missingCredential(provider agent.ProviderName) string {
+	if provider == agent.ProviderChatGPT {
+		return "not signed in to ChatGPT (/login chatgpt, or `elencode login chatgpt`)"
+	}
+	return "no API key for " + string(provider)
 }
 
 // defaultModel is the model a session opens on when the config names none: the
@@ -126,6 +171,8 @@ func defaultModel(providers providerSet) (agent.Model, error) {
 			return anthropic.Default(), nil
 		case agent.ProviderOpenAI:
 			return openai.Default(), nil
+		case agent.ProviderChatGPT:
+			return openai.ChatGPTDefault(), nil
 		}
 	}
 	return agent.Model{}, errors.New("no API key for any provider")
@@ -138,6 +185,8 @@ func defaultCommands() commands.Registry {
 	return commands.NewRegistry(
 		commands.NewConfigCommand(),
 		commands.NewModelCommand(),
+		commands.NewLoginCommand(),
+		commands.NewLogoutCommand(),
 		commands.NewQuitCommand(),
 	)
 }

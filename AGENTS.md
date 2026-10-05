@@ -34,18 +34,27 @@ local development only — CI calls the Go toolchain directly, see
   model in use.
 - `internal/agent` — provider-agnostic agent loop, message/block types, `Event` stream
 - `internal/provider/anthropic`, `internal/provider/openai` — implementations of
-  `agent.Provider`, each with the hand-maintained catalog of its own models
+  `agent.Provider`, each with the hand-maintained catalog of its own models. The
+  openai package also serves the `chatgpt` provider: the same Responses API on
+  `chatgpt.com/backend-api/codex`, billed to a ChatGPT plan instead of API credits
 - `internal/provider/retry` — the parts of "is this failure worth another attempt"
   that do not depend on which API answered
+- `internal/chatgpt` — "Sign in with ChatGPT": OpenAI's OAuth login, in the
+  browser or with a device code (`elencode login chatgpt [--device]`, `/login chatgpt`),
+  and a `Source` that renews the saved tokens. The OAuth is `golang.org/x/oauth2`'s;
+  the provider sees it through `openai.Credentials`
 - `internal/tools` — read, write, edit and bash tools, rooted at the working directory
 - `internal/config` — `$XDG_CONFIG_HOME/elencode/config.json`, overridden by
-  `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`
+  `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`. The ChatGPT login is a separate file
+  beside it, `chatgpt.json`, because its tokens are rewritten whenever they renew
 
 ## TUI
 
 - The transcript is printed above the frame with `tea.Println`, never redrawn: the
   terminal owns it. The frame holds only what can still change — the row being
-  streamed into, the spinner, the menus, the input. Printed output cannot be changed
+  streamed into, the spinner, the menus, the input. While a login waits on the user,
+  its panel (`c` to copy the link, `esc` to cancel) stands in for the input and has
+  the keyboard; `elencode login` on a terminal shows the same panel. Printed output cannot be changed
   afterwards, so anything still in flight stays in the frame until it is final.
 - Commands run concurrently, so prints issued from separate updates can arrive in
   either order. Chain anything ordered with `tea.Sequence`, not `tea.Batch`.
@@ -68,6 +77,9 @@ local development only — CI calls the Go toolchain directly, see
   cannot reason — the assumption no request is ever rejected for.
 - Tests use the standard library only (plus `teatest` for the TUI). Fakes such as
   `scriptedProvider` are hand-written in the test file that needs them — no mocking library.
+- Sign-in commands take the provider by name (`login chatgpt`), so another provider
+  to sign in to joins `signInProviders` with its own flow behind the same two
+  commands, rather than adding commands of its own.
 - Sum types are emulated as an interface with an unexported marker method (see `agent.Event`).
 - Return errors instead of panicking, including in conversion code. Panics on the turn
   goroutine are recovered and surfaced as an `ErrorEvent`.

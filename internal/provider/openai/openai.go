@@ -13,6 +13,7 @@ import (
 	"github.com/openai/openai-go/responses"
 	"github.com/openai/openai-go/shared"
 	"github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/chatgpt"
 	"github.com/rstarc/elencode/internal/provider/retry"
 )
 
@@ -31,6 +32,9 @@ type Client struct {
 	// client: they come from the config file and nothing changes them at runtime.
 	thinking bool
 	effort   agent.Effort
+	// chatGPT shapes requests for the ChatGPT backend rather than the API,
+	// which differ at the edges: see NewChatGPT.
+	chatGPT bool
 }
 
 func New(apiKey string, thinking bool, effort agent.Effort) *Client {
@@ -49,10 +53,17 @@ func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...o
 // owning the context window rather than handing it to the server.
 func (c *Client) params(req agent.Request, input responses.ResponseInputParam) responses.ResponseNewParams {
 	p := responses.ResponseNewParams{
-		Model:           shared.ResponsesModel(req.Model.ID),
-		MaxOutputTokens: openai.Int(req.MaxTokens),
-		Store:           openai.Bool(false),
-		Input:           responses.ResponseNewParamsInputUnion{OfInputItemList: input},
+		Model: shared.ResponsesModel(req.Model.ID),
+		Store: openai.Bool(false),
+		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: input},
+	}
+
+	// The backend rejects a token limit, and requires instructions, which the
+	// API leaves optional.
+	if c.chatGPT {
+		p.Instructions = openai.String(chatGPTInstructions)
+	} else {
+		p.MaxOutputTokens = openai.Int(req.MaxTokens)
 	}
 
 	if len(req.Tools) > 0 {
@@ -214,6 +225,12 @@ func classify(err error) error {
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
+	// No request was sent: the ChatGPT login is over, and only signing in
+	// again brings it back. Any other failure to renew it is left to be
+	// retried below, like a connection failure.
+	if errors.Is(err, chatgpt.ErrSignedOut) {
+		return err
+	}
 
 	var apiErr *openai.Error
 	if !errors.As(err, &apiErr) {
@@ -221,7 +238,7 @@ func classify(err error) error {
 		// treats that as a connection error and retries it.
 		return &agent.RetryableError{Err: err}
 	}
-	if !retryableResponse(apiErr.StatusCode, apiErr.Response) {
+	if usageLimitTypes[apiErr.Type] || !retryableResponse(apiErr.StatusCode, apiErr.Response) {
 		return err
 	}
 	return &agent.RetryableError{Err: err, After: retry.After(apiErr.Response)}

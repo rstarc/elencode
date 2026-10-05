@@ -1,6 +1,9 @@
 package agent
 
-import "strings"
+import (
+	"slices"
+	"strings"
+)
 
 // ProviderName says which API serves a model. A type rather than a string
 // because it is half of a model's identity and travels with it everywhere —
@@ -11,12 +14,20 @@ type ProviderName string
 const (
 	ProviderAnthropic ProviderName = "anthropic"
 	ProviderOpenAI    ProviderName = "openai"
+	// ProviderChatGPT is OpenAI's models on a ChatGPT plan's Codex allowance,
+	// signed in with `elencode login chatgpt` rather than keyed. A provider of its own
+	// rather than another way into openai: it is billed differently, serves a
+	// different set of models, and which of the two a turn spends should be as
+	// visible as the model is.
+	ProviderChatGPT ProviderName = "chatgpt"
 )
 
 // Providers is every provider elencode can talk to, in the order it prefers
 // them when nothing else decides — which is only ever at startup, when a key
-// was found for more than one and the config named no model.
-var Providers = []ProviderName{ProviderAnthropic, ProviderOpenAI}
+// was found for more than one and the config named no model. ChatGPT comes
+// before openai: signing in is a deliberate act, and it spends a plan already
+// paid for rather than API credits.
+var Providers = []ProviderName{ProviderAnthropic, ProviderChatGPT, ProviderOpenAI}
 
 // Model is one model a provider offers, as shown in the picker
 type Model struct {
@@ -63,7 +74,7 @@ func FindModel(models []Model, name string) (Model, bool) {
 	}
 
 	provider := ProviderName(prefix)
-	if provider != ProviderAnthropic && provider != ProviderOpenAI {
+	if !slices.Contains(Providers, provider) {
 		return Model{}, false
 	}
 	if known, ok := findByID(models, provider, id); ok {

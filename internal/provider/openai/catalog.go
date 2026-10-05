@@ -37,12 +37,40 @@ var models = []agent.Model{
 	{ID: "gpt-4o", DisplayName: "GPT-4o", Thinking: agent.ThinkingNone},
 }
 
+// defaultChatGPTModel is the newest of chatGPTModels.
+const defaultChatGPTModel = "gpt-6.1-sol"
+
+// chatGPTModels is what the ChatGPT backend serves to a signed-in account,
+// newest first. A plan that does not include one gets the backend's refusal
+// on the first message.
+var chatGPTModels = []agent.Model{
+	{ID: "gpt-6.1-sol", DisplayName: "GPT-6.1 Sol", Thinking: agent.ThinkingEffort},
+	{ID: "gpt-6-astra", DisplayName: "GPT-6 Astra", Thinking: agent.ThinkingEffort},
+	{ID: "gpt-6-sol", DisplayName: "GPT-6 Sol", Thinking: agent.ThinkingEffort},
+	{ID: "gpt-6-luna", DisplayName: "GPT-6 Luna", Thinking: agent.ThinkingEffort},
+	{ID: "gpt-5.6-sol", DisplayName: "GPT-5.6 Sol", Thinking: agent.ThinkingEffort},
+	{ID: "gpt-5.6-terra", DisplayName: "GPT-5.6 Terra", Thinking: agent.ThinkingEffort},
+	{ID: "gpt-5.6-luna", DisplayName: "GPT-5.6 Luna", Thinking: agent.ThinkingEffort},
+	{ID: "gpt-5.5", DisplayName: "GPT-5.5", Thinking: agent.ThinkingEffort},
+}
+
 // Catalog is every model this provider offers, in the order the picker lists
-// them. A copy, because the caller concatenates it with another provider's.
+// them.
 func Catalog() []agent.Model {
-	catalog := slices.Clone(models)
+	return withProvider(models, agent.ProviderOpenAI)
+}
+
+// ChatGPTCatalog is every model the ChatGPT backend serves, in picker order.
+func ChatGPTCatalog() []agent.Model {
+	return withProvider(chatGPTModels, agent.ProviderChatGPT)
+}
+
+// withProvider stamps provider onto a copy of list. A copy, because the caller
+// concatenates it with another provider's.
+func withProvider(list []agent.Model, provider agent.ProviderName) []agent.Model {
+	catalog := slices.Clone(list)
 	for i := range catalog {
-		catalog[i].Provider = agent.ProviderOpenAI
+		catalog[i].Provider = provider
 	}
 	return catalog
 }
@@ -50,5 +78,12 @@ func Catalog() []agent.Model {
 // Default is the model a session opens on when configuration names none.
 func Default() agent.Model {
 	model, _ := agent.FindModel(Catalog(), defaultModel)
+	return model
+}
+
+// ChatGPTDefault is the model a session opens on when the ChatGPT login is the
+// provider it starts with and configuration names no model.
+func ChatGPTDefault() agent.Model {
+	model, _ := agent.FindModel(ChatGPTCatalog(), defaultChatGPTModel)
 	return model
 }

@@ -49,6 +49,11 @@ type Config struct {
 	Path                string `json:"-"` // config file Load read
 	AnthropicKeyFromEnv bool   `json:"-"` // the environment overrode the file value
 	OpenAIKeyFromEnv    bool   `json:"-"`
+	// ChatGPTLoginPath is where `elencode login chatgpt` saved a ChatGPT login, set only
+	// when there is one. Found rather than configured, like Path: the login is
+	// a file of its own because its tokens are rewritten every time they are
+	// renewed, which this file's merging Save has no business racing.
+	ChatGPTLoginPath string `json:"-"`
 }
 
 // Save writes the configuration back to c.Path.
@@ -118,6 +123,18 @@ const configFileMode = 0o600
 
 const configDirectoryName = "elencode"
 
+const chatGPTLoginFileName = "chatgpt.json"
+
+// ChatGPTLoginPath is where a ChatGPT login is kept: beside the config file.
+// Exported for `elencode login chatgpt`, which writes it before there is a Config.
+func ChatGPTLoginPath() (string, error) {
+	userConfigDir, err := os.UserConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return path.Join(userConfigDir, configDirectoryName, chatGPTLoginFileName), nil
+}
+
 const ANTHROPIC_API_KEY_ENV_VAR_NAME = "ANTHROPIC_API_KEY"
 
 const OPENAI_API_KEY_ENV_VAR_NAME = "OPENAI_API_KEY"
@@ -141,16 +158,17 @@ func Load() (Config, error) {
 	cfg.Path = configFilePath
 	// TOOD: Warn if file is world-readable
 
+	// A missing file is the defaults, not an error: signing in with ChatGPT
+	// writes the login beside it, never the file itself, and the first save
+	// creates it.
 	configFileBytes, err := os.ReadFile(configFilePath)
-	// TODO: if file not found, create it and start authentication prompt
-	if err != nil {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return cfg, err
 	}
-
-	// Unmarshal file into Config
-	err = json.Unmarshal(configFileBytes, &cfg)
-	if err != nil {
-		return cfg, err
+	if err == nil {
+		if err := json.Unmarshal(configFileBytes, &cfg); err != nil {
+			return cfg, err
+		}
 	}
 
 	if val, ok := os.LookupEnv(ANTHROPIC_API_KEY_ENV_VAR_NAME); ok && val != "" {
@@ -162,11 +180,18 @@ func Load() (Config, error) {
 		cfg.OpenAIKeyFromEnv = true
 	}
 
-	// One key is enough — it is what decides which providers a session can
-	// reach — but with none there is nothing to talk to, and saying so now
+	// Whether the login is any good is the chatgpt package's to judge when it
+	// reads it; here it only counts as a credential being there.
+	loginPath := path.Join(path.Dir(configFilePath), chatGPTLoginFileName)
+	if _, err := os.Stat(loginPath); err == nil {
+		cfg.ChatGPTLoginPath = loginPath
+	}
+
+	// One credential is enough — it is what decides which providers a session
+	// can reach — but with none there is nothing to talk to, and saying so now
 	// beats saying it on the first message.
-	if cfg.AnthropicAPIKey == "" && cfg.OpenAIAPIKey == "" {
-		return cfg, fmt.Errorf("no API key set: provide %q or %q in the environment, or %q or %q in %q",
+	if cfg.AnthropicAPIKey == "" && cfg.OpenAIAPIKey == "" && cfg.ChatGPTLoginPath == "" {
+		return cfg, fmt.Errorf("no API key set: provide %q or %q in the environment, or %q or %q in %q, or sign in with ChatGPT by running `elencode login chatgpt`",
 			ANTHROPIC_API_KEY_ENV_VAR_NAME, OPENAI_API_KEY_ENV_VAR_NAME, "anthropic_api_key", "openai_api_key", configFilePath)
 	}
 
