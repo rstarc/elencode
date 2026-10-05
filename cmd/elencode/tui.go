@@ -272,15 +272,9 @@ func (m model) chooseModel(name string) (model, tea.Cmd) {
 		return m, nil
 	}
 
-	chosen, ok := agent.FindModel(m.models, name)
-	if !ok {
-		// The catalog is what this build knows, so an id it does not have is
-		// either a typo or a model newer than the binary — which "openai/" in
-		// front of it would reach.
-		return m, m.reportError(fmt.Errorf("unknown model: %s (name its provider, as in openai/%s, to use one this version does not know)", name, name))
-	}
-	if _, keyed := m.providers[chosen.Provider]; !keyed {
-		return m, m.reportError(fmt.Errorf("%s, so %s cannot be reached", missingCredential(chosen.Provider), chosen.ID))
+	chosen, err := resolveModel(m.models, m.providers, name)
+	if err != nil {
+		return m, m.reportError(err)
 	}
 	return m.selectModel(chosen)
 }
@@ -292,16 +286,9 @@ func (m model) unknownToTheCatalog(chosen agent.Model) bool {
 	return !known
 }
 
-// availableModels is what the list offers: a model whose provider has no key
-// cannot be talked to, so offering it would only produce a failed turn.
+// availableModels is what the list offers.
 func (m model) availableModels() []agent.Model {
-	var available []agent.Model
-	for _, candidate := range m.models {
-		if _, keyed := m.providers[candidate.Provider]; keyed {
-			available = append(available, candidate)
-		}
-	}
-	return available
+	return reachableModels(m.models, m.providers)
 }
 
 // pickModel switches to the model the list is pointing at, or does nothing
@@ -565,6 +552,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case commands.LogoutMsg:
 		return m.logout(msg.Provider)
+
+	case commands.ShowVersionMsg:
+		return m.showVersion()
 
 	case picker.PreviewMsg:
 		// Only the input follows the highlight. The query behind the list stays

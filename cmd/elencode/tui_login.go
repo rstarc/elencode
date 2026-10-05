@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"runtime/debug"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -154,4 +155,10 @@ func (m model) logout(name string) (model, tea.Cmd) {
 	}
 	m, switched := m.selectModel(fallback)
 	return m, tea.Sequence(said, switched)
+}
+
+// showVersion prints the line `elencode version` prints.
+func (m model) showVersion() (model, tea.Cmd) {
+	bi, ok := debug.ReadBuildInfo()
+	return m, printAbove(transcript.Notice(versionLine(version, bi, ok), m.width))
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"slices"
 
@@ -28,29 +29,11 @@ func main() {
 		return
 	}
 
-	// Load config
-	cfg, err := config.Load()
+	cfg, providers, selectedModel, err := loadSession(os.Stderr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
 		os.Exit(1)
 	}
-
-	// One client per credential found. Which of them a turn talks to is
-	// decided by the model, here and at every /model after it.
-	providers, err := loadProviders(cfg)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
-		os.Exit(1)
-	}
-	selectedModel, notice, err := startupModel(cfg, providers)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
-		os.Exit(1)
-	}
-	if notice != "" {
-		fmt.Fprintf(os.Stderr, "elencode: %s\n", notice)
-	}
-	cfg = configWithEffectiveModel(cfg, selectedModel)
 
 	// TODO: Use os.OpenRoot instead
 	root := os.DirFS(".")
@@ -76,6 +59,33 @@ func main() {
 		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
 		os.Exit(1)
 	}
+}
+
+// loadSession is what a session starts from: the config, a client for every
+// credential it names, and the model to open on, recorded in the config as the
+// one in use. Shared with the CLI commands that report on a session, so they
+// say what the session would. Why the model is not the configured one goes to
+// notices.
+func loadSession(notices io.Writer) (config.Config, providerSet, agent.Model, error) {
+	cfg, err := config.Load()
+	if err != nil {
+		return cfg, nil, agent.Model{}, err
+	}
+
+	// One client per credential found. Which of them a turn talks to is decided
+	// by the model, here and at every /model after it.
+	providers, err := loadProviders(cfg)
+	if err != nil {
+		return cfg, nil, agent.Model{}, err
+	}
+	selected, notice, err := startupModel(cfg, providers)
+	if err != nil {
+		return cfg, nil, agent.Model{}, err
+	}
+	if notice != "" {
+		_, _ = fmt.Fprintf(notices, "elencode: %s\n", notice)
+	}
+	return configWithEffectiveModel(cfg, selected), providers, selected, nil
 }
 
 // providerSet holds the live client for every provider a key was found for.
@@ -124,6 +134,35 @@ func newChatGPTProvider(path string, cfg config.Config) (agent.Provider, error) 
 // a model nobody can reach deserves a better answer than "unknown model".
 func catalog() []agent.Model {
 	return slices.Concat(anthropic.Catalog(), openai.Catalog(), openai.ChatGPTCatalog())
+}
+
+// resolveModel is the model name refers to, if the session can reach it: the
+// rules /model and `elencode model` both apply.
+func resolveModel(models []agent.Model, providers providerSet, name string) (agent.Model, error) {
+	chosen, ok := agent.FindModel(models, name)
+	if !ok {
+		// The catalog is what this build knows, so an id it does not have is
+		// either a typo or a model newer than the binary — which "openai/" in
+		// front of it would reach.
+		return agent.Model{}, fmt.Errorf("unknown model: %s (name its provider, as in openai/%s, to use one this version does not know)", name, name)
+	}
+	if _, keyed := providers[chosen.Provider]; !keyed {
+		return agent.Model{}, fmt.Errorf("%s, so %s cannot be reached", missingCredential(chosen.Provider), chosen.ID)
+	}
+	return chosen, nil
+}
+
+// reachableModels is what is offered: a model whose provider has no
+// credential cannot be talked to, so offering it would only produce a failed
+// turn.
+func reachableModels(models []agent.Model, providers providerSet) []agent.Model {
+	var reachable []agent.Model
+	for _, candidate := range models {
+		if _, keyed := providers[candidate.Provider]; keyed {
+			reachable = append(reachable, candidate)
+		}
+	}
+	return reachable
 }
 
 // startupModel decides which model the session opens on. The notice it returns
@@ -187,6 +226,7 @@ func defaultCommands() commands.Registry {
 		commands.NewModelCommand(),
 		commands.NewLoginCommand(),
 		commands.NewLogoutCommand(),
+		commands.NewVersionCommand(),
 		commands.NewQuitCommand(),
 	)
 }

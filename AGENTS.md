@@ -77,6 +77,10 @@ local development only — CI calls the Go toolchain directly, see
   cannot reason — the assumption no request is ever rejected for.
 - Tests use the standard library only (plus `teatest` for the TUI). Fakes such as
   `scriptedProvider` are hand-written in the test file that needs them — no mocking library.
+- Every CLI command (`elencode <name>`) has a slash command of the same name and
+  vice versa, so neither is a second-class way in. The exceptions are listed in
+  `slashOnly` with the reason (only `/quit`), and `cli_test.go` holds the two lists to
+  it. Both sides share the logic underneath: a command is two thin entry points.
 - Sign-in commands take the provider by name (`login chatgpt`), so another provider
   to sign in to joins `signInProviders` with its own flow behind the same two
   commands, rather than adding commands of its own.

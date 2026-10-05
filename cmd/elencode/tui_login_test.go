@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
@@ -331,6 +332,15 @@ func TestLogoutCommandRefusesAKeyedProvider(t *testing.T) {
 	}
 	if _, ok := m.providers[agent.ProviderAnthropic]; !ok {
 		t.Error("refusing to log out of anthropic dropped it anyway")
+	}
+}
+
+func TestVersionCommandPrintsTheVersionLine(t *testing.T) {
+	_, cmd := updateCmd(t, newSizedModel(t), commands.ShowVersionMsg{})
+
+	bi, ok := debug.ReadBuildInfo()
+	if got := text(run(t, cmd)); !strings.Contains(got, versionLine(version, bi, ok)) {
+		t.Errorf("printed %q, want the version line", got)
 	}
 }
 
