@@ -119,3 +119,19 @@ func rowFor(view, name string) string {
 	}
 	return ""
 }
+
+// The login has no value to mask, only a state: where it is saved, or how to
+// get one.
+func TestRenderConfigShowsWhereTheChatGPTLoginIs(t *testing.T) {
+	cfg := config.Config{ChatGPTLoginPath: "/home/someone/.config/elencode/chatgpt.json", Path: "/tmp/c.json"}
+
+	if row := rowFor(renderConfig(cfg, 120), "chatgpt_login"); !strings.Contains(row, cfg.ChatGPTLoginPath) {
+		t.Errorf("chatgpt login row = %q, want it to name the file", row)
+	}
+}
+
+func TestRenderConfigSaysHowToSignInToChatGPT(t *testing.T) {
+	if row := rowFor(renderConfig(config.Config{Path: "/tmp/c.json"}, 120), "chatgpt_login"); !strings.Contains(row, "elencode login") {
+		t.Errorf("chatgpt login row = %q, want it to say how to sign in", row)
+	}
+}

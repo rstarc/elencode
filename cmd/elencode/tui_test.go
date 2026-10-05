@@ -286,8 +286,8 @@ func TestArrowsCompleteIntoTheInput(t *testing.T) {
 	}
 	// The list is filtered by what was typed, not by what the arrows wrote, or
 	// there would be one row left and nowhere to move
-	if got := len(m.menu.Matches()); got != 3 {
-		t.Errorf("%d commands left after arrowing, want all 3", got)
+	if got, want := len(m.menu.Matches()), len(defaultCommands().Commands()); got != want {
+		t.Errorf("%d commands left after arrowing, want all %d", got, want)
 	}
 }
 
@@ -840,9 +840,10 @@ func TestProgramPicksACommandWithTheArrowKeys(t *testing.T) {
 		return bytes.Contains(out, []byte("exit elencode"))
 	})
 
-	// Down the list to /quit, the last of the three
-	tm.Send(tea.KeyPressMsg{Code: tea.KeyDown})
-	tm.Send(tea.KeyPressMsg{Code: tea.KeyDown})
+	// Down the list to /quit, the last of them
+	for range len(defaultCommands().Commands()) - 1 {
+		tm.Send(tea.KeyPressMsg{Code: tea.KeyDown})
+	}
 	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
 		return strings.Contains(ansi.Strip(string(out)), menu.MarkerSelected+" /quit")
 	})

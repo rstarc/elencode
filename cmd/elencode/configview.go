@@ -21,6 +21,7 @@ func renderConfig(cfg config.Config, width int) string {
 		menu.Row(menu.Marker, "", width),
 		configRow("anthropic_api_key", keyValue(cfg.AnthropicAPIKey, cfg.AnthropicKeyFromEnv, config.ANTHROPIC_API_KEY_ENV_VAR_NAME), width),
 		configRow("openai_api_key", keyValue(cfg.OpenAIAPIKey, cfg.OpenAIKeyFromEnv, config.OPENAI_API_KEY_ENV_VAR_NAME), width),
+		configRow("chatgpt_login", loginValue(cfg.ChatGPTLoginPath), width),
 		configRow("model", cfg.Model, width),
 		configRow("thinking_enabled", strconv.FormatBool(cfg.ThinkingEnabled), width),
 		configRow("thinking_effort", effortValue(cfg.ThinkingEffort), width),
@@ -39,6 +40,15 @@ func keyValue(key config.Secret, fromEnv bool, envVar string) string {
 		source = "from " + envVar
 	}
 	return key.String() + "  (" + source + ")"
+}
+
+// loginValue says where the ChatGPT login is saved, or how to get one: there
+// is no value to show, only whether it is there.
+func loginValue(path string) string {
+	if path == "" {
+		return "(not signed in: run `elencode login`)"
+	}
+	return "signed in  (" + path + ")"
 }
 
 // effortValue names what an unset effort means, rather than leaving the row

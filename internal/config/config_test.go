@@ -524,3 +524,127 @@ func TestSaveCreatesTheFileWhenItDoesNotExist(t *testing.T) {
 		t.Errorf("mode = %o, want 600", perm)
 	}
 }
+
+// signIn leaves a ChatGPT login next to the config file writeConfig made, and
+// returns its path. Its contents are the chatgpt package's to judge.
+func signIn(t *testing.T, configFile string) string {
+	t.Helper()
+	login := path.Join(path.Dir(configFile), "chatgpt.json")
+	if err := os.WriteFile(login, []byte(`{}`), 0o600); err != nil {
+		t.Fatalf("writing login: %v", err)
+	}
+	return login
+}
+
+func TestChatGPTLoginPathIsNextToTheConfigFile(t *testing.T) {
+	file := writeConfig(t, `{}`)
+
+	got, err := ChatGPTLoginPath()
+	if err != nil {
+		t.Fatalf("ChatGPTLoginPath: %v", err)
+	}
+	if want := path.Join(path.Dir(file), "chatgpt.json"); got != want {
+		t.Errorf("ChatGPTLoginPath = %q, want %q", got, want)
+	}
+}
+
+// Signing in stands in for an API key: it is a provider the session can reach.
+func TestLoadAcceptsAChatGPTLoginAlone(t *testing.T) {
+	file := writeConfig(t, `{}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
+	login := signIn(t, file)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ChatGPTLoginPath != login {
+		t.Errorf("ChatGPTLoginPath = %q, want %q", cfg.ChatGPTLoginPath, login)
+	}
+}
+
+func TestLoadLeavesTheLoginPathEmptyWhenNotSignedIn(t *testing.T) {
+	writeConfig(t, `{"anthropic_api_key":"sk-ant"}`)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ChatGPTLoginPath != "" {
+		t.Errorf("ChatGPTLoginPath = %q, want empty without a login", cfg.ChatGPTLoginPath)
+	}
+}
+
+// The error for having nothing to talk to has to mention every way out.
+func TestLoadWithNoCredentialsMentionsSigningIn(t *testing.T) {
+	writeConfig(t, `{}`)
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
+
+	_, err := Load()
+	if err == nil || !strings.Contains(err.Error(), "elencode login") {
+		t.Errorf("err = %v, want it to mention elencode login", err)
+	}
+}
+
+// Where the login lives is found, not configured: it must never be written
+// into the config file.
+func TestSaveDoesNotWriteTheLoginPath(t *testing.T) {
+	file := writeConfig(t, `{}`)
+
+	cfg := Config{Path: file, ChatGPTLoginPath: "/somewhere/chatgpt.json"}
+	if err := cfg.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	body, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(body), "chatgpt") {
+		t.Errorf("config file = %s, want no login path in it", body)
+	}
+}
+
+// Someone who only ever signed in with ChatGPT has no config file: login
+// writes the login, not a config. Their first start must not fail on a file
+// they never had a reason to create.
+func TestLoadTreatsAMissingFileAsEmpty(t *testing.T) {
+	file := writeConfig(t, `{}`)
+	signIn(t, file)
+	if err := os.Remove(file); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Path != file {
+		t.Errorf("Path = %q, want %q, where a save would create it", cfg.Path, file)
+	}
+	if !cfg.ThinkingEnabled {
+		t.Error("ThinkingEnabled = false, want the default")
+	}
+	if cfg.ChatGPTLoginPath == "" {
+		t.Error("the login beside the missing file was not found")
+	}
+}
+
+// A file that exists but cannot be read is still an error: treating it as
+// empty would quietly drop whatever it says.
+func TestLoadStillFailsOnAnUnreadableFile(t *testing.T) {
+	file := writeConfig(t, `{"anthropic_api_key":"key"}`)
+	if err := os.Chmod(file, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.ReadFile(file); err == nil {
+		t.Skip("running as a user who can read anything, root say")
+	}
+
+	if _, err := Load(); err == nil {
+		t.Error("Load succeeded on a file it could not read")
+	}
+}

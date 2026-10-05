@@ -87,3 +87,32 @@ func TestFindModelRejectsAKnownIDUnderTheWrongProvider(t *testing.T) {
 		t.Errorf("FindModel = %+v, want an openai model that does not reason", got)
 	}
 }
+
+// The subscription is its own provider: it serves its own set of models, and
+// a model newer than the catalog is reached by naming it, as with the others.
+func TestFindModelAcceptsAQualifiedChatGPTModel(t *testing.T) {
+	got, ok := FindModel(catalog, "chatgpt/gpt-nonexistent")
+	if !ok {
+		t.Fatal("FindModel rejected a qualified chatgpt model")
+	}
+
+	want := Model{Provider: ProviderChatGPT, ID: "gpt-nonexistent", DisplayName: "gpt-nonexistent"}
+	if got != want {
+		t.Errorf("FindModel = %+v, want %+v", got, want)
+	}
+}
+
+func TestProvidersListsEveryProviderOnce(t *testing.T) {
+	seen := map[ProviderName]bool{}
+	for _, name := range Providers {
+		if seen[name] {
+			t.Errorf("%q is listed twice", name)
+		}
+		seen[name] = true
+	}
+	for _, name := range []ProviderName{ProviderAnthropic, ProviderOpenAI, ProviderChatGPT} {
+		if !seen[name] {
+			t.Errorf("%q is missing from Providers", name)
+		}
+	}
+}

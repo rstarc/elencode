@@ -73,6 +73,14 @@ type model struct {
 	// over from an earlier one cannot disarm the current one.
 	quitArmed      bool
 	quitGeneration int
+	// Signing in from inside the session: how a login reaches the user, and
+	// while one waits on them, what gives it up.
+	signIn      signIn
+	loginCancel context.CancelFunc
+	// loginPanel replaces the input while a login waits; clipboard is where
+	// its c copies to.
+	loginPanel loginPanel
+	clipboard  clipboard
 }
 
 // quitDisarmMsg withdraws the exit confirmation armed by generation
@@ -119,6 +127,7 @@ func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry,
 		menu:      newCommandMenu(registry),
 		modelList: newModelList(),
 		input:     input,
+		clipboard: systemClipboard(),
 		spinner:   spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
 		state:     uiStateIdle,
 	}
@@ -271,7 +280,7 @@ func (m model) chooseModel(name string) (model, tea.Cmd) {
 		return m, m.reportError(fmt.Errorf("unknown model: %s (name its provider, as in openai/%s, to use one this version does not know)", name, name))
 	}
 	if _, keyed := m.providers[chosen.Provider]; !keyed {
-		return m, m.reportError(fmt.Errorf("no API key for %s, so %s cannot be reached", chosen.Provider, chosen.ID))
+		return m, m.reportError(fmt.Errorf("%s, so %s cannot be reached", missingCredential(chosen.Provider), chosen.ID))
 	}
 	return m.selectModel(chosen)
 }
@@ -419,6 +428,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+		// A login waiting on the user has the keyboard, as the config view does
+		if m.loginCancel != nil {
+			return m.pressDuringLogin(msg)
+		}
 		// Any other key withdraws a pending exit confirmation, so ctrl+c followed
 		// by typing does not leave a live quit waiting one keystroke away.
 		if m.quitArmed && msg.String() != "ctrl+c" {
@@ -433,6 +446,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.quitArmed {
 				if m.cancel != nil {
 					m.cancel()
+				}
+				if m.loginCancel != nil {
+					m.loginCancel()
 				}
 				return m, tea.Quit
 			}
@@ -509,6 +525,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// channel closes, not here: a MessageEvent may be followed by tool
 		// results and another round of inference.
 		return m, tea.Sequence(print, waitForEvent(m.events, m.turnID))
+	case copiedMsg:
+		if m.loginCancel == nil {
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.loginPanel, cmd = m.loginPanel.done(msg)
+		return m, cmd
+
+	case copiedExpiredMsg:
+		m.loginPanel = m.loginPanel.expire(msg)
+		return m, nil
+
 	case commands.ShowConfigMsg:
 		m.configVisible = true
 		return m, nil
@@ -521,7 +549,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.cancel != nil {
 			m.cancel()
 		}
+		if m.loginCancel != nil {
+			m.loginCancel()
+		}
 		return m, tea.Quit
+
+	case commands.LoginMsg:
+		return m.login(msg.Arg)
+
+	case loginPromptMsg:
+		return m.showLoginPrompt(msg)
+
+	case loginDoneMsg:
+		return m.finishLogin(msg)
+
+	case commands.LogoutMsg:
+		return m.logout(msg.Provider)
 
 	case picker.PreviewMsg:
 		// Only the input follows the highlight. The query behind the list stays
@@ -595,6 +638,14 @@ func (m model) View() tea.View {
 	}
 	if m.busy() {
 		rows = append(rows, m.spinnerLine())
+	}
+	// A waiting login has the keyboard, so its panel stands in for the input,
+	// and there is no cursor to place
+	if m.loginCancel != nil {
+		rows = append(rows, m.loginPanel.view())
+		view := tea.NewView(lipgloss.JoinVertical(lipgloss.Top, rows...))
+		view.AltScreen = false
+		return view
 	}
 	if hint := m.quitHint(); hint != "" {
 		rows = append(rows, hint)
