@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
@@ -19,17 +21,39 @@ func renderConfig(cfg config.Config, width int) string {
 	rows := []string{
 		menu.Row(menu.Marker, title, width),
 		menu.Row(menu.Marker, "", width),
-		configRow("anthropic_api_key", keyValue(cfg.AnthropicAPIKey, cfg.AnthropicKeyFromEnv, config.ANTHROPIC_API_KEY_ENV_VAR_NAME), width),
-		configRow("openai_api_key", keyValue(cfg.OpenAIAPIKey, cfg.OpenAIKeyFromEnv, config.OPENAI_API_KEY_ENV_VAR_NAME), width),
-		configRow("chatgpt_login", loginValue(cfg.ChatGPTLoginPath), width),
-		configRow("model", cfg.Model, width),
-		configRow("thinking_enabled", strconv.FormatBool(cfg.ThinkingEnabled), width),
-		configRow("thinking_effort", effortValue(cfg.ThinkingEffort), width),
-		configRow("config file", cfg.Path, width),
+	}
+	for _, setting := range configSettings(cfg) {
+		rows = append(rows, configRow(setting.name, setting.value, width))
+	}
+	rows = append(rows,
 		menu.Row(menu.Marker, "", width),
 		menu.Row(menu.Marker, lipgloss.NewStyle().Foreground(menu.DescriptionColor).Render("esc to close"), width),
-	}
+	)
 	return strings.Join(rows, "\n")
+}
+
+// printConfig writes what /config shows as plain text, for `elencode config`.
+func printConfig(cfg config.Config, out io.Writer) {
+	for _, setting := range configSettings(cfg) {
+		_, _ = fmt.Fprintf(out, "%-*s%s\n", configLabelWidth, setting.name, setting.value)
+	}
+}
+
+// setting is one name/value row of the configuration.
+type setting struct{ name, value string }
+
+// configSettings is every row the configuration is shown as, in order: one
+// list, so /config and `elencode config` cannot drift apart.
+func configSettings(cfg config.Config) []setting {
+	return []setting{
+		{"anthropic_api_key", keyValue(cfg.AnthropicAPIKey, cfg.AnthropicKeyFromEnv, config.ANTHROPIC_API_KEY_ENV_VAR_NAME)},
+		{"openai_api_key", keyValue(cfg.OpenAIAPIKey, cfg.OpenAIKeyFromEnv, config.OPENAI_API_KEY_ENV_VAR_NAME)},
+		{"chatgpt_login", loginValue(cfg.ChatGPTLoginPath)},
+		{"model", cfg.Model},
+		{"thinking_enabled", strconv.FormatBool(cfg.ThinkingEnabled)},
+		{"thinking_effort", effortValue(cfg.ThinkingEffort)},
+		{"config file", cfg.Path},
+	}
 }
 
 // keyValue masks a key and says where it came from, which is the whole point of
@@ -46,7 +70,7 @@ func keyValue(key config.Secret, fromEnv bool, envVar string) string {
 // is no value to show, only whether it is there.
 func loginValue(path string) string {
 	if path == "" {
-		return "(not signed in: run `elencode login`)"
+		return "(not signed in: /login chatgpt, or `elencode login chatgpt`)"
 	}
 	return "signed in  (" + path + ")"
 }
