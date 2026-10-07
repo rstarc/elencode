@@ -4,7 +4,7 @@ go 1.26.8
 
 require (
 	charm.land/bubbles/v2 v2.1.1
-	charm.land/bubbletea/v2 v2.0.8
+	charm.land/bubbletea/v2 v2.0.9
 	charm.land/lipgloss/v2 v2.0.5
 	github.com/anthropics/anthropic-sdk-go v1.57.0
 	github.com/atotto/clipboard v0.1.4
