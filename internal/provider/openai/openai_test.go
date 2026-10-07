@@ -1101,3 +1101,115 @@ func TestStreamSurfacesAnUnsupportedOutputItem(t *testing.T) {
 		t.Errorf("err = %v, want it to name the offending item", last.Err)
 	}
 }
+
+// recorder stands in for the network: it keeps the request it is handed and
+// answers with a refusal, which ends the turn without a retry.
+type recorder struct {
+	mu  sync.Mutex
+	req *http.Request
+}
+
+func (r *recorder) Do(req *http.Request) (*http.Response, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.req = req
+	return &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"recorded","type":"invalid_request_error"}}`)),
+		Request:    req,
+	}, nil
+}
+
+func (r *recorder) request() *http.Request {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.req
+}
+
+// The SDK reads the environment by default: a key, a base URL, organisation
+// headers. elencode resolves its own credentials and says where a request
+// goes, so none of those may reach one.
+func TestTheEnvironmentDoesNotReachTheRequest(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "env-api-key")
+	t.Setenv("OPENAI_BASE_URL", "http://env-base-url.invalid")
+	t.Setenv("OPENAI_ORG_ID", "env-org")
+	t.Setenv("OPENAI_PROJECT_ID", "env-project")
+	rec := &recorder{}
+
+	c := newWithOptions("configured-key", false, agent.EffortNone, option.WithHTTPClient(rec))
+	collect(t, c.Stream(context.Background(), agent.Request{
+		Model:     agent.Model{ID: "gpt-5"},
+		MaxTokens: 100,
+		Messages:  []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+	}))
+
+	req := rec.request()
+	if req == nil {
+		t.Fatal("no request was sent")
+	}
+	if req.URL.Host != "api.openai.com" {
+		t.Errorf("request went to %s, want api.openai.com", req.URL.Host)
+	}
+	if got := req.Header.Get("Authorization"); got != "Bearer configured-key" {
+		t.Errorf("Authorization = %q, want the configured key", got)
+	}
+	for name, values := range req.Header {
+		for _, v := range values {
+			if strings.Contains(v, "env-") {
+				t.Errorf("header %s = %q came from the environment", name, v)
+			}
+		}
+	}
+}
+
+// checkKeyAgainst runs CheckKey against a server answering every request with
+// status and body, returning the path that was asked for and the error.
+func checkKeyAgainst(t *testing.T, status int, body string) (asked string, err error) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer server.Close()
+
+	c := newWithOptions("key", false, agent.EffortNone, option.WithBaseURL(server.URL))
+	err = c.CheckKey(context.Background())
+	return asked, err
+}
+
+func TestCheckKeyAcceptsAKeyTheAPIAccepts(t *testing.T) {
+	asked, err := checkKeyAgainst(t, http.StatusOK, `{"object":"list","data":[]}`)
+	if err != nil {
+		t.Fatalf("CheckKey: %v", err)
+	}
+	// Listing models costs nothing, which is why it is the check
+	if asked != "/models" {
+		t.Errorf("asked for %s, want /models", asked)
+	}
+}
+
+func TestCheckKeyReportsARejectedKey(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		_, err := checkKeyAgainst(t, status, `{"error":{"message":"Incorrect API key provided","type":"invalid_request_error","code":"invalid_api_key"}}`)
+		if !errors.Is(err, agent.ErrKeyRejected) {
+			t.Errorf("status %d: err = %v, want ErrKeyRejected", status, err)
+		}
+	}
+}
+
+// Not reaching the API says nothing about the key, so it must not read as a
+// rejection: the key is still worth saving.
+func TestCheckKeyTellsAnUnreachableAPIFromARejectedKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	serverURL := server.URL
+	server.Close()
+
+	c := newWithOptions("key", false, agent.EffortNone, option.WithBaseURL(serverURL))
+	err := c.CheckKey(context.Background())
+	if err == nil || errors.Is(err, agent.ErrKeyRejected) {
+		t.Errorf("err = %v, want a failure that is not a rejection", err)
+	}
+}

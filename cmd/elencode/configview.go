@@ -11,11 +11,9 @@ import (
 	"github.com/rstarc/elencode/internal/tui/menu"
 )
 
-// renderConfig draws the read-only configuration view. The API keys are printed
-// through Secret.String, so the values cannot reach the screen.
-//
-// Both keys are shown: both are live, since a session reaches whichever
-// providers were keyed, and the model row says which one it is talking to.
+// renderConfig draws the read-only configuration view. Every provider is
+// shown, since a session reaches all that are connected, and the model row
+// says which one it is talking to.
 func renderConfig(cfg config.Config, width int) string {
 	title := lipgloss.NewStyle().Foreground(menu.NameColor).Render("configuration")
 	rows := []string{
@@ -43,36 +41,20 @@ func printConfig(cfg config.Config, out io.Writer) {
 type setting struct{ name, value string }
 
 // configSettings is every row the configuration is shown as, in order: one
-// list, so /config and `elencode config` cannot drift apart.
+// list, so /config and `elencode config` cannot drift apart. A provider's row
+// says how it is connected, never with what key.
 func configSettings(cfg config.Config) []setting {
-	return []setting{
-		{"anthropic_api_key", keyValue(cfg.AnthropicAPIKey, cfg.AnthropicKeyFromEnv, config.ANTHROPIC_API_KEY_ENV_VAR_NAME)},
-		{"openai_api_key", keyValue(cfg.OpenAIAPIKey, cfg.OpenAIKeyFromEnv, config.OPENAI_API_KEY_ENV_VAR_NAME)},
-		{"chatgpt_login", loginValue(cfg.ChatGPTLoginPath)},
-		{"model", cfg.Model},
-		{"thinking_enabled", strconv.FormatBool(cfg.ThinkingEnabled)},
-		{"thinking_effort", effortValue(cfg.ThinkingEffort)},
-		{"config file", cfg.Path},
+	var settings []setting
+	for _, status := range providerStatuses(cfg) {
+		settings = append(settings, setting{string(status.provider), status.description()})
 	}
-}
-
-// keyValue masks a key and says where it came from, which is the whole point of
-// the view: a key from the environment is not the one in the file.
-func keyValue(key config.Secret, fromEnv bool, envVar string) string {
-	source := "from config file"
-	if fromEnv {
-		source = "from " + envVar
-	}
-	return key.String() + "  (" + source + ")"
-}
-
-// loginValue says where the ChatGPT login is saved, or how to get one: there
-// is no value to show, only whether it is there.
-func loginValue(path string) string {
-	if path == "" {
-		return "(not signed in: /login chatgpt, or `elencode login chatgpt`)"
-	}
-	return "signed in  (" + path + ")"
+	return append(settings,
+		setting{"model", cfg.Model},
+		setting{"thinking_enabled", strconv.FormatBool(cfg.ThinkingEnabled)},
+		setting{"thinking_effort", effortValue(cfg.ThinkingEffort)},
+		setting{"config file", cfg.Path},
+		setting{"credentials", cfg.CredentialsPath},
+	)
 }
 
 // effortValue names what an unset effort means, rather than leaving the row

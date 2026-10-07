@@ -62,6 +62,40 @@ func TestSlashOnlyListsOnlySlashCommandsWithoutACLIEquivalent(t *testing.T) {
 	}
 }
 
+func cliAliases(name string) []string {
+	for _, c := range cliCommands() {
+		if c.Name == name {
+			return c.Aliases
+		}
+	}
+	return nil
+}
+
+// An alias is a second name for a command, and the parity holds for it as it
+// does for the name: whatever /login is, `elencode login` is too.
+func TestAliasesAreTheSameOnBothSides(t *testing.T) {
+	for _, c := range defaultCommands().Commands() {
+		if slices.Contains(slashOnly, c.Name) {
+			continue
+		}
+		cli := cliAliases(c.Name)
+		if !slices.Equal(slices.Sorted(slices.Values(cli)), slices.Sorted(slices.Values(c.Aliases))) {
+			t.Errorf("/%s answers to %v, `elencode %s` to %v", c.Name, c.Aliases, c.Name, cli)
+		}
+	}
+}
+
+// An alias runs its command: `elencode logout` is `elencode disconnect`, down
+// to the error for a provider it does not know.
+func TestRunCLIRunsACommandByItsAlias(t *testing.T) {
+	handled, byAlias := runCLI([]string{"logout", "nonesuch"}, &bytes.Buffer{})
+	_, byName := runCLI([]string{"disconnect", "nonesuch"}, &bytes.Buffer{})
+
+	if !handled || byAlias == nil || byName == nil || byAlias.Error() != byName.Error() {
+		t.Errorf("logout = %v, disconnect = %v, want the same failure", byAlias, byName)
+	}
+}
+
 func TestRunCLIStartsTheSessionWithoutArguments(t *testing.T) {
 	handled, err := runCLI(nil, &bytes.Buffer{})
 	if handled || err != nil {
@@ -75,7 +109,7 @@ func TestRunCLIRejectsAnUnknownCommand(t *testing.T) {
 	if !handled || err == nil {
 		t.Fatalf("runCLI(modle) = %v, %v, want an error", handled, err)
 	}
-	for _, want := range []string{"modle", "model", "login"} {
+	for _, want := range []string{"modle", "model", "connect"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("err = %q, want it to mention %q", err, want)
 		}
@@ -93,9 +127,13 @@ func TestRunCLIRunsTheNamedCommandWithTheRestOfTheArguments(t *testing.T) {
 	}
 }
 
-func TestPrintConfigIsPlainTextWithTheKeyMasked(t *testing.T) {
+func TestPrintConfigIsPlainTextWithoutTheKey(t *testing.T) {
 	const key = "sk-ant-do-not-print-me"
-	cfg := config.Config{AnthropicAPIKey: config.Secret(key), Model: "anthropic/x", Path: "/tmp/elencode/config.json"}
+	cfg := config.Config{
+		Credentials: config.Credentials{agent.ProviderAnthropic: {APIKey: key}},
+		Model:       "anthropic/x",
+		Path:        "/tmp/elencode/config.json",
+	}
 	var out bytes.Buffer
 
 	printConfig(cfg, &out)
@@ -108,7 +146,7 @@ func TestPrintConfigIsPlainTextWithTheKeyMasked(t *testing.T) {
 		t.Errorf("printed escape codes, want plain text for a pipe:\n%s", got)
 	}
 	// The same rows /config shows, and nothing about closing a view
-	for _, want := range []string{"anthropic_api_key", cfg.AnthropicAPIKey.String(), "chatgpt_login", "anthropic/x", cfg.Path} {
+	for _, want := range []string{"anthropic", "chatgpt", "anthropic/x", cfg.Path} {
 		if !strings.Contains(got, want) {
 			t.Errorf("printed config does not mention %q:\n%s", want, got)
 		}
@@ -144,7 +182,7 @@ func TestModelCLIListsTheReachableModelsAndMarksTheCurrentOne(t *testing.T) {
 func setModel(t *testing.T, providers providerSet, name string) (string, error) {
 	t.Helper()
 	file := filepath.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(file, []byte(`{"anthropic_api_key":"key"}`), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte(`{"future_setting":42}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	err := runModelCLI(config.Config{Path: file}, providers, testModels, testModels[0], name, &bytes.Buffer{})
@@ -162,7 +200,7 @@ func TestModelCLISavesTheNamedModel(t *testing.T) {
 	if !strings.Contains(saved, `"openai/model-two"`) {
 		t.Errorf("config file = %s, want the qualified model", saved)
 	}
-	if !strings.Contains(saved, `"anthropic_api_key"`) {
+	if !strings.Contains(saved, `"future_setting": 42`) {
 		t.Errorf("config file = %s, want the rest of it kept", saved)
 	}
 }

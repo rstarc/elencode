@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/provider/retry"
@@ -34,11 +35,41 @@ func New(apiKey string, thinking bool, effort agent.Effort) *Client {
 
 // newWithOptions is New with extra SDK options, which tests use to point the
 // client at a stub server.
+//
+// The SDK would otherwise read the environment for itself: a base URL, a
+// bearer token, extra headers, profile files. Which key a request carries and
+// where it goes is elencode's to say, so all of that is switched off.
 func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...option.RequestOption) *Client {
-	opts = append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
+	// The SDK's own default client, which turning off its environment defaults
+	// turns off too: it bounds the wait for a response to start, so a server
+	// that accepts the connection and never answers fails eventually.
+	client := &http.Client{Transport: http.DefaultTransport}
+	if transport, ok := http.DefaultTransport.(*http.Transport); ok {
+		transport = transport.Clone()
+		transport.ResponseHeaderTimeout = 10 * time.Minute
+		client.Transport = transport
+	}
+	opts = append([]option.RequestOption{
+		option.WithoutEnvironmentDefaults(),
+		option.WithHTTPClient(client),
+		option.WithAPIKey(apiKey),
+	}, opts...)
 	// Thinking stays off until Resolve says what this model accepts: asking for
 	// the wrong kind is rejected outright, not ignored.
 	return &Client{client: sdk.NewClient(opts...), thinking: thinking, effort: effort}
+}
+
+// CheckKey asks the API whether it accepts the client's key, by listing one
+// model: the cheapest request there is, costing nothing. A refusal is
+// agent.ErrKeyRejected; any other failure says nothing about the key.
+func (c *Client) CheckKey(ctx context.Context) error {
+	_, err := c.client.Models.List(ctx, sdk.ModelListParams{Limit: sdk.Int(1)}, noRetry)
+	var apiErr *sdk.Error
+	if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden) {
+		// The status says enough: the body repeats it, with the URL around it
+		return fmt.Errorf("%w (%d %s)", agent.ErrKeyRejected, apiErr.StatusCode, http.StatusText(apiErr.StatusCode))
+	}
+	return err
 }
 
 // thinkingBudget is how many tokens a model of the older kind may reason with.

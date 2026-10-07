@@ -25,13 +25,14 @@ type ClosedMsg struct{}
 // Config decides what a picker is: how an entry is drawn, when it is open, and
 // what it says when nothing matches.
 type Config[T any] struct {
-	// Render draws one entry. Its Name is also what the entry is matched and
-	// previewed by, so it is what the user types to reach it.
+	// Render draws one entry. Its Name is also what the entry is previewed by,
+	// so it is what the user types to reach it.
 	Render func(T) menu.Item
 	// Match reports whether an entry survives the query. How a list is searched
 	// is the list's own business: what reads well over three short command names
-	// reads badly over twenty model ids.
-	Match func(query, name string) bool
+	// reads badly over twenty model ids. It is handed the entry rather than its
+	// name, so an entry can be found by more than what its row shows.
+	Match func(query string, item T) bool
 	// Trigger opens the picker for as long as the query starts with it, the way
 	// a slash opens the command menu. Empty means the picker opens on Show
 	// instead, and stays open until it is closed.
@@ -128,7 +129,7 @@ func (m Model[T]) Matches() []T {
 
 	var matches []T
 	for _, item := range m.items {
-		if m.cfg.Match(m.query, m.cfg.Render(item).Name) {
+		if m.cfg.Match(m.query, item) {
 			matches = append(matches, item)
 		}
 	}

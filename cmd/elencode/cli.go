@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"runtime/debug"
+	"slices"
 	"strings"
 
 	"github.com/rstarc/elencode/internal/agent"
@@ -16,7 +17,10 @@ import (
 // the two lists to that.
 type cliCommand struct {
 	Name string
-	Run  func(args []string, out io.Writer) error
+	// Aliases are other names the command answers to, the same as its slash
+	// command's.
+	Aliases []string
+	Run     func(args []string, out io.Writer) error
 }
 
 // slashOnly are the slash commands with no CLI equivalent, each because it
@@ -32,8 +36,8 @@ func cliCommands() []cliCommand {
 	return []cliCommand{
 		{Name: "config", Run: configCLI},
 		{Name: "model", Run: modelCLI},
-		{Name: "login", Run: loginCLI},
-		{Name: "logout", Run: logoutCLI},
+		{Name: "connect", Aliases: []string{"login"}, Run: connectCLI},
+		{Name: "disconnect", Aliases: []string{"logout"}, Run: disconnectCLI},
 		{Name: "version", Run: versionCLI},
 	}
 }
@@ -45,7 +49,7 @@ func runCLI(args []string, out io.Writer) (bool, error) {
 		return false, nil
 	}
 	for _, c := range cliCommands() {
-		if c.Name == args[0] {
+		if c.Name == args[0] || slices.Contains(c.Aliases, args[0]) {
 			return true, c.Run(args[1:], out)
 		}
 	}
@@ -86,6 +90,9 @@ func modelCLI(args []string, out io.Writer) error {
 // start on, or with a name, makes that the one. There is no session to switch,
 // so choosing a model is saving it for the next: what /model saves too.
 func runModelCLI(cfg config.Config, providers providerSet, models []agent.Model, current agent.Model, name string, out io.Writer) error {
+	if len(providers) == 0 {
+		return errNothingConnected
+	}
 	if name == "" {
 		for _, model := range reachableModels(models, providers) {
 			marker := " "

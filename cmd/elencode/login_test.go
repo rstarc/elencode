@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/chatgpt"
+	"github.com/rstarc/elencode/internal/config"
 )
 
 // issuerStub stands in for auth.openai.com: the token endpoint answers with
@@ -112,9 +113,20 @@ func testSignIn(t *testing.T, issuer string, b *fakeBrowser) signIn {
 	return signIn{
 		oauth:        chatgpt.OAuth{Issuer: issuer},
 		callbackAddr: "127.0.0.1:0",
-		path:         filepath.Join(t.TempDir(), "elencode", "chatgpt.json"),
+		path:         filepath.Join(t.TempDir(), "elencode", "credentials.json"),
 		openBrowser:  b.open,
 	}
+}
+
+// savedLogin is the ChatGPT login saved in the credentials file at path, or
+// nil when there is none.
+func savedLogin(t *testing.T, path string) *chatgpt.Tokens {
+	t.Helper()
+	creds, err := config.LoadCredentials(path)
+	if err != nil {
+		t.Fatalf("reading %s: %v", path, err)
+	}
+	return creds[agent.ProviderChatGPT].Login
 }
 
 // signInWith runs s, collecting what it asked of the user, and signing in on
@@ -155,8 +167,8 @@ func TestLoginOpensTheBrowser(t *testing.T) {
 	if pages := b.pages(); len(pages) != 1 || !strings.Contains(pages[0], "/oauth/authorize") {
 		t.Errorf("opened %q, want the authorize page", pages)
 	}
-	if _, err := chatgpt.LoadTokens(s.path); err != nil {
-		t.Errorf("the login was not saved: %v", err)
+	if savedLogin(t, s.path) == nil {
+		t.Error("the login was not saved")
 	}
 	// The page is shown too, for a browser that did not come up
 	if len(prompts) != 1 || prompts[0].page != b.pages()[0] {
@@ -208,8 +220,8 @@ func TestLoginUsesADeviceCodeWhenHeadless(t *testing.T) {
 	if len(prompts) != 1 || !strings.HasSuffix(prompts[0].page, "/codex/device") || prompts[0].code != "ABCD-1234" {
 		t.Errorf("prompts = %+v, want the device page and the code", prompts)
 	}
-	if _, err := chatgpt.LoadTokens(s.path); err != nil {
-		t.Errorf("the login was not saved: %v", err)
+	if savedLogin(t, s.path) == nil {
+		t.Error("the login was not saved")
 	}
 }
 
@@ -331,7 +343,7 @@ func TestHyperlinkMakesThePageClickable(t *testing.T) {
 	}
 }
 
-// runTestLogin is `elencode login chatgpt` against s, writing to a buffer as
+// runTestLogin is `elencode connect chatgpt` against s, writing to a buffer as
 // if it were a pipe.
 func runTestLogin(t *testing.T, ctx context.Context, s signIn) (string, error) {
 	t.Helper()
@@ -374,7 +386,7 @@ func TestLoginCLISaysItIsWaiting(t *testing.T) {
 	}
 }
 
-// On a terminal `elencode login` runs the same panel the session shows: the
+// On a terminal `elencode connect` runs the same panel the session shows: the
 // page as a link above it, c to copy, esc to cancel. The program runs end to
 // end here, with a pipe for the keyboard.
 func TestLoginCLIOnATerminalRunsTheLoginPanel(t *testing.T) {
@@ -489,111 +501,9 @@ func TestLoginCLISaysItWasCancelled(t *testing.T) {
 	}
 }
 
-func TestParseLoginArgs(t *testing.T) {
-	tests := []struct {
-		args   []string
-		device bool
-		ok     bool
-	}{
-		{[]string{"chatgpt"}, false, true},
-		{[]string{"chatgpt", "--device"}, true, true},
-		{[]string{"--device", "chatgpt"}, true, true},
-		{nil, false, false},
-		{[]string{"--device"}, false, false},
-		{[]string{"chatgpt", "--browser"}, false, false},
-		{[]string{"chatgpt", "openai"}, false, false},
-	}
-	for _, test := range tests {
-		provider, device, err := parseLoginArgs(test.args)
-		if (err == nil) != test.ok {
-			t.Errorf("parseLoginArgs(%q) err = %v, want ok = %v", test.args, err, test.ok)
-			continue
-		}
-		if test.ok && (provider != agent.ProviderChatGPT || device != test.device) {
-			t.Errorf("parseLoginArgs(%q) = %q, %v", test.args, provider, device)
-		}
-	}
-}
-
-// A flag it does not know is named, rather than read as a provider.
-func TestParseLoginArgsNamesAnUnknownFlag(t *testing.T) {
-	_, _, err := parseLoginArgs([]string{"chatgpt", "--browser"})
-	if err == nil || !strings.Contains(err.Error(), "--browser") || strings.Contains(err.Error(), "provider") {
-		t.Errorf("err = %v, want it to name the flag", err)
-	}
-}
-
-func TestSignInProviderAcceptsChatGPT(t *testing.T) {
-	provider, err := signInProvider("chatgpt")
-	if err != nil || provider != agent.ProviderChatGPT {
-		t.Errorf("signInProvider(chatgpt) = %q, %v", provider, err)
-	}
-}
-
-// Which provider is not implied: with more than one to sign in to, a bare
-// login would have to guess, so it lists them instead.
-func TestSignInProviderNeedsAProvider(t *testing.T) {
-	_, err := signInProvider("")
-	if err == nil || !strings.Contains(err.Error(), "chatgpt") {
-		t.Errorf("err = %v, want it to list chatgpt", err)
-	}
-}
-
-// The keyed providers exist, so "unknown provider" would be wrong about them:
-// what they lack is a login to have.
-func TestSignInProviderPointsAKeyedProviderAtItsKey(t *testing.T) {
-	_, err := signInProvider("openai")
-	if err == nil || !strings.Contains(err.Error(), "API key") {
-		t.Errorf("err = %v, want it to say openai uses an API key", err)
-	}
-}
-
-func TestSignInProviderRejectsAnUnknownProvider(t *testing.T) {
-	_, err := signInProvider("acme")
-	if err == nil || !strings.Contains(err.Error(), "acme") {
-		t.Errorf("err = %v, want it to name acme", err)
-	}
-}
-
-func TestLogoutRemovesTheLogin(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "chatgpt.json")
-	if err := chatgpt.SaveTokens(path, chatgpt.Tokens{AccessToken: "a"}); err != nil {
-		t.Fatal(err)
-	}
-	var out bytes.Buffer
-
-	if err := runLogout(path, &out); err != nil {
-		t.Fatalf("runLogout: %v", err)
-	}
-	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("stat %s = %v, want the login gone", path, err)
-	}
-	if !strings.Contains(out.String(), "Signed out") {
-		t.Errorf("output %q, want it to say so", out.String())
-	}
-}
-
-// Signing out twice is not a failure: the state asked for is the state there is.
-func TestLogoutWithoutALoginSaysSo(t *testing.T) {
-	var out bytes.Buffer
-
-	if err := runLogout(filepath.Join(t.TempDir(), "chatgpt.json"), &out); err != nil {
-		t.Fatalf("runLogout: %v", err)
-	}
-	if !strings.Contains(out.String(), "not signed in") {
-		t.Errorf("output %q, want it to say there was nothing to sign out of", out.String())
-	}
-}
-
-func TestLoginCLIRefusesWithoutAProvider(t *testing.T) {
-	if err := loginCLI(nil, &bytes.Buffer{}); err == nil {
-		t.Error("`elencode login` with no provider started a login")
-	}
-}
-
 func TestLogoutCLIRefusesWithoutAProvider(t *testing.T) {
-	if err := logoutCLI(nil, &bytes.Buffer{}); err == nil {
-		t.Error("`elencode logout` with no provider signed something out")
+	if err := disconnectCLI(nil, &bytes.Buffer{}); err == nil {
+		t.Error("`elencode disconnect` with no provider signed something out")
 	}
 }
 

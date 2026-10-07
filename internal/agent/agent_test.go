@@ -752,3 +752,29 @@ func TestRollbackSurvivesAModelSwitch(t *testing.T) {
 		}
 	}
 }
+
+// A new credential for the provider in use is the same model reached another
+// way: the next turn goes to the new client, and the conversation carries on.
+func TestSetProviderSwapsTheClientAndKeepsTheConversation(t *testing.T) {
+	reply := func() [][]Event {
+		return [][]Event{{ResponseEvent{Response: Response{Message: assistantMessage(TextBlock{Text: "hi"}), StopReason: StopReasonEndTurn}}}}
+	}
+	old, renewed := &scriptedProvider{turns: reply()}, &scriptedProvider{turns: reply()}
+	a := New(nil)
+	a.SetModel(Model{Provider: ProviderAnthropic, ID: "claude-x"}, old)
+	collect(t, a.Run(context.Background(), "hi"))
+
+	a.SetProvider(renewed)
+	collect(t, a.Run(context.Background(), "hi again"))
+
+	if len(old.requests) != 1 || len(renewed.requests) != 1 {
+		t.Fatalf("old served %d turns, renewed %d, want one each", len(old.requests), len(renewed.requests))
+	}
+	sent := renewed.requests[0]
+	if sent.Model.ID != "claude-x" {
+		t.Errorf("renewed client was sent model %q, want the same one", sent.Model.ID)
+	}
+	if len(sent.Messages) != 3 {
+		t.Errorf("renewed client was sent %d messages, want the conversation so far and the new one", len(sent.Messages))
+	}
+}

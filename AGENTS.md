@@ -25,13 +25,18 @@ local development only — CI calls the Go toolchain directly, see
   spot adjacent work, mention it instead of doing it.
 - Write idiomatic Go and keep comments minimalistic: explain why, not what.
 - Optimize for readability: simple, verbose code over shorter (in lines-of-code) but more complex implementations.
+- Be hesitant to introduce small functions just to remove duplication: every call is
+  a context switch for the reader. Extract a function only when the code really is
+  shared (the CLI and the session both run it, say) or when it makes testing easier;
+  otherwise keep it inline where it is used.
 - Don't add third-party dependencies without asking.
 
 ## Layout
 
 - `cmd/elencode` — entrypoint and the Bubble Tea TUI model. Owns the provider
-  clients: it builds one per API key found and hands the agent whichever serves the
-  model in use.
+  clients: it builds one per connected provider and hands the agent whichever serves
+  the model in use. `connect.go` holds connecting and disconnecting, shared by
+  `elencode connect` and `/connect`.
 - `internal/agent` — provider-agnostic agent loop, message/block types, `Event` stream
 - `internal/provider/anthropic`, `internal/provider/openai` — implementations of
   `agent.Provider`, each with the hand-maintained catalog of its own models. The
@@ -40,13 +45,16 @@ local development only — CI calls the Go toolchain directly, see
 - `internal/provider/retry` — the parts of "is this failure worth another attempt"
   that do not depend on which API answered
 - `internal/chatgpt` — "Sign in with ChatGPT": OpenAI's OAuth login, in the
-  browser or with a device code (`elencode login chatgpt [--device]`, `/login chatgpt`),
+  browser or with a device code (`elencode connect chatgpt [--device]`, `/connect chatgpt`),
   and a `Source` that renews the saved tokens. The OAuth is `golang.org/x/oauth2`'s;
   the provider sees it through `openai.Credentials`
 - `internal/tools` — read, write, edit and bash tools, rooted at the working directory
-- `internal/config` — `$XDG_CONFIG_HOME/elencode/config.json`, overridden by
-  `ANTHROPIC_API_KEY` and `OPENAI_API_KEY`. The ChatGPT login is a separate file
-  beside it, `chatgpt.json`, because its tokens are rewritten whenever they renew
+- `internal/config` — `$XDG_CONFIG_HOME/elencode/config.json` holds the settings and
+  no secrets. Credentials are in `credentials.json` beside it (mode `0600`): API keys,
+  which `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` win over, and the ChatGPT login.
+  Every write changes one provider's entry in the file as it is then
+  (`SaveCredential`, `RemoveCredential`), since another session, or a token renewal,
+  may have changed the rest
 
 ## TUI
 
@@ -54,8 +62,11 @@ local development only — CI calls the Go toolchain directly, see
   terminal owns it. The frame holds only what can still change — the row being
   streamed into, the spinner, the menus, the input. While a login waits on the user,
   its panel (`c` to copy the link, `esc` to cancel) stands in for the input and has
-  the keyboard; `elencode login` on a terminal shows the same panel. Printed output cannot be changed
-  afterwards, so anything still in flight stays in the frame until it is final.
+  the keyboard, and so does the masked key entry while connecting asks for an API
+  key. `elencode connect chatgpt` on a terminal shows the same login panel; an API
+  key at the shell is a plain prompt that does not echo. Printed output cannot be
+  changed afterwards, so anything still in flight stays in the frame until it is
+  final.
 - Commands run concurrently, so prints issued from separate updates can arrive in
   either order. Chain anything ordered with `tea.Sequence`, not `tea.Batch`.
 - `tea.Sequence` and `tea.Batch` return their only non-nil command directly rather
@@ -68,7 +79,7 @@ local development only — CI calls the Go toolchain directly, see
 
 - `internal/agent` must not import a provider SDK. `agent.Provider` is the boundary;
   anything vendor-specific is translated inside `internal/provider/...`.
-- The config file names no provider: every provider with an API key is loaded, and a
+- The config file names no provider: every connected provider is loaded, and a
   model says which one serves it (`agent.Model.Provider`). Switching models is what
   switches providers, so `SetModel` takes both, and a turn keeps the provider it
   started on — retries included.
@@ -80,10 +91,15 @@ local development only — CI calls the Go toolchain directly, see
 - Every CLI command (`elencode <name>`) has a slash command of the same name and
   vice versa, so neither is a second-class way in. The exceptions are listed in
   `slashOnly` with the reason (only `/quit`), and `cli_test.go` holds the two lists to
-  it. Both sides share the logic underneath: a command is two thin entry points.
-- Sign-in commands take the provider by name (`login chatgpt`), so another provider
-  to sign in to joins `signInProviders` with its own flow behind the same two
-  commands, rather than adding commands of its own.
+  it. Aliases follow the same rule: `/login` and `elencode login` both run `connect`.
+  Both sides share the logic underneath: a command is two thin entry points.
+- Connecting a provider is `connect <id>`, whatever it takes: an API key for
+  `anthropic` and `openai`, a sign-in for `chatgpt`. Another provider joins
+  `agent.Providers` with its own step behind `connect` and `disconnect`, rather than
+  adding commands of its own.
+- elencode reads the environment through `config.Env`, never the SDKs: their clients
+  are built without the environment defaults they would otherwise apply, so a
+  variable such as `OPENAI_BASE_URL` cannot redirect a request or add a key to it.
 - Sum types are emulated as an interface with an unexported marker method (see `agent.Event`).
 - Return errors instead of panicking, including in conversion code. Panics on the turn
   goroutine are recovered and surfaced as an `ErrorEvent`.

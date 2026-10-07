@@ -1,7 +1,7 @@
 package main
 
 import (
-	"os"
+	"bytes"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -15,7 +15,7 @@ import (
 )
 
 func TestLoadProvidersBuildsOnlyTheKeyedProviders(t *testing.T) {
-	providers := mustLoadProviders(t, config.Config{OpenAIAPIKey: "sk-oai", ThinkingEffort: "high"})
+	providers := mustLoadProviders(t, withKeys(agent.ProviderOpenAI))
 
 	if _, ok := providers[agent.ProviderAnthropic]; ok {
 		t.Error("built an anthropic client without an anthropic key")
@@ -30,7 +30,7 @@ func TestLoadProvidersBuildsOnlyTheKeyedProviders(t *testing.T) {
 }
 
 func TestLoadProvidersBuildsBothWhenBothKeysAreSet(t *testing.T) {
-	providers := mustLoadProviders(t, config.Config{AnthropicAPIKey: "sk-ant", OpenAIAPIKey: "sk-oai"})
+	providers := mustLoadProviders(t, withKeys(agent.ProviderAnthropic, agent.ProviderOpenAI))
 
 	if _, ok := providers[agent.ProviderAnthropic].(*anthropic.Client); !ok {
 		t.Errorf("anthropic provider = %T, want *anthropic.Client", providers[agent.ProviderAnthropic])
@@ -40,8 +40,32 @@ func TestLoadProvidersBuildsBothWhenBothKeysAreSet(t *testing.T) {
 	}
 }
 
+// withKeys is a config holding an API key for each of providers, as if
+// saved in credentials.json.
+func withKeys(providers ...agent.ProviderName) config.Config {
+	creds := config.Credentials{}
+	for _, provider := range providers {
+		creds[provider] = config.Credential{APIKey: config.Secret("sk-" + provider)}
+	}
+	return config.Config{Credentials: creds}
+}
+
+// A key in the environment connects a provider as one saved in
+// credentials.json does.
+func TestLoadProvidersUsesAKeyFromTheEnvironment(t *testing.T) {
+	cfg := config.Config{Env: func(name string) (string, bool) {
+		return "sk-oai", name == "OPENAI_API_KEY"
+	}}
+
+	providers := mustLoadProviders(t, cfg)
+
+	if _, ok := providers[agent.ProviderOpenAI].(*openai.Client); !ok {
+		t.Errorf("openai provider = %T, want *openai.Client", providers[agent.ProviderOpenAI])
+	}
+}
+
 func bothProviders() providerSet {
-	providers, err := loadProviders(config.Config{AnthropicAPIKey: "sk-ant", OpenAIAPIKey: "sk-oai"})
+	providers, err := loadProviders(withKeys(agent.ProviderAnthropic, agent.ProviderOpenAI))
 	if err != nil {
 		panic(err)
 	}
@@ -75,7 +99,7 @@ func TestStartupModelUsesTheConfiguredModel(t *testing.T) {
 // Unsetting a key must not brick a session that was last used on that
 // provider: it is a notice and a fallback, not a refusal to start.
 func TestStartupModelFallsBackWhenTheModelsProviderHasNoKey(t *testing.T) {
-	providers := mustLoadProviders(t, config.Config{AnthropicAPIKey: "sk-ant"})
+	providers := mustLoadProviders(t, withKeys(agent.ProviderAnthropic))
 
 	model, notice, err := startupModel(config.Config{Model: "openai/gpt-5"}, providers)
 	if err != nil {
@@ -123,7 +147,7 @@ func TestStartupModelPrefersAnthropicWhenBothHaveKeys(t *testing.T) {
 }
 
 func TestStartupModelUsesTheOnlyKeyedProvidersDefault(t *testing.T) {
-	providers := mustLoadProviders(t, config.Config{OpenAIAPIKey: "sk-oai"})
+	providers := mustLoadProviders(t, withKeys(agent.ProviderOpenAI))
 
 	model, _, err := startupModel(config.Config{}, providers)
 	if err != nil {
@@ -149,22 +173,34 @@ func TestStartupModelAcceptsAQualifiedModelOutsideTheCatalog(t *testing.T) {
 	}
 }
 
-func TestStartupModelFailsWithoutAnyProvider(t *testing.T) {
-	if _, _, err := startupModel(config.Config{}, providerSet{}); err == nil {
-		t.Fatal("startupModel succeeded with no provider to talk to")
+// With nothing connected there is no model to open on, which is a first
+// start rather than a failure: the session offers to connect a provider.
+func TestStartupModelIsNoneWithoutAnyProvider(t *testing.T) {
+	model, notice, err := startupModel(config.Config{Model: "anthropic/model-one"}, providerSet{})
+	if err != nil || model != (agent.Model{}) || notice != "" {
+		t.Errorf("startupModel = %+v, %q, %v, want no model and no fuss", model, notice, err)
 	}
 }
 
-// writeLogin saves a ChatGPT login the way `elencode login` would, and returns
+// The CLI has no session to offer a connect in, so it says how.
+func TestModelCLIWithNothingConnectedSaysToConnect(t *testing.T) {
+	err := runModelCLI(config.Config{}, providerSet{}, testModels, agent.Model{}, "", &bytes.Buffer{})
+	if err == nil || !strings.Contains(err.Error(), "elencode connect") {
+		t.Errorf("err = %v, want it to point at elencode connect", err)
+	}
+}
+
+// writeLogin saves a ChatGPT login the way `elencode connect chatgpt` would, and returns
 // a config that has found it.
 func writeLogin(t *testing.T) config.Config {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "chatgpt.json")
+	path := filepath.Join(t.TempDir(), "credentials.json")
 	tokens := chatgpt.Tokens{AccessToken: "access", RefreshToken: "refresh", IDToken: "id", AccountID: "acct"}
-	if err := chatgpt.SaveTokens(path, tokens); err != nil {
+	creds, err := config.SaveCredential(path, agent.ProviderChatGPT, config.Credential{Login: &tokens})
+	if err != nil {
 		t.Fatal(err)
 	}
-	return config.Config{ChatGPTLoginPath: path}
+	return config.Config{CredentialsPath: path, Credentials: creds}
 }
 
 func TestLoadProvidersBuildsTheChatGPTProviderFromALogin(t *testing.T) {
@@ -179,24 +215,22 @@ func TestLoadProvidersBuildsTheChatGPTProviderFromALogin(t *testing.T) {
 }
 
 func TestLoadProvidersBuildsNoChatGPTProviderWithoutALogin(t *testing.T) {
-	providers := mustLoadProviders(t, config.Config{OpenAIAPIKey: "sk-oai"})
+	providers := mustLoadProviders(t, withKeys(agent.ProviderOpenAI))
 
 	if _, ok := providers[agent.ProviderChatGPT]; ok {
 		t.Error("built a chatgpt client without a login")
 	}
 }
 
-// A login that cannot be read is worth stopping for: starting without it
+// A login that cannot be used is worth stopping for: starting without it
 // would silently move the session onto another provider's bill.
 func TestLoadProvidersFailsOnABrokenLogin(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "chatgpt.json")
-	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+	cfg := withKeys(agent.ProviderOpenAI)
+	cfg.Credentials[agent.ProviderChatGPT] = config.Credential{Login: &chatgpt.Tokens{AccessToken: "a"}}
 
-	_, err := loadProviders(config.Config{OpenAIAPIKey: "sk-oai", ChatGPTLoginPath: path})
-	if err == nil || !strings.Contains(err.Error(), path) {
-		t.Errorf("err = %v, want it to name %s", err, path)
+	_, err := loadProviders(cfg)
+	if err == nil || !strings.Contains(err.Error(), "elencode connect chatgpt") {
+		t.Errorf("err = %v, want it to say how to sign in again", err)
 	}
 }
 
@@ -214,7 +248,7 @@ func TestStartupModelUsesTheChatGPTDefaultForALoginAlone(t *testing.T) {
 // have been set for something else entirely.
 func TestStartupModelPrefersTheLoginOverAnOpenAIKey(t *testing.T) {
 	cfg := writeLogin(t)
-	cfg.OpenAIAPIKey = "sk-oai"
+	cfg.Credentials = cfg.Credentials.With(agent.ProviderOpenAI, config.Credential{APIKey: "sk-oai"})
 
 	model, _, err := startupModel(config.Config{}, mustLoadProviders(t, cfg))
 	if err != nil {
@@ -253,17 +287,17 @@ func TestMissingCredentialNamesTheKeyForAKeyedProvider(t *testing.T) {
 // to get one is a command.
 func TestMissingCredentialSaysHowToSignInToChatGPT(t *testing.T) {
 	got := missingCredential(agent.ProviderChatGPT)
-	if strings.Contains(got, "API key") || !strings.Contains(got, "elencode login") {
-		t.Errorf("missingCredential(chatgpt) = %q, want it to point at elencode login", got)
+	if strings.Contains(got, "API key") || !strings.Contains(got, "elencode connect chatgpt") {
+		t.Errorf("missingCredential(chatgpt) = %q, want it to point at elencode connect chatgpt", got)
 	}
 }
 
 func TestStartupModelFallsBackWhenNotSignedInToChatGPT(t *testing.T) {
-	_, notice, err := startupModel(config.Config{Model: "chatgpt/gpt-6-sol"}, mustLoadProviders(t, config.Config{OpenAIAPIKey: "sk-oai"}))
+	_, notice, err := startupModel(config.Config{Model: "chatgpt/gpt-6-sol"}, mustLoadProviders(t, withKeys(agent.ProviderOpenAI)))
 	if err != nil {
 		t.Fatalf("startupModel: %v", err)
 	}
-	if !strings.Contains(notice, "elencode login") {
+	if !strings.Contains(notice, "elencode connect chatgpt") {
 		t.Errorf("notice = %q, want it to say how to sign in", notice)
 	}
 }

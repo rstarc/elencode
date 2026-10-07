@@ -919,3 +919,123 @@ func TestStreamStopsWhenContextCancelled(t *testing.T) {
 	// cancellation would leave the channel open and time out here.
 	collectEvents(t, events)
 }
+
+// recorder stands in for the network: it keeps the request it is handed and
+// answers with a refusal, which ends the turn without a retry.
+type recorder struct {
+	mu  sync.Mutex
+	req *http.Request
+}
+
+func (r *recorder) Do(req *http.Request) (*http.Response, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.req = req
+	return &http.Response{
+		StatusCode: http.StatusBadRequest,
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+		Body:       io.NopCloser(strings.NewReader(`{"type":"error","error":{"type":"invalid_request_error","message":"recorded"}}`)),
+		Request:    req,
+	}, nil
+}
+
+func (r *recorder) request() *http.Request {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.req
+}
+
+// The SDK reads the environment by default: a base URL, a bearer token, extra
+// headers. elencode resolves its own credentials and says where a request
+// goes, so none of those may reach one.
+func TestTheEnvironmentDoesNotReachTheRequest(t *testing.T) {
+	for _, tc := range []struct{ name, value string }{
+		{"ANTHROPIC_BASE_URL", "http://env-base-url.invalid"},
+		{"ANTHROPIC_AUTH_TOKEN", "env-auth-token"},
+		{"ANTHROPIC_CUSTOM_HEADERS", "X-Env-Header: env-header"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The SDK stops looking at the first credential it finds, so the
+			// key it would find first is out of the way.
+			t.Setenv("ANTHROPIC_API_KEY", "")
+			t.Setenv(tc.name, tc.value)
+			rec := &recorder{}
+
+			c := newWithOptions("configured-key", false, agent.EffortNone, option.WithHTTPClient(rec))
+			collectEvents(t, c.Stream(context.Background(), agent.Request{
+				Model:     agent.Model{ID: "claude-x"},
+				MaxTokens: 100,
+				Messages:  []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
+			}))
+
+			req := rec.request()
+			if req == nil {
+				t.Fatal("no request was sent")
+			}
+			if req.URL.Host != "api.anthropic.com" {
+				t.Errorf("request went to %s, want api.anthropic.com", req.URL.Host)
+			}
+			if got := req.Header.Get("X-Api-Key"); got != "configured-key" {
+				t.Errorf("X-Api-Key = %q, want the configured key", got)
+			}
+			for name, values := range req.Header {
+				for _, v := range values {
+					if strings.Contains(v, "env-") {
+						t.Errorf("header %s = %q came from the environment", name, v)
+					}
+				}
+			}
+		})
+	}
+}
+
+// checkKeyAgainst runs CheckKey against a server answering every request with
+// status and body, returning the path that was asked for and the error.
+func checkKeyAgainst(t *testing.T, status int, body string) (asked string, err error) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		_, _ = fmt.Fprint(w, body)
+	}))
+	defer server.Close()
+
+	c := newWithOptions("key", false, agent.EffortNone, option.WithBaseURL(server.URL))
+	err = c.CheckKey(context.Background())
+	return asked, err
+}
+
+func TestCheckKeyAcceptsAKeyTheAPIAccepts(t *testing.T) {
+	asked, err := checkKeyAgainst(t, http.StatusOK, `{"data":[],"has_more":false}`)
+	if err != nil {
+		t.Fatalf("CheckKey: %v", err)
+	}
+	// Listing models costs nothing, which is why it is the check
+	if asked != "/v1/models" {
+		t.Errorf("asked for %s, want /v1/models", asked)
+	}
+}
+
+func TestCheckKeyReportsARejectedKey(t *testing.T) {
+	for _, status := range []int{http.StatusUnauthorized, http.StatusForbidden} {
+		_, err := checkKeyAgainst(t, status, `{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`)
+		if !errors.Is(err, agent.ErrKeyRejected) {
+			t.Errorf("status %d: err = %v, want ErrKeyRejected", status, err)
+		}
+	}
+}
+
+// Not reaching the API says nothing about the key, so it must not read as a
+// rejection: the key is still worth saving.
+func TestCheckKeyTellsAnUnreachableAPIFromARejectedKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	serverURL := server.URL
+	server.Close()
+
+	c := newWithOptions("key", false, agent.EffortNone, option.WithBaseURL(serverURL))
+	err := c.CheckKey(context.Background())
+	if err == nil || errors.Is(err, agent.ErrKeyRejected) {
+		t.Errorf("err = %v, want a failure that is not a rejection", err)
+	}
+}

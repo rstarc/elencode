@@ -634,9 +634,8 @@ func TestConfigViewShowsLoadedConfigWithoutTheKey(t *testing.T) {
 	const key = "sk-ant-do-not-print-me"
 
 	m := newModel(agent.New(nil), config.Config{
-		AnthropicAPIKey:     config.Secret(key),
-		Path:                "/tmp/elencode/config.json",
-		AnthropicKeyFromEnv: true,
+		Credentials: config.Credentials{agent.ProviderAnthropic: {APIKey: key}},
+		Path:        "/tmp/elencode/config.json",
 	}, defaultCommands(), nil, nil)
 	m = update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 	m.configVisible = true
@@ -920,10 +919,10 @@ func newPickerModel(t *testing.T, providers providerSet, models []agent.Model) m
 	t.Helper()
 
 	file := path.Join(t.TempDir(), "config.json")
-	if err := os.WriteFile(file, []byte(`{"anthropic_api_key":"key"}`), 0o600); err != nil {
+	if err := os.WriteFile(file, []byte(`{"thinking_enabled":true}`), 0o600); err != nil {
 		t.Fatalf("writing config: %v", err)
 	}
-	cfg := config.Config{Path: file, AnthropicAPIKey: "key"}
+	cfg := config.Config{Path: file}
 	m := newModel(agent.New(nil), cfg, defaultCommands(), providers, models)
 	return update(t, m, tea.WindowSizeMsg{Width: 80, Height: 20})
 }
@@ -1391,5 +1390,41 @@ func TestAnswerAfterThinkingFinishesTheThinkingBlock(t *testing.T) {
 	}
 	if !strings.Contains(ansi.Strip(view), "It is in internal/agent.") {
 		t.Errorf("frame does not show the answer:\n%s", view)
+	}
+}
+
+// A terminal delivers a paste as one message of its own rather than as key
+// presses, and a prompt is as likely to be pasted as typed.
+func TestAPasteLandsInTheInput(t *testing.T) {
+	m := newSizedModel(t)
+
+	m = update(t, m, tea.PasteMsg{Content: "explain this function"})
+
+	if got := m.input.Value(); got != "explain this function" {
+		t.Errorf("input = %q, want the pasted text", got)
+	}
+}
+
+// Pasted into a list, the text filters it, as typing it would.
+func TestAPasteFiltersTheOpenList(t *testing.T) {
+	m := openPicker(t, newPickerModel(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI), testModels))
+
+	m = update(t, m, tea.PasteMsg{Content: "two"})
+
+	if got := m.modelList.Matches(); len(got) != 1 || got[0].ID != "model-two" {
+		t.Errorf("matches = %v, want only model-two", got)
+	}
+}
+
+// The config view has the keyboard and no input on screen, so a paste there
+// must not land in the input unseen.
+func TestAPasteIsIgnoredWhileTheConfigViewIsOpen(t *testing.T) {
+	m := newSizedModel(t)
+	m.configVisible = true
+
+	m = update(t, m, tea.PasteMsg{Content: "hidden"})
+
+	if got := m.input.Value(); got != "" {
+		t.Errorf("input = %q, want nothing", got)
 	}
 }

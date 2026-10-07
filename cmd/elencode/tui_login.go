@@ -3,13 +3,12 @@ package main
 import (
 	"context"
 	"fmt"
-	"maps"
 	"runtime/debug"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/chatgpt"
+	"github.com/rstarc/elencode/internal/config"
 	"github.com/rstarc/elencode/internal/provider/openai"
 	"github.com/rstarc/elencode/internal/tui/transcript"
 )
@@ -38,14 +37,10 @@ type loginDoneMsg struct {
 	err    error
 }
 
-// login signs in as /login asked, in the background. While it waits on the
-// user, the login panel has the keyboard: c copies the link, esc gives up.
-func (m model) login(arg string) (model, tea.Cmd) {
-	_, device, err := parseLoginArgs(strings.Fields(arg))
-	if err != nil {
-		return m, m.reportError(err)
-	}
-
+// login signs in as /connect chatgpt asked, in the background. While it
+// waits on the user, the login panel has the keyboard: c copies the link, esc
+// gives up. device asks for a code rather than the browser.
+func (m model) login(device bool) (model, tea.Cmd) {
 	ctx, cancel := context.WithCancel(context.Background())
 	m.loginCancel = cancel
 	m.loginPanel = loginPanel{}
@@ -92,7 +87,12 @@ func (m model) pressDuringLogin(msg tea.KeyPressMsg) (model, tea.Cmd) {
 	}
 	m.loginCancel()
 	m.loginCancel = nil
-	return m, printAbove(transcript.Notice("login cancelled", m.width))
+	cancelled := printAbove(transcript.Notice("login cancelled", m.width))
+	// Back to the choice, rather than to a session with nothing to talk to
+	if m.firstStart && len(m.providers) == 0 {
+		return m.showProviders(), cancelled
+	}
+	return m, cancelled
 }
 
 // finishLogin makes a saved login a provider of this session, without a
@@ -107,54 +107,16 @@ func (m model) finishLogin(msg loginDoneMsg) (model, tea.Cmd) {
 		return m, m.reportError(fmt.Errorf("signing in to ChatGPT: %w", msg.err))
 	}
 
-	provider, err := newChatGPTProvider(m.signIn.path, m.config)
+	m.config.Credentials = m.config.Credentials.With(agent.ProviderChatGPT, config.Credential{Login: &msg.tokens})
+	provider, err := newChatGPTProvider(m.config)
 	if err != nil {
 		return m, m.reportError(err)
 	}
-	// A copy: the set the session started with may still be held elsewhere
-	providers := maps.Clone(m.providers)
-	providers[agent.ProviderChatGPT] = provider
-	m.providers = providers
-	m.config.ChatGPTLoginPath = m.signIn.path
+	m = m.replaceClient(agent.ProviderChatGPT, provider)
 
 	said := "signed in to ChatGPT" + account(msg.tokens) + ": /model " + openai.ChatGPTDefault().Qualified() + " to use it"
-	return m, printAbove(transcript.Notice(said, m.width))
-}
-
-// logout signs out of the provider /logout named. A session on one of its
-// models is moved to another provider first: signing out is meant to stop the
-// spending, which keeping the client would not.
-func (m model) logout(name string) (model, tea.Cmd) {
-	provider, err := signInProvider(name)
-	if err != nil {
-		return m, m.reportError(err)
-	}
-	remaining := maps.Clone(m.providers)
-	delete(remaining, provider)
-
-	current, _ := agent.FindModel(m.models, m.config.Model)
-	var fallback agent.Model
-	moving := current.Provider == provider
-	if moving {
-		fallback, err = defaultModel(remaining)
-		if err != nil {
-			return m, m.reportError(fmt.Errorf("%s is the only provider this session can reach, so signing out would leave it unable to answer: quit and run `elencode logout %s`", provider, provider))
-		}
-	}
-
-	var out strings.Builder
-	if err := runLogout(m.signIn.path, &out); err != nil {
-		return m, m.reportError(err)
-	}
-	m.providers = remaining
-	m.config.ChatGPTLoginPath = ""
-	said := printAbove(transcript.Notice(strings.TrimSpace(out.String()), m.width))
-
-	if !moving {
-		return m, said
-	}
-	m, switched := m.selectModel(fallback)
-	return m, tea.Sequence(said, switched)
+	m, failed := m.adoptDefaultModel()
+	return m, tea.Sequence(printAbove(transcript.Notice(said, m.width)), failed)
 }
 
 // showVersion prints the line `elencode version` prints.

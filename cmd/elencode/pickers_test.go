@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+
+	"github.com/rstarc/elencode/internal/commands"
+)
 
 // TestMatchCommand pins prefix matching: the command names are few and short,
 // so a looser match would only make the highlighted row harder to predict.
@@ -25,7 +30,7 @@ func TestMatchCommand(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := matchCommand(test.query, test.entry); got != test.want {
+			if got := matchCommand(test.query, commands.Command{Name: strings.TrimPrefix(test.entry, commands.Prefix)}); got != test.want {
 				t.Errorf("matchCommand(%q, %q) = %v, want %v", test.query, test.entry, got, test.want)
 			}
 		})
@@ -56,5 +61,47 @@ func TestMatchModel(t *testing.T) {
 				t.Errorf("matchModel(%q, %q) = %v, want %v", test.query, test.entry, got, test.want)
 			}
 		})
+	}
+}
+
+// An alias is another way to type the same command, so the menu finds the
+// command by it as well.
+func TestMatchCommandMatchesAnAlias(t *testing.T) {
+	connect := commands.Command{Name: "connect", Aliases: []string{"login"}}
+	tests := []struct {
+		query string
+		want  bool
+	}{
+		{"/con", true},
+		{"/log", true},
+		{"/login chatgpt", true},
+		{"/logout", false},
+		{"/x", false},
+	}
+	for _, test := range tests {
+		if got := matchCommand(test.query, connect); got != test.want {
+			t.Errorf("matchCommand(%q, connect) = %v, want %v", test.query, got, test.want)
+		}
+	}
+}
+
+// The menu lists a command once, under its name, and says what else it
+// answers to: otherwise /log would highlight a row named /connect for no
+// visible reason.
+func TestCommandMenuNamesTheAlias(t *testing.T) {
+	menu := newCommandMenu(commands.NewRegistry(commands.Command{
+		Name:        "connect",
+		Description: "connect a provider",
+		Aliases:     []string{"login"},
+	}))
+	menu.SetWidth(80)
+
+	view := menu.SetQuery("/log").View()
+
+	if !strings.Contains(view, "/connect") || !strings.Contains(view, "also /login") {
+		t.Errorf("menu = %q, want /connect, naming /login", view)
+	}
+	if strings.Count(view, "/login") != 1 {
+		t.Errorf("menu = %q, want /login named once, not listed as a row of its own", view)
 	}
 }

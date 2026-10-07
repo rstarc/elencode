@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -64,8 +65,12 @@ type model struct {
 	// a message, which Update handles below.
 	// menu holds the slash commands this session knows: what Enter runs is what
 	// the menu is pointing at, so the menu is the only place they live.
-	menu      picker.Model[commands.Command] // the command menu under the input
-	modelList picker.Model[agent.Model]      // the model list /model opens
+	menu         picker.Model[commands.Command] // the command menu under the input
+	modelList    picker.Model[agent.Model]      // the model list /model opens
+	providerList picker.Model[providerStatus]   // the provider list /connect opens
+	// firstStart is a session started with nothing connected: it opens on the
+	// provider list, and leaving that list without connecting one leaves.
+	firstStart bool
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
 	headerPrinted bool // the session title has been printed
@@ -81,6 +86,12 @@ type model struct {
 	// its c copies to.
 	loginPanel loginPanel
 	clipboard  clipboard
+	// keyEntry replaces the input while connecting a provider waits on its
+	// API key, checkKey is what asks the API about the key, and newKeyed
+	// builds the client it is used with.
+	keyEntry keyEntry
+	checkKey keyCheck
+	newKeyed func(provider agent.ProviderName, key string, cfg config.Config) agent.Provider
 }
 
 // quitDisarmMsg withdraws the exit confirmation armed by generation
@@ -120,16 +131,19 @@ func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry,
 	input.CharLimit = 0
 
 	return model{
-		agent:     agent,
-		providers: providers,
-		models:    models,
-		config:    cfg,
-		menu:      newCommandMenu(registry),
-		modelList: newModelList(),
-		input:     input,
-		clipboard: systemClipboard(),
-		spinner:   spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
-		state:     uiStateIdle,
+		agent:        agent,
+		providers:    providers,
+		models:       models,
+		config:       cfg,
+		menu:         newCommandMenu(registry),
+		modelList:    newModelList(),
+		providerList: newProviderList(),
+		input:        input,
+		clipboard:    systemClipboard(),
+		checkKey:     checkWithAPI,
+		newKeyed:     newKeyedProvider,
+		spinner:      spinner.New(spinner.WithSpinner(spinner.Ellipsis)),
+		state:        uiStateIdle,
 	}
 }
 
@@ -190,9 +204,12 @@ func (m model) forwardToInput(msg tea.Msg) (model, tea.Cmd) {
 	// Whichever list is open is the one the typing filters. The command menu
 	// must not see the text while the model list is up, or a slash would open it
 	// behind the list.
-	if m.modelList.Open() {
+	switch {
+	case m.providerList.Open():
+		m.providerList = m.providerList.SetQuery(m.input.Value())
+	case m.modelList.Open():
 		m.modelList = m.modelList.SetQuery(m.input.Value())
-	} else {
+	default:
 		m.menu = m.menu.SetQuery(m.input.Value())
 	}
 	return m, cmd
@@ -343,6 +360,11 @@ func (m model) selectModel(chosen agent.Model) (model, tea.Cmd) {
 
 // startTurn hands userInput to the agent and begins receiving its Events
 func (m model) startTurn(userInput string) (model, tea.Cmd) {
+	// Nothing to send it to: the session started with nothing connected, and
+	// still has no model
+	if m.firstStart && m.config.Model == "" {
+		return m, m.reportError(errors.New("no provider is connected: connect one with /connect"))
+	}
 	ctx, cancel := context.WithCancel(context.Background())
 	m.cancel = cancel
 	m.turnID++
@@ -393,6 +415,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.stream.SetWidth(msg.Width)
 		m.menu.SetWidth(msg.Width)
 		m.modelList.SetWidth(msg.Width)
+		m.providerList.SetWidth(msg.Width)
 		// Only the frame follows the new width. What is already printed keeps
 		// the width it was printed at, as the terminal owns those lines now.
 
@@ -402,7 +425,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// was no width to span. A resize is not a new session.
 		if !m.headerPrinted {
 			m.headerPrinted = true
-			return m, printAbove(transcript.Header(banner, m.width))
+			header := printAbove(transcript.Header(banner, m.width))
+			if m.firstStart {
+				return m, tea.Sequence(header, printAbove(transcript.Notice("No provider is connected yet. Choose one to start with:", m.width)))
+			}
+			return m, header
 		}
 		return m, print
 	case tea.KeyPressMsg:
@@ -415,9 +442,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		// A login waiting on the user has the keyboard, as the config view does
+		// A login waiting on the user has the keyboard, as the config view does,
+		// and so does a key being asked for
 		if m.loginCancel != nil {
 			return m.pressDuringLogin(msg)
+		}
+		if m.keyEntry.open() {
+			return m.pressDuringKeyEntry(msg)
 		}
 		// Any other key withdraws a pending exit confirmation, so ctrl+c followed
 		// by typing does not leave a live quit waiting one keystroke away.
@@ -453,6 +484,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// arrow key still has to move the cursor.
 			var cmd tea.Cmd
 			switch {
+			case m.providerList.Open():
+				m.providerList, cmd = m.providerList.Update(msg)
 			case m.modelList.Open():
 				m.modelList, cmd = m.modelList.Update(msg)
 			case m.menu.Open():
@@ -466,6 +499,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// it, so a filter that matches nothing cannot start a turn by accident.
 			if m.modelList.Open() {
 				return m.pickModel()
+			}
+			if m.providerList.Open() {
+				return m.pickProvider()
 			}
 			// A command line never reaches the agent, in either UI state: /quit
 			// is an escape hatch, so it must work while a turn is in flight. The
@@ -541,8 +577,25 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, tea.Quit
 
-	case commands.LoginMsg:
-		return m.login(msg.Arg)
+	case commands.ConnectMsg:
+		return m.connect(msg.Arg)
+
+	case keyCheckedMsg:
+		return m.finishConnectingKey(msg)
+
+	case tea.PasteMsg:
+		// A paste is a message of its own, not key presses, so it goes wherever
+		// typing would: the key entry, nowhere while a view or a login has the
+		// keyboard, and the input otherwise, where it filters an open list
+		switch {
+		case m.keyEntry.open():
+			var cmd tea.Cmd
+			m.keyEntry, cmd = m.keyEntry.paste(msg)
+			return m, cmd
+		case m.configVisible, m.loginCancel != nil:
+			return m, nil
+		}
+		return m.forwardToInput(msg)
 
 	case loginPromptMsg:
 		return m.showLoginPrompt(msg)
@@ -550,8 +603,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case loginDoneMsg:
 		return m.finishLogin(msg)
 
-	case commands.LogoutMsg:
-		return m.logout(msg.Provider)
+	case commands.DisconnectMsg:
+		return m.disconnect(msg.Provider)
 
 	case commands.ShowVersionMsg:
 		return m.showVersion()
@@ -569,6 +622,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The list closed itself and forgot its query; clearing the input is what
 		// keeps the two saying the same thing.
 		m.input.Reset()
+		// A session that still has nothing to talk to has nothing to stay for
+		if m.firstStart && len(m.providers) == 0 {
+			return m, tea.Quit
+		}
 		return m, nil
 
 	case quitDisarmMsg:
@@ -637,6 +694,13 @@ func (m model) View() tea.View {
 		view.AltScreen = false
 		return view
 	}
+	// The key entry draws its own cursor, in the input it masks
+	if m.keyEntry.open() {
+		rows = append(rows, m.keyEntry.view())
+		view := tea.NewView(lipgloss.JoinVertical(lipgloss.Top, rows...))
+		view.AltScreen = false
+		return view
+	}
 	if hint := m.quitHint(); hint != "" {
 		rows = append(rows, hint)
 	}
@@ -644,6 +708,9 @@ func (m model) View() tea.View {
 		rows = append(rows, view)
 	}
 	if view := m.modelList.View(); view != "" {
+		rows = append(rows, view)
+	}
+	if view := m.providerList.View(); view != "" {
 		rows = append(rows, view)
 	}
 	rows = append(rows, inputView)

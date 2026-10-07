@@ -15,7 +15,7 @@ const (
 	ProviderAnthropic ProviderName = "anthropic"
 	ProviderOpenAI    ProviderName = "openai"
 	// ProviderChatGPT is OpenAI's models on a ChatGPT plan's Codex allowance,
-	// signed in with `elencode login chatgpt` rather than keyed. A provider of its own
+	// signed in with `elencode connect chatgpt` rather than keyed. A provider of its own
 	// rather than another way into openai: it is billed differently, serves a
 	// different set of models, and which of the two a turn spends should be as
 	// visible as the model is.

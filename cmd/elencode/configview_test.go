@@ -4,20 +4,26 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rstarc/elencode/internal/agent"
+	"github.com/rstarc/elencode/internal/chatgpt"
 	"github.com/rstarc/elencode/internal/config"
 )
 
-func TestRenderConfigMasksTheAPIKey(t *testing.T) {
+// The view says where a key comes from, never what it is.
+func TestRenderConfigNeverShowsTheAPIKey(t *testing.T) {
 	const key = "sk-ant-do-not-print-me"
-	cfg := config.Config{AnthropicAPIKey: config.Secret(key), Path: "/tmp/elencode/config.json"}
+	cfg := config.Config{
+		Credentials: config.Credentials{agent.ProviderAnthropic: {APIKey: key}},
+		Path:        "/tmp/elencode/config.json",
+	}
 
-	view := renderConfig(cfg, 80)
+	view := renderConfig(cfg, 120)
 
 	if strings.Contains(view, key) {
 		t.Error("config view contains the raw API key")
 	}
-	if !strings.Contains(view, cfg.AnthropicAPIKey.String()) {
-		t.Errorf("config view does not show the mask:\n%s", view)
+	if row := rowFor(view, "anthropic"); !strings.Contains(row, "connected") {
+		t.Errorf("anthropic row = %q, want it connected", row)
 	}
 }
 
@@ -31,26 +37,32 @@ func TestRenderConfigShowsThePath(t *testing.T) {
 	}
 }
 
-// TestRenderConfigNamesTheSourceOfEachKey: the two keys have their own
-// provenance, and showing one key's source against the other's value would say
-// something untrue about where the session's key came from.
+// Each provider says where its key came from: a key in the environment is not
+// the one in the file, and only the file's can be disconnected by elencode.
 func TestRenderConfigNamesTheSourceOfEachKey(t *testing.T) {
 	cfg := config.Config{
-		AnthropicAPIKey:     "a",
-		OpenAIAPIKey:        "o",
-		AnthropicKeyFromEnv: true,
-		Path:                "/tmp/c.json",
+		Credentials: config.Credentials{agent.ProviderOpenAI: {APIKey: "o"}},
+		Env: func(name string) (string, bool) {
+			return "a", name == "ANTHROPIC_API_KEY"
+		},
+		Path: "/tmp/c.json",
 	}
 
 	view := renderConfig(cfg, 120)
 
-	anthropic := rowFor(view, "anthropic_api_key")
-	if !strings.Contains(anthropic, config.ANTHROPIC_API_KEY_ENV_VAR_NAME) {
-		t.Errorf("anthropic key row = %q, want it to name the environment", anthropic)
+	if row := rowFor(view, "anthropic"); !strings.Contains(row, "$ANTHROPIC_API_KEY") {
+		t.Errorf("anthropic row = %q, want it to name the variable", row)
 	}
-	openai := rowFor(view, "openai_api_key")
-	if openai == "" || !strings.Contains(openai, "config file") {
-		t.Errorf("openai key row = %q, want it to name the config file", openai)
+	if row := rowFor(view, "openai"); !strings.Contains(row, "credentials.json") {
+		t.Errorf("openai row = %q, want it to name credentials.json", row)
+	}
+}
+
+func TestRenderConfigShowsWhereTheCredentialsAreKept(t *testing.T) {
+	cfg := config.Config{CredentialsPath: "/home/someone/.config/elencode/credentials.json", Path: "/tmp/c.json"}
+
+	if row := rowFor(renderConfig(cfg, 120), "credentials"); !strings.Contains(row, cfg.CredentialsPath) {
+		t.Errorf("credentials row = %q, want it to name the file", row)
 	}
 }
 
@@ -120,18 +132,16 @@ func rowFor(view, name string) string {
 	return ""
 }
 
-// The login has no value to mask, only a state: where it is saved, or how to
-// get one.
-func TestRenderConfigShowsWhereTheChatGPTLoginIs(t *testing.T) {
-	cfg := config.Config{ChatGPTLoginPath: "/home/someone/.config/elencode/chatgpt.json", Path: "/tmp/c.json"}
-
-	if row := rowFor(renderConfig(cfg, 120), "chatgpt_login"); !strings.Contains(row, cfg.ChatGPTLoginPath) {
-		t.Errorf("chatgpt login row = %q, want it to name the file", row)
+func TestRenderConfigShowsWhetherChatGPTIsSignedIn(t *testing.T) {
+	signedIn := config.Config{
+		Credentials: config.Credentials{agent.ProviderChatGPT: {Login: &chatgpt.Tokens{AccessToken: "a"}}},
+		Path:        "/tmp/c.json",
 	}
-}
+	if row := rowFor(renderConfig(signedIn, 120), "chatgpt"); !strings.Contains(row, "signed in") || strings.Contains(row, "not connected") {
+		t.Errorf("chatgpt row = %q, want it signed in", row)
+	}
 
-func TestRenderConfigSaysHowToSignInToChatGPT(t *testing.T) {
-	if row := rowFor(renderConfig(config.Config{Path: "/tmp/c.json"}, 120), "chatgpt_login"); !strings.Contains(row, "elencode login") {
-		t.Errorf("chatgpt login row = %q, want it to say how to sign in", row)
+	if row := rowFor(renderConfig(config.Config{Path: "/tmp/c.json"}, 120), "chatgpt"); !strings.Contains(row, "not connected") {
+		t.Errorf("chatgpt row = %q, want it not connected", row)
 	}
 }

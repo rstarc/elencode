@@ -8,10 +8,10 @@ import (
 	"github.com/rstarc/elencode/internal/tui/menu"
 )
 
-// loginPanel is what is shown while a login waits on the user, the way Claude
-// Code's login does it: c copies the link, esc gives up, and the panel says
-// what the last key did. Shared by the session and `elencode login` on a
-// terminal, so both answer the same keys the same way.
+// loginPanel is what is shown while a login waits on the user: c copies the
+// link, esc gives up, and the panel says what the last key did. Shared by the
+// session and `elencode connect` on a terminal, so both answer the same keys
+// the same way.
 type loginPanel struct {
 	page   string // what c copies: the page the latest prompt asked to open
 	copied bool   // the confirmation is up
