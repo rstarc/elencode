@@ -19,12 +19,12 @@ func render(e entry) menu.Item { return menu.Item{Name: e.name, Description: e.d
 // Which entries a query matches is the caller's business now, so the fixtures
 // use the two matchers the real lists do: a prefix for commands, a substring
 // for ids.
-func matchPrefix(query, name string) bool {
-	return strings.HasPrefix(strings.ToLower(name), strings.ToLower(query))
+func matchPrefix(query string, e entry) bool {
+	return strings.HasPrefix(strings.ToLower(e.name), strings.ToLower(query))
 }
 
-func matchSubstring(query, name string) bool {
-	return strings.Contains(strings.ToLower(name), strings.ToLower(query))
+func matchSubstring(query string, e entry) bool {
+	return strings.Contains(strings.ToLower(e.name), strings.ToLower(query))
 }
 
 var commands = []entry{
@@ -138,13 +138,13 @@ func TestQueryNarrowsTheMatches(t *testing.T) {
 // opinion of its own: the two lists are searched differently, and neither rule
 // belongs here.
 func TestTheConfiguredMatcherDecidesTheMatchSet(t *testing.T) {
-	never := func(string, string) bool { return false }
+	never := func(string, entry) bool { return false }
 	p := New(Config[entry]{Render: render, Match: never, Trigger: "/"}, commands...)
 	if got := len(p.SetQuery("/").Matches()); got != 0 {
 		t.Errorf("%d matches, want the matcher to have the last word", got)
 	}
 
-	always := func(string, string) bool { return true }
+	always := func(string, entry) bool { return true }
 	p = New(Config[entry]{Render: render, Match: always, Trigger: "/"}, commands...)
 	if got := len(p.SetQuery("/zzz").Matches()); got != len(commands) {
 		t.Errorf("%d matches, want all %d", got, len(commands))

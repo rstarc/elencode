@@ -7,6 +7,8 @@ import (
 	"path"
 	"strings"
 	"testing"
+
+	"github.com/rstarc/elencode/internal/agent"
 )
 
 const realKey = "sk-ant-secret-value"
@@ -48,17 +50,6 @@ func TestEmptySecretReadsAsUnset(t *testing.T) {
 	}
 }
 
-func TestSecretUnmarshalsFromJSON(t *testing.T) {
-	var cfg Config
-	if err := json.Unmarshal([]byte(`{"anthropic_api_key":"`+realKey+`"}`), &cfg); err != nil {
-		t.Fatalf("unmarshalling config: %v", err)
-	}
-
-	if got := cfg.AnthropicAPIKey.Reveal(); got != realKey {
-		t.Errorf("AnthropicAPIKey = %q, want %q", got, realKey)
-	}
-}
-
 // writeConfig redirects os.UserConfigDir at a temp dir holding the given file
 // body and returns the path Load should read.
 //
@@ -66,6 +57,9 @@ func TestSecretUnmarshalsFromJSON(t *testing.T) {
 // XDG_CONFIG_HOME on Linux but $HOME/Library/Application Support on macOS.
 // Setting only one lets the test escape its sandbox and read the developer's own
 // config file, which is how this helper was wrong the first time.
+// noEnv is an environment that sets nothing.
+func noEnv(string) (string, bool) { return "", false }
+
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
 
@@ -92,65 +86,10 @@ func writeConfig(t *testing.T, body string) string {
 	return file
 }
 
-func TestLoadRecordsFileAsTheSource(t *testing.T) {
-	file := writeConfig(t, `{"anthropic_api_key":"`+realKey+`"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	if cfg.AnthropicKeyFromEnv {
-		t.Error("AnthropicKeyFromEnv is true, want false when only the file sets the key")
-	}
-	if cfg.Path != file {
-		t.Errorf("Path = %q, want %q", cfg.Path, file)
-	}
-	// Compared, never printed: a broken test sandbox would otherwise splash the
-	// developer's own key across the output.
-	if cfg.AnthropicAPIKey.Reveal() != realKey {
-		t.Error("AnthropicAPIKey is not the value from the file")
-	}
-}
-
-func TestLoadRecordsEnvironmentAsTheSource(t *testing.T) {
-	writeConfig(t, `{"anthropic_api_key":"from-file"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, realKey)
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-
-	if !cfg.AnthropicKeyFromEnv {
-		t.Error("AnthropicKeyFromEnv is false, want true when the environment overrides the file")
-	}
-	if cfg.AnthropicAPIKey.Reveal() != realKey {
-		t.Error("AnthropicAPIKey is not the value from the environment")
-	}
-}
-
-// TestLoadReportsThePathWhenItFails covers the caller that wants to say which
-// file was wrong, which is only possible if Path survives the error.
-func TestLoadReportsThePathWhenItFails(t *testing.T) {
-	file := writeConfig(t, `{"anthropic_api_key":""}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
-
-	cfg, err := Load()
-	if err == nil {
-		t.Fatal("Load succeeded with no API key set, want an error")
-	}
-	if cfg.Path != file {
-		t.Errorf("Path = %q, want %q even on failure", cfg.Path, file)
-	}
-}
-
 func TestLoadReadsTheModel(t *testing.T) {
-	writeConfig(t, `{"anthropic_api_key":"`+realKey+`","model":"claude-sonnet-4-5"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	writeConfig(t, `{"model":"claude-sonnet-4-5"}`)
 
-	cfg, err := Load()
+	cfg, err := Load(noEnv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -161,15 +100,14 @@ func TestLoadReadsTheModel(t *testing.T) {
 }
 
 func TestSaveIsReadBackByLoad(t *testing.T) {
-	file := writeConfig(t, `{"anthropic_api_key":"`+realKey+`"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	file := writeConfig(t, `{}`)
 
 	cfg := Config{Path: file, Model: "claude-opus-4-5"}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 
-	loaded, err := Load()
+	loaded, err := Load(noEnv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -181,9 +119,9 @@ func TestSaveIsReadBackByLoad(t *testing.T) {
 // TestSaveKeepsSettingsItDoesNotKnowAbout guards against a wholesale rewrite
 // dropping keys a later version of elencode wrote.
 func TestSaveKeepsSettingsItDoesNotKnowAbout(t *testing.T) {
-	file := writeConfig(t, `{"anthropic_api_key":"`+realKey+`","future_setting":42}`)
+	file := writeConfig(t, `{"future_setting":42}`)
 
-	cfg := Config{Path: file, AnthropicAPIKey: realKey, Model: "claude-opus-4-5"}
+	cfg := Config{Path: file, Model: "claude-opus-4-5"}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -192,42 +130,12 @@ func TestSaveKeepsSettingsItDoesNotKnowAbout(t *testing.T) {
 	if saved["future_setting"] != float64(42) {
 		t.Errorf("Save dropped an unknown setting: %v", saved)
 	}
-	if saved["anthropic_api_key"] != realKey {
-		t.Error("Save lost the API key")
-	}
-}
-
-// TestSaveDoesNotWriteTheEnvironmentsAPIKey keeps a key that was only ever
-// meant to live in the environment out of the file: the in-memory Config holds
-// the override, so saving it back would persist a secret the user never put
-// there, and pin it even after the environment changes.
-func TestSaveDoesNotWriteTheEnvironmentsAPIKey(t *testing.T) {
-	const fileKey = "sk-ant-from-the-file"
-	file := writeConfig(t, `{"anthropic_api_key":"`+fileKey+`"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, realKey)
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	cfg.Model = "claude-opus-4-5"
-	if err := cfg.Save(); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	saved := readConfig(t, file)
-	if saved["anthropic_api_key"] == realKey {
-		t.Error("Save wrote the environment's API key into the config file")
-	}
-	if saved["anthropic_api_key"] != fileKey {
-		t.Errorf("Save did not keep the file's own API key: %v", saved["anthropic_api_key"])
-	}
 }
 
 func TestSaveKeepsTheFilePrivate(t *testing.T) {
-	file := writeConfig(t, `{"anthropic_api_key":"`+realKey+`"}`)
+	file := writeConfig(t, `{}`)
 
-	cfg := Config{Path: file, AnthropicAPIKey: realKey, Model: "claude-opus-4-5"}
+	cfg := Config{Path: file, Model: "claude-opus-4-5"}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -236,19 +144,20 @@ func TestSaveKeepsTheFilePrivate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	// The file holds an API key, so a rewrite must not widen its permissions
+	// A file an older version wrote may still hold a key, so a rewrite must not
+	// widen its permissions
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Errorf("config file mode = %o, want 600", perm)
 	}
 }
 
 func TestSaveRepairsPermissiveFilePermissions(t *testing.T) {
-	file := writeConfig(t, `{"anthropic_api_key":"`+realKey+`","future_setting":42}`)
+	file := writeConfig(t, `{"future_setting":42}`)
 	if err := os.Chmod(file, 0o644); err != nil {
 		t.Fatalf("making config permissive: %v", err)
 	}
 
-	cfg := Config{Path: file, AnthropicAPIKey: realKey, Model: "claude-opus-4-5"}
+	cfg := Config{Path: file, Model: "claude-opus-4-5"}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -285,10 +194,9 @@ func readConfig(t *testing.T, file string) map[string]any {
 // setting existed: an absent JSON bool unmarshals to false, so the default has
 // to be in place before the file is read rather than after.
 func TestThinkingIsEnabledByDefault(t *testing.T) {
-	writeConfig(t, `{"anthropic_api_key":"`+realKey+`"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	writeConfig(t, `{}`)
 
-	cfg, err := Load()
+	cfg, err := Load(noEnv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -299,10 +207,9 @@ func TestThinkingIsEnabledByDefault(t *testing.T) {
 }
 
 func TestThinkingCanBeTurnedOff(t *testing.T) {
-	writeConfig(t, `{"anthropic_api_key":"`+realKey+`","thinking_enabled":false}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	writeConfig(t, `{"thinking_enabled":false}`)
 
-	cfg, err := Load()
+	cfg, err := Load(noEnv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -315,10 +222,9 @@ func TestThinkingCanBeTurnedOff(t *testing.T) {
 // TestSaveKeepsThinkingOff guards the round trip: false is a bool's zero value,
 // so a save that treated it as "unset" would quietly turn thinking back on.
 func TestSaveKeepsThinkingOff(t *testing.T) {
-	file := writeConfig(t, `{"anthropic_api_key":"`+realKey+`","thinking_enabled":false}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	file := writeConfig(t, `{"thinking_enabled":false}`)
 
-	cfg, err := Load()
+	cfg, err := Load(noEnv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -332,67 +238,20 @@ func TestSaveKeepsThinkingOff(t *testing.T) {
 	}
 }
 
-func TestLoadReadsTheOpenAISettings(t *testing.T) {
-	writeConfig(t, `{"openai_api_key":"sk-oai","thinking_effort":"high"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
-	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.OpenAIAPIKey.Reveal() != "sk-oai" || cfg.ThinkingEffort != "high" {
-		t.Fatalf("thinking_effort = %q, openai key set = %t", cfg.ThinkingEffort, cfg.OpenAIAPIKey != "")
-	}
-}
-
-// One key is enough: which providers a session can reach is whichever keys
-// were found, and a model names the provider it needs.
-func TestLoadAcceptsAnOpenAIKeyAlone(t *testing.T) {
-	writeConfig(t, `{"openai_api_key":"sk-oai"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
-	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
-
-	if _, err := Load(); err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-}
-
-// With no key at all there is nothing to talk to, which is worth saying at
-// startup rather than on the first message.
-func TestLoadRequiresAtLeastOneAPIKey(t *testing.T) {
-	writeConfig(t, `{"model":"claude-haiku-4-5"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
-	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
-
-	_, err := Load()
-	if err == nil {
-		t.Fatal("Load succeeded with no API key at all")
-	}
-	for _, want := range []string{ANTHROPIC_API_KEY_ENV_VAR_NAME, OPENAI_API_KEY_ENV_VAR_NAME} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("err = %q, want it to name %s", err, want)
-		}
-	}
-}
-
 // A file written when the provider was a setting still parses: the key means
 // nothing now, and Save leaves it alone like any other it does not know.
 func TestLoadIgnoresARetiredProviderSetting(t *testing.T) {
-	writeConfig(t, `{"provider":"openai","anthropic_api_key":"`+realKey+`"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
-	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
+	writeConfig(t, `{"provider":"openai"}`)
 
-	if _, err := Load(); err != nil {
+	if _, err := Load(noEnv); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 }
 
 func TestLoadLeavesThinkingEffortUnset(t *testing.T) {
-	writeConfig(t, `{"anthropic_api_key":"`+realKey+`"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	writeConfig(t, `{}`)
 
-	cfg, err := Load()
+	cfg, err := Load(noEnv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -403,57 +262,12 @@ func TestLoadLeavesThinkingEffortUnset(t *testing.T) {
 	}
 }
 
-func TestLoadAppliesTheOpenAIKeyFromTheEnvironment(t *testing.T) {
-	writeConfig(t, `{"provider":"openai","openai_api_key":"from-file"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
-	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "sk-oai-env")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.OpenAIAPIKey.Reveal() != "sk-oai-env" {
-		t.Error("OpenAIAPIKey is not the value from the environment")
-	}
-	if !cfg.OpenAIKeyFromEnv {
-		t.Error("OpenAIKeyFromEnv is false, want true")
-	}
-}
-
-// TestSaveWritesNeitherEnvironmentKey: with openai selected and BOTH env vars
-// set, Save must not persist either environment secret — including the key of
-// the provider that is not selected. One shared provenance bool cannot express
-// this, which is why each key tracks its own.
-func TestSaveWritesNeitherEnvironmentKey(t *testing.T) {
-	file := writeConfig(t, `{"provider":"openai","anthropic_api_key":"ant-file","openai_api_key":"oai-file"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "ant-env")
-	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "oai-env")
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if err := cfg.Save(); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-
-	saved := readConfig(t, file)
-	if saved["anthropic_api_key"] != "ant-file" {
-		t.Errorf("anthropic_api_key = %v, want the file's own value kept", saved["anthropic_api_key"])
-	}
-	if saved["openai_api_key"] != "oai-file" {
-		t.Errorf("openai_api_key = %v, want the file's own value kept", saved["openai_api_key"])
-	}
-}
-
 // A setting this version no longer has means nothing, and leaving it in the
 // file only invites the reader to think it still does something.
 func TestSaveDropsTheRetiredProviderSetting(t *testing.T) {
-	file := writeConfig(t, `{"provider":"openai","anthropic_api_key":"`+realKey+`","keep-me":"yes"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
-	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
+	file := writeConfig(t, `{"provider":"openai","keep-me":"yes"}`)
 
-	cfg, err := Load()
+	cfg, err := Load(noEnv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -474,10 +288,9 @@ func TestSaveDropsTheRetiredProviderSetting(t *testing.T) {
 // TestLoadRejectsUnknownThinkingEffort: a typo like "hihg" must fail loudly
 // rather than silently clamping to medium.
 func TestLoadRejectsUnknownThinkingEffort(t *testing.T) {
-	writeConfig(t, `{"anthropic_api_key":"`+realKey+`","thinking_effort":"turbo"}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	writeConfig(t, `{"thinking_effort":"turbo"}`)
 
-	if _, err := Load(); err == nil {
+	if _, err := Load(noEnv); err == nil {
 		t.Fatal("Load accepted an unknown thinking_effort")
 	}
 }
@@ -486,10 +299,9 @@ func TestLoadRejectsUnknownThinkingEffort(t *testing.T) {
 // right — it means "whatever the API normally does" — so it must pass the
 // validation a typo fails.
 func TestLoadAcceptsAnExplicitlyEmptyEffort(t *testing.T) {
-	writeConfig(t, `{"anthropic_api_key":"`+realKey+`","thinking_effort":""}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
+	writeConfig(t, `{"thinking_effort":""}`)
 
-	cfg, err := Load()
+	cfg, err := Load(noEnv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -506,7 +318,7 @@ func TestSaveCreatesTheFileWhenItDoesNotExist(t *testing.T) {
 	dir := t.TempDir()
 	file := path.Join(dir, "config.json")
 
-	cfg := Config{Path: file, AnthropicAPIKey: realKey, Model: "claude-opus-4-5"}
+	cfg := Config{Path: file, Model: "claude-opus-4-5"}
 	if err := cfg.Save(); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -519,106 +331,23 @@ func TestSaveCreatesTheFileWhenItDoesNotExist(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// The file holds an API key, so it must not be readable by anyone else.
+	// Kept to its owner like the files beside it
 	if perm := info.Mode().Perm(); perm != 0o600 {
 		t.Errorf("mode = %o, want 600", perm)
 	}
 }
 
-// signIn leaves a ChatGPT login next to the config file writeConfig made, and
-// returns its path. Its contents are the chatgpt package's to judge.
-func signIn(t *testing.T, configFile string) string {
-	t.Helper()
-	login := path.Join(path.Dir(configFile), "chatgpt.json")
-	if err := os.WriteFile(login, []byte(`{}`), 0o600); err != nil {
-		t.Fatalf("writing login: %v", err)
-	}
-	return login
-}
-
-func TestChatGPTLoginPathIsNextToTheConfigFile(t *testing.T) {
-	file := writeConfig(t, `{}`)
-
-	got, err := ChatGPTLoginPath()
-	if err != nil {
-		t.Fatalf("ChatGPTLoginPath: %v", err)
-	}
-	if want := path.Join(path.Dir(file), "chatgpt.json"); got != want {
-		t.Errorf("ChatGPTLoginPath = %q, want %q", got, want)
-	}
-}
-
-// Signing in stands in for an API key: it is a provider the session can reach.
-func TestLoadAcceptsAChatGPTLoginAlone(t *testing.T) {
-	file := writeConfig(t, `{}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
-	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
-	login := signIn(t, file)
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.ChatGPTLoginPath != login {
-		t.Errorf("ChatGPTLoginPath = %q, want %q", cfg.ChatGPTLoginPath, login)
-	}
-}
-
-func TestLoadLeavesTheLoginPathEmptyWhenNotSignedIn(t *testing.T) {
-	writeConfig(t, `{"anthropic_api_key":"sk-ant"}`)
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.ChatGPTLoginPath != "" {
-		t.Errorf("ChatGPTLoginPath = %q, want empty without a login", cfg.ChatGPTLoginPath)
-	}
-}
-
-// The error for having nothing to talk to has to mention every way out.
-func TestLoadWithNoCredentialsMentionsSigningIn(t *testing.T) {
-	writeConfig(t, `{}`)
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
-	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
-
-	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "elencode login") {
-		t.Errorf("err = %v, want it to mention elencode login", err)
-	}
-}
-
-// Where the login lives is found, not configured: it must never be written
-// into the config file.
-func TestSaveDoesNotWriteTheLoginPath(t *testing.T) {
-	file := writeConfig(t, `{}`)
-
-	cfg := Config{Path: file, ChatGPTLoginPath: "/somewhere/chatgpt.json"}
-	if err := cfg.Save(); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
-	body, err := os.ReadFile(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(body), "chatgpt") {
-		t.Errorf("config file = %s, want no login path in it", body)
-	}
-}
-
-// Someone who only ever signed in with ChatGPT has no config file: login
-// writes the login, not a config. Their first start must not fail on a file
+// Someone who only ever connected a provider has no config file: connecting
+// writes credentials, not a config. Their first start must not fail on a file
 // they never had a reason to create.
 func TestLoadTreatsAMissingFileAsEmpty(t *testing.T) {
 	file := writeConfig(t, `{}`)
-	signIn(t, file)
+	writeCredentials(t, file, `{"anthropic":{"api_key":"`+realKey+`"}}`)
 	if err := os.Remove(file); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv(ANTHROPIC_API_KEY_ENV_VAR_NAME, "")
-	t.Setenv(OPENAI_API_KEY_ENV_VAR_NAME, "")
 
-	cfg, err := Load()
+	cfg, err := Load(noEnv)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -628,15 +357,15 @@ func TestLoadTreatsAMissingFileAsEmpty(t *testing.T) {
 	if !cfg.ThinkingEnabled {
 		t.Error("ThinkingEnabled = false, want the default")
 	}
-	if cfg.ChatGPTLoginPath == "" {
-		t.Error("the login beside the missing file was not found")
+	if key, _ := cfg.APIKey(agent.ProviderAnthropic); key == "" {
+		t.Error("the credentials beside the missing file were not found")
 	}
 }
 
 // A file that exists but cannot be read is still an error: treating it as
 // empty would quietly drop whatever it says.
 func TestLoadStillFailsOnAnUnreadableFile(t *testing.T) {
-	file := writeConfig(t, `{"anthropic_api_key":"key"}`)
+	file := writeConfig(t, `{}`)
 	if err := os.Chmod(file, 0o000); err != nil {
 		t.Fatal(err)
 	}
@@ -644,7 +373,7 @@ func TestLoadStillFailsOnAnUnreadableFile(t *testing.T) {
 		t.Skip("running as a user who can read anything, root say")
 	}
 
-	if _, err := Load(); err == nil {
+	if _, err := Load(noEnv); err == nil {
 		t.Error("Load succeeded on a file it could not read")
 	}
 }

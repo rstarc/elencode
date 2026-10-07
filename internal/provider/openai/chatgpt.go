@@ -4,8 +4,8 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/responses"
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/chatgpt"
 )
@@ -41,23 +41,17 @@ func newChatGPTWithOptions(creds Credentials, thinking bool, effort agent.Effort
 		option.WithBaseURL(chatGPTBaseURL),
 		option.WithMiddleware(chatGPTAuth(creds)),
 	}, opts...)
-	return &Client{client: openai.NewClient(opts...), thinking: thinking, effort: effort, chatGPT: true}
+	return &Client{responses: responses.NewResponseService(withoutEnvironment(opts)...), thinking: thinking, effort: effort, chatGPT: true}
 }
 
 // chatGPTAuth puts the login on a request just before it is sent. A middleware
 // rather than a fixed header, so a renewed token is picked up mid-session.
-//
-// It also takes off what the SDK added from the environment: OPENAI_API_KEY is
-// a secret for another service, and the organisation and project headers
-// belong to the API, not to a ChatGPT account.
 func chatGPTAuth(creds Credentials) option.Middleware {
 	return func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
 		token, account, err := creds.Credentials(req.Context())
 		if err != nil {
 			return nil, err
 		}
-		req.Header.Del("OpenAI-Organization")
-		req.Header.Del("OpenAI-Project")
 		req.Header.Set("Authorization", "Bearer "+token)
 		req.Header.Set("ChatGPT-Account-ID", account)
 		req.Header.Set("originator", chatgpt.Originator)

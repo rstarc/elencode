@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"runtime"
-	"slices"
 	"strings"
 	"syscall"
 
@@ -20,86 +18,7 @@ import (
 	"github.com/rstarc/elencode/internal/provider/openai"
 )
 
-// signInProviders are the providers a session reaches by signing in rather
-// than with an API key. login and logout take one of them by name, so a
-// provider added here is one more name, not another command.
-var signInProviders = []agent.ProviderName{agent.ProviderChatGPT}
-
-// signInProvider reads the provider login or logout was given. Shared by the
-// CLI and the slash commands, so both refuse the same things the same way.
-func signInProvider(name string) (agent.ProviderName, error) {
-	var names []string
-	for _, provider := range signInProviders {
-		names = append(names, string(provider))
-	}
-	list := strings.Join(names, ", ")
-
-	provider := agent.ProviderName(name)
-	switch {
-	case name == "":
-		return "", fmt.Errorf("name the provider to sign in to: %s", list)
-	case slices.Contains(signInProviders, provider):
-		return provider, nil
-	case slices.Contains(agent.Providers, provider):
-		return "", fmt.Errorf("%s is reached with an API key, not a login (providers to sign in to: %s)", name, list)
-	default:
-		return "", fmt.Errorf("unknown provider %q (providers to sign in to: %s)", name, list)
-	}
-}
-
-// loginCLI is `elencode login <provider> [--device]`. ctrl+c gives up on it cleanly,
-// letting go of the callback port.
-func loginCLI(args []string, out io.Writer) error {
-	_, device, err := parseLoginArgs(args)
-	if err != nil {
-		return err
-	}
-	path, err := config.ChatGPTLoginPath()
-	if err != nil {
-		return err
-	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-	defer stop()
-	s := defaultSignIn(path)
-	s.device = device
-	// The login panel needs a terminal both ways: to draw on, and to read keys
-	// from. Without one, the prompts are printed and that is all.
-	var keys io.Reader
-	if isTerminal(out) && isTerminal(os.Stdin) {
-		keys = os.Stdin
-	}
-	return runLogin(ctx, s, out, keys)
-}
-
-// logoutCLI is `elencode logout <provider>`.
-func logoutCLI(args []string, out io.Writer) error {
-	if _, err := signInProvider(strings.Join(args, " ")); err != nil {
-		return err
-	}
-	path, err := config.ChatGPTLoginPath()
-	if err != nil {
-		return err
-	}
-	return runLogout(path, out)
-}
-
-// runLogout forgets the login saved at path. Only the local copy: the tokens
-// are not revoked with the issuer, so a copy taken elsewhere stays valid until
-// it expires.
-func runLogout(path string, out io.Writer) error {
-	err := os.Remove(path)
-	if errors.Is(err, os.ErrNotExist) {
-		_, _ = fmt.Fprintln(out, "You were not signed in to ChatGPT.")
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	_, _ = fmt.Fprintf(out, "Signed out of ChatGPT; removed %s.\n", path)
-	return nil
-}
-
-// runLogin is `elencode login chatgpt` once its arguments are settled: it
+// runLogin is `elencode connect chatgpt` once its arguments are settled: it
 // tells the user what to do, and once they have, what they signed in to and
 // where the login went. keys is the terminal to read keys from. With one, the
 // login runs in the panel the session shows; without, as when piped, the
@@ -150,7 +69,7 @@ func runLoginProgram(ctx context.Context, s signIn, keys io.Reader, out io.Write
 	return result.tokens, result.err
 }
 
-// loginProgram is `elencode login` on a terminal: the prompts printed as the
+// loginProgram is `elencode connect chatgpt` on a terminal: the prompts printed as the
 // session prints them, and the session's login panel under them.
 type loginProgram struct {
 	events    <-chan loginEvent
@@ -213,25 +132,6 @@ func account(tokens chatgpt.Tokens) string {
 	return " as " + email
 }
 
-// parseLoginArgs reads `login <provider> [--device]`, from the CLI's
-// arguments or the words after /login.
-func parseLoginArgs(args []string) (agent.ProviderName, bool, error) {
-	var names []string
-	device := false
-	for _, arg := range args {
-		switch {
-		case arg == "--device":
-			device = true
-		case strings.HasPrefix(arg, "-"):
-			return "", false, fmt.Errorf("unknown flag %s (login takes --device, to sign in with a code)", arg)
-		default:
-			names = append(names, arg)
-		}
-	}
-	provider, err := signInProvider(strings.Join(names, " "))
-	return provider, device, err
-}
-
 // loginPrompt is something a login asks of the user. The page is kept apart
 // from the words so each side can show it its own way: a link where the
 // terminal can follow one, plain text where it cannot.
@@ -243,7 +143,7 @@ type loginPrompt struct {
 
 // render lays the prompt out with the page and the code on lines of their
 // own, so either can be copied whole. links makes the page a link, for a
-// terminal: the session always is one, `elencode login` is unless piped, and
+// terminal: the session always is one, `elencode connect` is unless piped, and
 // both show a prompt through here.
 func (p loginPrompt) render(links bool) string {
 	lines := []string{p.text}
@@ -280,12 +180,12 @@ func isTerminal(out io.Writer) bool {
 }
 
 // signIn is how a ChatGPT login reaches the user on this machine. Shared by
-// `elencode login` and /login, so both sign in the same way; fields so tests
+// `elencode connect chatgpt` and /connect chatgpt, so both sign in the same way; fields so tests
 // can stand in for the issuer, the port, the file and the browser.
 type signIn struct {
 	oauth        chatgpt.OAuth
 	callbackAddr string // where the browser login listens for the redirect
-	path         string // where the login is saved
+	path         string // the credentials file the login is saved in
 	// headless means there is no browser here to open, so the user signs in on
 	// another device with a code instead.
 	headless bool
@@ -317,7 +217,7 @@ func (s signIn) run(ctx context.Context, say func(loginPrompt)) (chatgpt.Tokens,
 	if err != nil {
 		return chatgpt.Tokens{}, err
 	}
-	if err := chatgpt.SaveTokens(s.path, tokens); err != nil {
+	if _, err := config.SaveCredential(s.path, agent.ProviderChatGPT, config.Credential{Login: &tokens}); err != nil {
 		return chatgpt.Tokens{}, fmt.Errorf("saving the login to %s: %w", s.path, err)
 	}
 	return tokens, nil

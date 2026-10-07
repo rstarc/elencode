@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -104,6 +105,12 @@ type RetryableError struct {
 
 func (e *RetryableError) Error() string { return e.Err.Error() }
 func (e *RetryableError) Unwrap() error { return e.Err }
+
+// ErrKeyRejected marks an API key the provider refused, as a key check reports
+// it. Kept apart from every other failure, which says nothing about the key:
+// a key that could not be checked is still worth keeping, one that was
+// rejected is not.
+var ErrKeyRejected = errors.New("the API key was rejected")
 
 // Request represents a single Request we send to the provider's API
 type Request struct {

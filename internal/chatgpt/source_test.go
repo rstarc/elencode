@@ -4,93 +4,27 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-func TestSaveThenLoadRoundTrips(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "chatgpt.json")
-	want := Tokens{AccessToken: "a", RefreshToken: "r", IDToken: "i", AccountID: "acct"}
-
-	if err := SaveTokens(path, want); err != nil {
-		t.Fatalf("SaveTokens: %v", err)
+// A login missing any of these cannot make a request, so it is caught when
+// it is loaded rather than on the first message.
+func TestCompleteRejectsAnIncompleteLogin(t *testing.T) {
+	complete := Tokens{AccessToken: "a", RefreshToken: "r", AccountID: "acct"}
+	if err := complete.Complete(); err != nil {
+		t.Errorf("Complete = %v for a complete login", err)
 	}
-	got, err := LoadTokens(path)
-	if err != nil {
-		t.Fatalf("LoadTokens: %v", err)
-	}
-	if got != want {
-		t.Errorf("loaded %+v, want %+v", got, want)
-	}
-}
-
-// The file holds a credential, so only its owner may read it, and the
-// directory may not exist yet on a first login.
-func TestSaveTokensCreatesAnOwnerOnlyFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "missing", "chatgpt.json")
-
-	if err := SaveTokens(path, Tokens{AccessToken: "a"}); err != nil {
-		t.Fatalf("SaveTokens: %v", err)
-	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Errorf("mode = %o, want 600", mode)
-	}
-}
-
-// WriteFile only applies the mode when it creates the file.
-func TestSaveTokensTightensAnExistingFile(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "chatgpt.json")
-	if err := os.WriteFile(path, []byte("{}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := SaveTokens(path, Tokens{AccessToken: "a"}); err != nil {
-		t.Fatalf("SaveTokens: %v", err)
-	}
-	info, _ := os.Stat(path)
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Errorf("mode = %o, want 600", mode)
-	}
-}
-
-// Not being signed in is an ordinary state the caller has to recognise.
-func TestLoadTokensReportsAMissingFileAsNotExist(t *testing.T) {
-	_, err := LoadTokens(filepath.Join(t.TempDir(), "chatgpt.json"))
-	if !errors.Is(err, os.ErrNotExist) {
-		t.Errorf("err = %v, want os.ErrNotExist", err)
-	}
-}
-
-func TestLoadTokensNamesTheFileItCouldNotRead(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "chatgpt.json")
-	if err := os.WriteFile(path, []byte("not json"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := LoadTokens(path)
-	if err == nil || !strings.Contains(err.Error(), path) {
-		t.Errorf("err = %v, want it to name %s", err, path)
-	}
-}
-
-// A file without what every request needs is a broken login, and saying so
-// at startup beats a 401 on the first message.
-func TestLoadTokensRejectsAnIncompleteLogin(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "chatgpt.json")
-	if err := os.WriteFile(path, []byte(`{"access_token":"a","refresh_token":"r"}`), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := LoadTokens(path); err == nil {
-		t.Error("LoadTokens accepted a login with no account id")
+	for _, missing := range []Tokens{
+		{RefreshToken: "r", AccountID: "acct"},
+		{AccessToken: "a", AccountID: "acct"},
+		{AccessToken: "a", RefreshToken: "r"},
+	} {
+		if err := missing.Complete(); err == nil || !strings.Contains(err.Error(), "elencode connect chatgpt") {
+			t.Errorf("Complete(%+v) = %v, want it to say how to sign in again", missing, err)
+		}
 	}
 }
 
@@ -101,12 +35,25 @@ func fixedNow(now time.Time) func() time.Time {
 
 var now = time.Date(2026, 10, 5, 12, 0, 0, 0, time.UTC)
 
-func newTestSource(t *testing.T, tokens Tokens, base string) (*Source, string) {
+// saves records every login a Source saves, in order.
+type saves struct {
+	mu     sync.Mutex
+	tokens []Tokens
+}
+
+func (s *saves) save(tokens Tokens) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tokens = append(s.tokens, tokens)
+	return nil
+}
+
+func newTestSource(t *testing.T, tokens Tokens, base string) (*Source, *saves) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "chatgpt.json")
-	source := NewSource(path, tokens, OAuth{Issuer: base})
+	saved := &saves{}
+	source := NewSource(tokens, OAuth{Issuer: base}, saved.save)
 	source.now = fixedNow(now)
-	return source, path
+	return source, saved
 }
 
 func TestCredentialsReturnsAnUnexpiredTokenAsIs(t *testing.T) {
@@ -177,17 +124,16 @@ func TestCredentialsUsesAnOpaqueTokenWithoutRefreshing(t *testing.T) {
 func TestCredentialsSavesTheRefreshedLogin(t *testing.T) {
 	fresh := accessToken(t, now.Add(time.Hour))
 	_, base := newIssuer(t, granted(fresh, "new-refresh", ""))
-	source, path := newTestSource(t, Tokens{AccessToken: accessToken(t, now.Add(-time.Minute)), RefreshToken: "old-refresh", AccountID: "acct"}, base)
+	source, saved := newTestSource(t, Tokens{AccessToken: accessToken(t, now.Add(-time.Minute)), RefreshToken: "old-refresh", AccountID: "acct"}, base)
 
 	if _, _, err := source.Credentials(context.Background()); err != nil {
 		t.Fatalf("Credentials: %v", err)
 	}
-	saved, err := LoadTokens(path)
-	if err != nil {
-		t.Fatalf("LoadTokens: %v", err)
+	if len(saved.tokens) != 1 {
+		t.Fatalf("saved %d times, want once", len(saved.tokens))
 	}
-	if saved.AccessToken != fresh || saved.RefreshToken != "new-refresh" {
-		t.Errorf("saved %+v, want the refreshed tokens", saved)
+	if got := saved.tokens[0]; got.AccessToken != fresh || got.RefreshToken != "new-refresh" {
+		t.Errorf("saved %+v, want the refreshed tokens", got)
 	}
 }
 
@@ -246,12 +192,8 @@ func TestCredentialsPassesASignOutThrough(t *testing.T) {
 func TestCredentialsReportsAFailedSaveButKeepsTheRefresh(t *testing.T) {
 	fresh := accessToken(t, now.Add(time.Hour))
 	iss, base := newIssuer(t, granted(fresh, "new-refresh", ""))
-	blocker := filepath.Join(t.TempDir(), "file")
-	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	// A path under a regular file can be neither created nor written
-	source := NewSource(filepath.Join(blocker, "chatgpt.json"), Tokens{AccessToken: accessToken(t, now.Add(-time.Minute)), RefreshToken: "r", AccountID: "acct"}, OAuth{Issuer: base})
+	failing := func(Tokens) error { return errors.New("disk full") }
+	source := NewSource(Tokens{AccessToken: accessToken(t, now.Add(-time.Minute)), RefreshToken: "r", AccountID: "acct"}, OAuth{Issuer: base}, failing)
 	source.now = fixedNow(now)
 
 	if _, _, err := source.Credentials(context.Background()); err == nil {

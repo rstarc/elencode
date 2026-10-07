@@ -26,7 +26,10 @@ const eventBuffer = 64
 const defaultModel = "gpt-5"
 
 type Client struct {
-	client openai.Client
+	responses responses.ResponseService
+	// models serves CheckKey, and only an API client has one: the ChatGPT
+	// backend is signed in to, with no key to check.
+	models openai.ModelService
 	// thinking asks for the model's reasoning, and effort says how hard an
 	// effort-based model should reason. Both are fixed for the life of the
 	// client: they come from the config file and nothing changes them at runtime.
@@ -44,8 +47,35 @@ func New(apiKey string, thinking bool, effort agent.Effort) *Client {
 // newWithOptions is New with extra SDK options, which tests use to point the
 // client at a stub server.
 func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...option.RequestOption) *Client {
-	opts = append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
-	return &Client{client: openai.NewClient(opts...), thinking: thinking, effort: effort}
+	opts = withoutEnvironment(append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...))
+	return &Client{
+		responses: responses.NewResponseService(opts...),
+		models:    openai.NewModelService(opts...),
+		thinking:  thinking,
+		effort:    effort,
+	}
+}
+
+// withoutEnvironment is what the services the client uses are built from,
+// rather than a whole openai.Client: that would read OPENAI_API_KEY,
+// OPENAI_BASE_URL, OPENAI_ORG_ID and OPENAI_PROJECT_ID from the environment
+// first, and which key a request carries and where it goes is elencode's to
+// say.
+func withoutEnvironment(opts []option.RequestOption) []option.RequestOption {
+	return append([]option.RequestOption{option.WithEnvironmentProduction()}, opts...)
+}
+
+// CheckKey asks the API whether it accepts the client's key, by listing the
+// models: a request that costs nothing. A refusal is agent.ErrKeyRejected;
+// any other failure says nothing about the key.
+func (c *Client) CheckKey(ctx context.Context) error {
+	_, err := c.models.List(ctx, noRetry)
+	var apiErr *openai.Error
+	if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden) {
+		// The status says enough: the body repeats it, with the URL around it
+		return fmt.Errorf("%w (%d %s)", agent.ErrKeyRejected, apiErr.StatusCode, http.StatusText(apiErr.StatusCode))
+	}
+	return err
 }
 
 // params builds the request for one round of inference. Stateless by design:
@@ -136,7 +166,7 @@ func (c *Client) Stream(ctx context.Context, req agent.Request) <-chan agent.Eve
 
 		// noRetry, not a client-wide setting: only inference is retried by the
 		// agent, so this is the one call whose retries would be doubled up.
-		stream := c.client.Responses.NewStreaming(ctx, c.params(req, input), noRetry)
+		stream := c.responses.NewStreaming(ctx, c.params(req, input), noRetry)
 		// Close is the only thing that closes the response body — Next never
 		// does, not even at the end of the stream — so without this every early
 		// return below leaves a connection out of the pool until it times out.

@@ -304,6 +304,15 @@ func (a *Agent) SetModel(model Model, provider Provider) {
 	a.mu.Unlock()
 }
 
+// SetProvider swaps the client serving the model in use, keeping the
+// conversation: the same model, reached with a new credential. A turn under
+// way keeps the client it started with.
+func (a *Agent) SetProvider(provider Provider) {
+	a.mu.Lock()
+	a.provider = provider
+	a.mu.Unlock()
+}
+
 func (a *Agent) AppendMessage(msg Message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

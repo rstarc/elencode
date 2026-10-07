@@ -15,7 +15,10 @@ const Prefix = "/"
 type Command struct {
 	Name        string // without the leading slash
 	Description string
-	Execute     func(arg string) tea.Cmd
+	// Aliases are other names the command answers to, without the slash. The
+	// menu lists the command once, under Name.
+	Aliases []string
+	Execute func(arg string) tea.Cmd
 }
 
 // Registry is the set of commands a session knows. Built by the caller, so what

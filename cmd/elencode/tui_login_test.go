@@ -16,6 +16,7 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/chatgpt"
 	"github.com/rstarc/elencode/internal/commands"
+	"github.com/rstarc/elencode/internal/config"
 	"github.com/rstarc/elencode/internal/provider/openai"
 )
 
@@ -89,6 +90,7 @@ func newLoginModel(t *testing.T, providers providerSet, issuer string, b *fakeBr
 	t.Helper()
 	m := newPickerModel(t, providers, testModels)
 	m.signIn = testSignIn(t, issuer, b)
+	m.config.CredentialsPath = m.signIn.path
 	return m
 }
 
@@ -96,7 +98,7 @@ func newLoginModel(t *testing.T, providers providerSet, issuer string, b *fakeBr
 // way, the first thing it told the user, and the command waiting on the rest.
 func startLogin(t *testing.T, m model) (model, loginPromptMsg, tea.Cmd) {
 	t.Helper()
-	m, cmd := updateCmd(t, m, commands.LoginMsg{Arg: "chatgpt"})
+	m, cmd := updateCmd(t, m, commands.ConnectMsg{Arg: "chatgpt"})
 	prompt := find[loginPromptMsg](t, run(t, cmd))
 
 	m, cmd = updateCmd(t, m, prompt)
@@ -118,11 +120,11 @@ func TestLoginCommandSignsInWithoutARestart(t *testing.T) {
 	if _, ok := m.providers[agent.ProviderChatGPT].(*openai.Client); !ok {
 		t.Errorf("chatgpt provider = %T, want a client", m.providers[agent.ProviderChatGPT])
 	}
-	if m.config.ChatGPTLoginPath != m.signIn.path {
-		t.Errorf("ChatGPTLoginPath = %q, want %q", m.config.ChatGPTLoginPath, m.signIn.path)
+	if m.config.Credentials[agent.ProviderChatGPT].Login == nil {
+		t.Error("the session does not hold the login")
 	}
-	if _, err := chatgpt.LoadTokens(m.signIn.path); err != nil {
-		t.Errorf("the login was not saved: %v", err)
+	if savedLogin(t, m.signIn.path) == nil {
+		t.Error("the login was not saved")
 	}
 	got := text(run(t, cmd))
 	for _, want := range []string{"someone@example.com", "/model chatgpt/"} {
@@ -138,7 +140,7 @@ func TestLoginCommandPrintsThePageAsALink(t *testing.T) {
 	b := &fakeBrowser{t: t, fail: true}
 	m := newLoginModel(t, keyed(agent.ProviderAnthropic), tokenEndpoint(t, http.StatusOK), b)
 
-	m, cmd := updateCmd(t, m, commands.LoginMsg{Arg: "chatgpt"})
+	m, cmd := updateCmd(t, m, commands.ConnectMsg{Arg: "chatgpt"})
 	prompt := find[loginPromptMsg](t, run(t, cmd))
 	t.Cleanup(m.loginCancel)
 
@@ -154,7 +156,7 @@ func TestLoginCommandTakesTheDeviceFlag(t *testing.T) {
 	b := &fakeBrowser{t: t}
 	m := newLoginModel(t, keyed(agent.ProviderAnthropic), issuerStub(t, http.StatusOK, http.StatusOK), b)
 
-	m, cmd := updateCmd(t, m, commands.LoginMsg{Arg: "chatgpt --device"})
+	m, cmd := updateCmd(t, m, commands.ConnectMsg{Arg: "chatgpt --device"})
 	prompt := find[loginPromptMsg](t, run(t, cmd))
 	t.Cleanup(m.loginCancel)
 
@@ -216,19 +218,6 @@ func TestLoginCommandReportsAFailedLogin(t *testing.T) {
 	}
 }
 
-func TestLoginCommandRefusesAKeyedProvider(t *testing.T) {
-	m := newLoginModel(t, keyed(agent.ProviderAnthropic), "http://unused.invalid", &fakeBrowser{t: t})
-
-	m, cmd := updateCmd(t, m, commands.LoginMsg{Arg: "openai"})
-
-	if got := text(run(t, cmd)); !strings.Contains(got, "API key") {
-		t.Errorf("printed %q, want it to say openai uses an API key", got)
-	}
-	if m.loginCancel != nil {
-		t.Error("a refused login is marked pending")
-	}
-}
-
 // Quitting gives up on the login, which lets go of the callback port.
 func TestQuitAbandonsAPendingLogin(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -262,11 +251,12 @@ func TestQuitAbandonsAPendingLogin(t *testing.T) {
 func signedIn(t *testing.T, providers providerSet) model {
 	t.Helper()
 	m := newLoginModel(t, providers, "http://unused.invalid", &fakeBrowser{t: t})
-	if err := chatgpt.SaveTokens(m.signIn.path, chatgpt.Tokens{AccessToken: "a", RefreshToken: "r", AccountID: "acct"}); err != nil {
+	creds, err := config.SaveCredential(m.signIn.path, agent.ProviderChatGPT, config.Credential{Login: &chatgpt.Tokens{AccessToken: "a", RefreshToken: "r", AccountID: "acct"}})
+	if err != nil {
 		t.Fatal(err)
 	}
 	m.providers[agent.ProviderChatGPT] = &recordingProvider{}
-	m.config.ChatGPTLoginPath = m.signIn.path
+	m.config.Credentials = creds
 	return m
 }
 
@@ -274,18 +264,18 @@ func TestLogoutCommandForgetsTheLogin(t *testing.T) {
 	m := signedIn(t, keyed(agent.ProviderAnthropic))
 	m.config.Model = "anthropic/model-one"
 
-	m, cmd := updateCmd(t, m, commands.LogoutMsg{Provider: "chatgpt"})
+	m, cmd := updateCmd(t, m, commands.DisconnectMsg{Provider: "chatgpt"})
 
-	if _, err := os.Stat(m.signIn.path); !os.IsNotExist(err) {
-		t.Errorf("stat = %v, want the login removed", err)
+	if savedLogin(t, m.signIn.path) != nil {
+		t.Error("the login is still saved")
 	}
 	if _, ok := m.providers[agent.ProviderChatGPT]; ok {
 		t.Error("the chatgpt provider is still there")
 	}
-	if m.config.ChatGPTLoginPath != "" {
-		t.Errorf("ChatGPTLoginPath = %q, want empty", m.config.ChatGPTLoginPath)
+	if m.config.Credentials[agent.ProviderChatGPT].Login != nil {
+		t.Error("the session still holds the login")
 	}
-	if got := text(run(t, cmd)); !strings.Contains(got, "Signed out") {
+	if got := text(run(t, cmd)); !strings.Contains(got, "Disconnected chatgpt") {
 		t.Errorf("printed %q", got)
 	}
 }
@@ -296,7 +286,7 @@ func TestLogoutCommandMovesOffAChatGPTModel(t *testing.T) {
 	m := signedIn(t, keyed(agent.ProviderAnthropic))
 	m.config.Model = "chatgpt/gpt-6-sol"
 
-	m, cmd := updateCmd(t, m, commands.LogoutMsg{Provider: "chatgpt"})
+	m, cmd := updateCmd(t, m, commands.DisconnectMsg{Provider: "chatgpt"})
 
 	if strings.HasPrefix(m.config.Model, "chatgpt/") {
 		t.Errorf("model = %q, still on chatgpt", m.config.Model)
@@ -312,26 +302,37 @@ func TestLogoutCommandRefusesToStrandTheSession(t *testing.T) {
 	m := signedIn(t, providerSet{})
 	m.config.Model = "chatgpt/gpt-6-sol"
 
-	m, cmd := updateCmd(t, m, commands.LogoutMsg{Provider: "chatgpt"})
+	m, cmd := updateCmd(t, m, commands.DisconnectMsg{Provider: "chatgpt"})
 
-	if _, err := os.Stat(m.signIn.path); err != nil {
-		t.Errorf("stat = %v, want the login kept", err)
+	if savedLogin(t, m.signIn.path) == nil {
+		t.Error("the login was not kept")
 	}
-	if got := text(run(t, cmd)); !strings.Contains(got, "elencode logout chatgpt") {
+	if got := text(run(t, cmd)); !strings.Contains(got, "elencode disconnect chatgpt") {
 		t.Errorf("printed %q, want it to point at the CLI", got)
 	}
 }
 
-func TestLogoutCommandRefusesAKeyedProvider(t *testing.T) {
-	m := signedIn(t, keyed(agent.ProviderAnthropic))
+// A key provider is disconnected by forgetting its key, and the session stops
+// reaching it.
+func TestDisconnectCommandForgetsAKey(t *testing.T) {
+	m := signedIn(t, keyed(agent.ProviderAnthropic, agent.ProviderOpenAI))
+	m.config.CredentialsPath = filepath.Join(t.TempDir(), "credentials.json")
+	m.config.Credentials = config.Credentials{agent.ProviderOpenAI: {APIKey: "sk-oai"}}
+	if err := m.config.Credentials.Save(m.config.CredentialsPath); err != nil {
+		t.Fatal(err)
+	}
+	m.config.Model = "anthropic/model-one"
 
-	m, cmd := updateCmd(t, m, commands.LogoutMsg{Provider: "anthropic"})
+	m, cmd := updateCmd(t, m, commands.DisconnectMsg{Provider: "openai"})
 
-	if got := text(run(t, cmd)); !strings.Contains(got, "API key") {
+	if got := text(run(t, cmd)); !strings.Contains(got, "Disconnected openai") {
 		t.Errorf("printed %q", got)
 	}
-	if _, ok := m.providers[agent.ProviderAnthropic]; !ok {
-		t.Error("refusing to log out of anthropic dropped it anyway")
+	if _, ok := m.providers[agent.ProviderOpenAI]; ok {
+		t.Error("the openai provider is still there")
+	}
+	if key, _ := m.config.APIKey(agent.ProviderOpenAI); key != "" {
+		t.Error("the session still holds the key")
 	}
 }
 
@@ -428,7 +429,7 @@ func TestACancelledLoginEndsQuietly(t *testing.T) {
 	}
 }
 
-// ctrl+c gives the login up, as it does in `elencode login`, rather than
+// ctrl+c gives the login up, as it does in `elencode connect`, rather than
 // starting to quit the session.
 func TestCtrlCCancelsAWaitingLoginWithoutArmingQuit(t *testing.T) {
 	m, _ := waitingLogin(t)

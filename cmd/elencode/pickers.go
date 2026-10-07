@@ -15,7 +15,12 @@ import (
 func newCommandMenu(registry commands.Registry) picker.Model[commands.Command] {
 	return picker.New(picker.Config[commands.Command]{
 		Render: func(c commands.Command) menu.Item {
-			return menu.Item{Name: commands.Prefix + c.Name, Description: c.Description}
+			// A row found by an alias says why it was found
+			description := c.Description
+			if len(c.Aliases) > 0 {
+				description += " (also " + commands.Prefix + strings.Join(c.Aliases, ", "+commands.Prefix) + ")"
+			}
+			return menu.Item{Name: commands.Prefix + c.Name, Description: description}
 		},
 		Match:   matchCommand,
 		Trigger: commands.Prefix,
@@ -32,9 +37,23 @@ func newModelList() picker.Model[agent.Model] {
 		Render: func(model agent.Model) menu.Item {
 			return menu.Item{Name: model.ID, Description: string(model.Provider) + " · " + model.DisplayName}
 		},
-		Match: matchModel,
+		Match: func(query string, model agent.Model) bool { return matchModel(query, model.ID) },
 		Align: true,
 		Empty: "no matching model",
+	})
+}
+
+// newProviderList is the list /connect opens: every provider, whether it is
+// connected and with what. Choosing one connects it, so it is also how a key
+// is replaced.
+func newProviderList() picker.Model[providerStatus] {
+	return picker.New(picker.Config[providerStatus]{
+		Render: func(status providerStatus) menu.Item {
+			return menu.Item{Name: string(status.provider), Description: status.description()}
+		},
+		Match: func(query string, status providerStatus) bool { return matchModel(query, string(status.provider)) },
+		Align: true,
+		Empty: "no matching provider",
 	})
 }
 
@@ -45,9 +64,16 @@ func newModelList() picker.Model[agent.Model] {
 // Prefix rather than fuzzy: there are few names and they are short, so a looser
 // match buys nothing and makes the highlighted row harder to predict — and the
 // highlight is what Enter runs.
-func matchCommand(query, name string) bool {
+//
+// An alias matches as the name does, so a command can be reached by either.
+func matchCommand(query string, c commands.Command) bool {
 	word, _, _ := strings.Cut(query, " ")
-	return strings.HasPrefix(strings.ToLower(name), strings.ToLower(word))
+	for _, name := range append([]string{c.Name}, c.Aliases...) {
+		if strings.HasPrefix(strings.ToLower(commands.Prefix+name), strings.ToLower(word)) {
+			return true
+		}
+	}
+	return false
 }
 
 // matchModel narrows on any part of the id, which is how a model is

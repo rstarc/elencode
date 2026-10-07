@@ -11,7 +11,7 @@ import (
 
 // ErrSignedOut means the issuer turned the refresh token down. It will do so
 // again, so nothing short of signing in again gets the session back.
-var ErrSignedOut = errors.New("the ChatGPT login has expired or was revoked: sign in again with /login chatgpt, or `elencode login chatgpt`")
+var ErrSignedOut = errors.New("the ChatGPT login has expired or was revoked: sign in again with /connect chatgpt, or `elencode connect chatgpt`")
 
 // Tokens is a ChatGPT login: what the backend wants on every request, and what
 // renews it.
