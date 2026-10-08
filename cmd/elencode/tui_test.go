@@ -102,9 +102,8 @@ func TestViewPutsCursorOnTheInputRow(t *testing.T) {
 	if view.Cursor == nil {
 		t.Fatal("view has no cursor, want one on the input row")
 	}
-	// Nothing is stacked above the input while idle, so the cursor sits on the
-	// first row of the frame.
-	wantY := 0
+	// Only the line above the input is stacked over it while idle
+	wantY := 1
 	if view.Cursor.Y != wantY {
 		t.Errorf("cursor row = %d, want %d (the input row)", view.Cursor.Y, wantY)
 	}
@@ -154,9 +153,33 @@ func TestViewPutsCursorBelowSpinnerWhileProcessing(t *testing.T) {
 	if view.Cursor == nil {
 		t.Fatal("view has no cursor, want one on the input row")
 	}
-	wantY := lipgloss.Height(m.spinnerLine())
+	wantY := lipgloss.Height(m.spinnerLine()) + 1
 	if view.Cursor.Y != wantY {
 		t.Errorf("cursor row = %d, want %d (below the spinner)", view.Cursor.Y, wantY)
+	}
+}
+
+func TestViewFramesTheInputWithModelAndShellPrompt(t *testing.T) {
+	m := newModel(newAgent(nil, nil), config.Config{Model: "anthropic/test-model"}, defaultCommands(), nil, nil)
+	m = update(t, m, tea.WindowSizeMsg{Width: 40, Height: 20})
+	m = update(t, m, shellPromptMsg("rstarc@host: ~/elencode (main)"))
+
+	rows := strings.Split(ansi.Strip(m.View().Content), "\n")
+	// The frame pads every row out to the widest
+	for i := range rows {
+		rows[i] = strings.TrimRight(rows[i], " ")
+	}
+	if len(rows) != 4 {
+		t.Fatalf("frame has %d rows, want 4:\n%s", len(rows), strings.Join(rows, "\n"))
+	}
+	if want := strings.Repeat("─", 19) + " anthropic/test-model"; rows[0] != want {
+		t.Errorf("row above the input = %q, want %q", rows[0], want)
+	}
+	if want := strings.Repeat("─", 40); rows[2] != want {
+		t.Errorf("row below the input = %q, want %q", rows[2], want)
+	}
+	if want := "rstarc@host: ~/elencode (main)"; rows[3] != want {
+		t.Errorf("last row = %q, want %q", rows[3], want)
 	}
 }
 
@@ -453,7 +476,8 @@ func TestViewPutsCursorBelowTheMenu(t *testing.T) {
 	if view.Cursor == nil {
 		t.Fatal("view has no cursor, want one on the input row")
 	}
-	wantY := lipgloss.Height(m.menu.View())
+	// The line above the input sits between the menu and the input
+	wantY := lipgloss.Height(m.menu.View()) + 1
 	if view.Cursor.Y != wantY {
 		t.Errorf("cursor row = %d, want %d (below the menu)", view.Cursor.Y, wantY)
 	}

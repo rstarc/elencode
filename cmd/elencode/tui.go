@@ -12,6 +12,7 @@ import (
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
@@ -61,6 +62,8 @@ type model struct {
 	spinner spinner.Model   // shown above input while state is uiStateProcessing
 	width   int             // terminal width, 0 until the first WindowSizeMsg
 	state   uiState
+	// shellPrompt is the user's bash prompt, shown under the input
+	shellPrompt string
 	// Sub-components. Each owns its own state and reports what the user did as
 	// a message, which Update handles below.
 	// menu holds the slash commands this session knows: what Enter runs is what
@@ -406,7 +409,7 @@ func (m model) intro(width int) string {
 
 // Init implements the bubbletea Model interface
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	return tea.Batch(textinput.Blink, readShellPrompt)
 }
 
 // Update implements the bubbletea Model interface
@@ -643,7 +646,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// A turn cut short leaves its last row in the frame, where nothing will
 		// print it once the frame stops showing it.
 		rest := m.stream.End()
-		return m.endTurn(), printAbove(rest)
+		return m.endTurn(), tea.Batch(printAbove(rest), readShellPrompt)
+
+	case shellPromptMsg:
+		m.shellPrompt = string(msg)
+		return m, nil
 
 	case cursor.BlinkMsg:
 		// Forward to textinput
@@ -713,15 +720,21 @@ func (m model) View() tea.View {
 	if view := m.providerList.View(); view != "" {
 		rows = append(rows, view)
 	}
-	rows = append(rows, inputView)
+	// The line above the input ends in the model in use
+	inUse := lipgloss.NewStyle().Foreground(menu.DescriptionColor).Render(m.config.Model)
+	if m.config.Model != "" {
+		inUse = " " + inUse
+	}
+	rows = append(rows, strings.Repeat("─", max(m.width-lipgloss.Width(inUse), 0))+inUse)
 
 	// fix position of textinput cursor
 	cursor := m.input.Cursor()
 	if cursor != nil {
-		for _, row := range rows[:len(rows)-1] {
+		for _, row := range rows {
 			cursor.Y += lipgloss.Height(row)
 		}
 	}
+	rows = append(rows, inputView, strings.Repeat("─", m.width), ansi.Truncate(m.shellPrompt, m.width, "…"))
 	// assemble view
 	view := tea.NewView(lipgloss.JoinVertical(lipgloss.Top, rows...))
 	view.AltScreen = false
