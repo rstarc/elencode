@@ -8,6 +8,7 @@ import (
 	"slices"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/term"
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/chatgpt"
 	"github.com/rstarc/elencode/internal/commands"
@@ -66,6 +67,9 @@ func main() {
 		os.Exit(1)
 	}
 	session.signIn = defaultSignIn(loginPath)
+	// Without a terminal the width is 0, as it is for Bubble Tea
+	width, _, _ := term.GetSize(os.Stdout.Fd())
+	fmt.Println(session.intro(width))
 	tui := tea.NewProgram(session)
 	if _, err := tui.Run(); err != nil {
 		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)

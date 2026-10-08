@@ -73,7 +73,6 @@ type model struct {
 	firstStart bool
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
-	headerPrinted bool // the session title has been printed
 	// quit confirmation. quitGeneration counts armings so a disarm message left
 	// over from an earlier one cannot disarm the current one.
 	quitArmed      bool
@@ -391,6 +390,20 @@ func (m model) endTurn() model {
 	return m
 }
 
+// intro is what a session prints before its program starts: the header, and
+// on a first start a welcome. The header is printed rather than drawn, so it
+// scrolls away with the rest of the session instead of sitting above every
+// frame. It cannot be printed from inside the program: Bubble Tea sizes its
+// first frame as the whole terminal, so a print that arrives before that frame
+// is drawn climbs the full terminal height and overwrites the lines on screen.
+func (m model) intro(width int) string {
+	header := transcript.Header(banner, width)
+	if m.firstStart {
+		return header + "\n" + transcript.Notice("No provider is connected yet. Choose one to start with:", width)
+	}
+	return header
+}
+
 // Init implements the bubbletea Model interface
 func (m model) Init() tea.Cmd {
 	return textinput.Blink
@@ -418,19 +431,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.providerList.SetWidth(msg.Width)
 		// Only the frame follows the new width. What is already printed keeps
 		// the width it was printed at, as the terminal owns those lines now.
-
-		// The header is printed rather than drawn, so it scrolls away with the
-		// rest of the session instead of sitting above every frame. It waits
-		// for this message because it spans the terminal, and until now there
-		// was no width to span. A resize is not a new session.
-		if !m.headerPrinted {
-			m.headerPrinted = true
-			header := printAbove(transcript.Header(banner, m.width))
-			if m.firstStart {
-				return m, tea.Sequence(header, printAbove(transcript.Notice("No provider is connected yet. Choose one to start with:", m.width)))
-			}
-			return m, header
-		}
 		return m, print
 	case tea.KeyPressMsg:
 		// The config view owns the whole frame, so it takes the keyboard with it:

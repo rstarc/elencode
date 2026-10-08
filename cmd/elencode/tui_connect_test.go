@@ -205,19 +205,18 @@ func TestChoosingFromTheProviderListConnectsIt(t *testing.T) {
 func newFirstStart(t *testing.T, check *fakeCheck) model {
 	t.Helper()
 	m := newConnectModel(t, providerSet{}, check)
-	m.headerPrinted = false
 	m.firstStart = true
 	return m.showProviders()
 }
 
 func TestAFirstStartOpensOnTheProviderList(t *testing.T) {
-	m, cmd := updateCmd(t, newFirstStart(t, &fakeCheck{}), tea.WindowSizeMsg{Width: 80, Height: 20})
+	m := update(t, newFirstStart(t, &fakeCheck{}), tea.WindowSizeMsg{Width: 80, Height: 20})
 
 	if !m.providerList.Open() {
 		t.Error("the provider list is not open")
 	}
-	if got := text(run(t, cmd)); !strings.Contains(got, "No provider is connected yet") {
-		t.Errorf("printed %q, want a welcome", got)
+	if got := m.intro(80); !strings.Contains(got, "No provider is connected yet") {
+		t.Errorf("intro is %q, want a welcome", got)
 	}
 }
 
