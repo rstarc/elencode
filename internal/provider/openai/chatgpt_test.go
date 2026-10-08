@@ -73,6 +73,7 @@ var completedHello = sse(
 func helloRequest() agent.Request {
 	return agent.Request{
 		Model:     agent.Model{Provider: agent.ProviderChatGPT, ID: "gpt-6-sol", Thinking: agent.ThinkingEffort},
+		Effort:    agent.EffortHigh,
 		MaxTokens: 100,
 		Messages:  []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
 	}
@@ -80,7 +81,7 @@ func helloRequest() agent.Request {
 
 func streamChatGPT(t *testing.T, creds Credentials, base string, thinking bool) []agent.Event {
 	t.Helper()
-	c := newChatGPTWithOptions(creds, thinking, agent.EffortHigh, option.WithBaseURL(base))
+	c := newChatGPTWithOptions(creds, thinking, option.WithBaseURL(base))
 	return collect(t, c.Stream(context.Background(), helloRequest()))
 }
 
@@ -136,7 +137,7 @@ func TestChatGPTSendsTheLoginOnEveryRequest(t *testing.T) {
 func TestChatGPTAsksForTheLoginPerRequest(t *testing.T) {
 	_, base := newBackend(t, completedHello, completedHello)
 	creds := &fakeCredentials{token: "access", account: "acct"}
-	c := newChatGPTWithOptions(creds, false, agent.EffortNone, option.WithBaseURL(base))
+	c := newChatGPTWithOptions(creds, false, option.WithBaseURL(base))
 
 	collect(t, c.Stream(context.Background(), helloRequest()))
 	collect(t, c.Stream(context.Background(), helloRequest()))
@@ -212,7 +213,7 @@ func TestChatGPTAsksForReasoningLikeTheAPIClient(t *testing.T) {
 // The API-key client is unchanged by any of this.
 func TestAPIClientStillSendsMaxOutputTokensAndNoInstructions(t *testing.T) {
 	s, url := newStub(t, completedHello)
-	c := newWithOptions("key", false, agent.EffortNone, option.WithBaseURL(url))
+	c := newWithOptions("key", false, option.WithBaseURL(url))
 
 	collect(t, c.Stream(context.Background(), helloRequest()))
 

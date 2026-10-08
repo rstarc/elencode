@@ -111,7 +111,7 @@ func TestStreamTextOnly(t *testing.T) {
 		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hello"}]}]}}`,
 	))
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	c := newWithOptions("key", false, option.WithBaseURL(url))
 	req := agent.Request{
 		Model:     agent.Model{ID: "gpt-5"},
 		MaxTokens: 100,
@@ -163,7 +163,7 @@ func TestStreamSurfacesHTTPError(t *testing.T) {
 
 	// WithMaxRetries(0): the SDK retries 5xx by default, which would make this
 	// test slow and assert nothing extra.
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL), option.WithMaxRetries(0))
+	c := newWithOptions("key", false, option.WithBaseURL(server.URL), option.WithMaxRetries(0))
 	events := collect(t, c.Stream(context.Background(), agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
@@ -210,7 +210,7 @@ func streamStatus(t *testing.T, status int, hdr map[string]string) []agent.Event
 	}))
 	t.Cleanup(server.Close)
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	c := newWithOptions("key", false, option.WithBaseURL(server.URL))
 	return collect(t, c.Stream(context.Background(), agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
@@ -245,7 +245,7 @@ func TestStreamMarksAConnectionFailureRetryable(t *testing.T) {
 	url := server.URL
 	server.Close() // nothing is listening on that port now
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	c := newWithOptions("key", false, option.WithBaseURL(url))
 	_ = retryableError(t, collect(t, c.Stream(context.Background(), agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
@@ -303,7 +303,7 @@ func TestStreamMarksAMidStreamRateLimitRetryable(t *testing.T) {
 		`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"rate_limit_exceeded","message":"slow down"},"output":[]}}`,
 	))
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	c := newWithOptions("key", false, option.WithBaseURL(url))
 	events := collect(t, c.Stream(context.Background(), agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
@@ -319,7 +319,7 @@ func TestStreamDoesNotMarkAMidStreamRefusalRetryable(t *testing.T) {
 		`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"invalid_prompt","message":"not allowed"},"output":[]}}`,
 	))
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	c := newWithOptions("key", false, option.WithBaseURL(url))
 	events := collect(t, c.Stream(context.Background(), agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
@@ -344,7 +344,7 @@ func TestClientLeavesRetryingToTheAgent(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	c := newWithOptions("key", false, option.WithBaseURL(server.URL))
 	collect(t, c.Stream(context.Background(), agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
@@ -392,7 +392,7 @@ func TestStreamToolUse(t *testing.T) {
 		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"read","arguments":"{\"path\":\"x\"}","id":"fc_1"}]}}`,
 	))
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	c := newWithOptions("key", false, option.WithBaseURL(url))
 	req := agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Tools:    []agent.Tool{{Name: "read", Description: "read a file", InputSchema: agent.InputSchema{Type: "object"}}},
@@ -546,9 +546,10 @@ func TestStreamReasoning(t *testing.T) {
 		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"thinking..."}],"encrypted_content":"ENC"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}}`,
 	))
 
-	c := newWithOptions("key", true, agent.EffortMedium, option.WithBaseURL(url))
+	c := newWithOptions("key", true, option.WithBaseURL(url))
 	req := agent.Request{
 		Model:    agent.Model{ID: "gpt-5", Thinking: agent.ThinkingEffort},
+		Effort:   agent.EffortMedium,
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
 	}
 
@@ -588,15 +589,15 @@ func TestStreamReasoning(t *testing.T) {
 // model's own mode. Either alone must not trigger them.
 func TestParamsRequestsReasoningOnlyForEffortModelsWithThinkingOn(t *testing.T) {
 	req := func(mode agent.ThinkingMode) agent.Request {
-		return agent.Request{Model: agent.Model{ID: "gpt-5", Thinking: mode}, MaxTokens: 10}
+		return agent.Request{Model: agent.Model{ID: "gpt-5", Thinking: mode}, Effort: agent.EffortHigh, MaxTokens: 10}
 	}
 
-	off := newWithOptions("key", false, agent.EffortHigh)
+	off := newWithOptions("key", false)
 	if p := off.params(req(agent.ThinkingEffort), nil); p.Reasoning.Effort != "" || len(p.Include) != 0 {
 		t.Errorf("thinking off: reasoning = %+v, include = %v, want neither", p.Reasoning, p.Include)
 	}
 
-	on := newWithOptions("key", true, agent.EffortHigh)
+	on := newWithOptions("key", true)
 	if p := on.params(req(agent.ThinkingNone), nil); p.Reasoning.Effort != "" || len(p.Include) != 0 {
 		t.Errorf("non-effort model: reasoning = %+v, include = %v, want neither", p.Reasoning, p.Include)
 	}
@@ -609,7 +610,7 @@ func TestParamsRequestsReasoningOnlyForEffortModelsWithThinkingOn(t *testing.T) 
 // to the API, but the summary and the encrypted content still have to be
 // requested or there is nothing to render or round-trip.
 func TestUnsetEffortStillAsksForReasoning(t *testing.T) {
-	c := newWithOptions("key", true, agent.EffortNone)
+	c := newWithOptions("key", true)
 	req := agent.Request{Model: agent.Model{ID: "gpt-5", Thinking: agent.ThinkingEffort}, MaxTokens: 10}
 
 	p := c.params(req, nil)
@@ -735,7 +736,7 @@ func TestAgentLoopRoundTripsReasoningAndTools(t *testing.T) {
 		),
 	)
 
-	c := newWithOptions("key", true, agent.EffortMedium, option.WithBaseURL(url))
+	c := newWithOptions("key", true, option.WithBaseURL(url))
 	read := agent.Tool{
 		Name:        "read",
 		Description: "read a file",
@@ -833,7 +834,7 @@ func TestAgentLoopSurvivesARateLimitedRound(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	c := newWithOptions("key", false, option.WithBaseURL(server.URL))
 	read := agent.Tool{
 		Name:        "read",
 		Description: "read a file",
@@ -887,7 +888,7 @@ func TestStreamStopsWhenContextCancelled(t *testing.T) {
 	defer server.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	c := newWithOptions("key", false, option.WithBaseURL(server.URL))
 	events := c.Stream(ctx, agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
@@ -910,7 +911,7 @@ func TestStreamSurfacesAFailedResponse(t *testing.T) {
 		`{"type":"response.failed","response":{"id":"resp_1","status":"failed","error":{"code":"server_error","message":"upstream exploded"},"output":[]}}`,
 	))
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	c := newWithOptions("key", false, option.WithBaseURL(url))
 	events := collect(t, c.Stream(context.Background(), agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
@@ -959,7 +960,7 @@ func TestStreamClosesTheResponseBody(t *testing.T) {
 	_, url := newStub(t, sse(`{"type":"response.output_text.delta","delta":"partial"}`))
 	tracker := &closeTracker{closed: make(chan struct{})}
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url), option.WithHTTPClient(tracker))
+	c := newWithOptions("key", false, option.WithBaseURL(url), option.WithHTTPClient(tracker))
 	collect(t, c.Stream(context.Background(), agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
@@ -978,7 +979,7 @@ func TestStreamClosesTheResponseBody(t *testing.T) {
 func TestStreamSurfacesATruncatedStream(t *testing.T) {
 	_, url := newStub(t, sse(`{"type":"response.output_text.delta","delta":"partial"}`))
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	c := newWithOptions("key", false, option.WithBaseURL(url))
 	events := collect(t, c.Stream(context.Background(), agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
@@ -998,7 +999,7 @@ func TestStreamReportsIncompleteAsMaxTokens(t *testing.T) {
 		`{"type":"response.incomplete","response":{"id":"resp_1","status":"incomplete","incomplete_details":{"reason":"max_output_tokens"},"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"cut off"}]}]}}`,
 	))
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	c := newWithOptions("key", false, option.WithBaseURL(url))
 	events := collect(t, c.Stream(context.Background(), agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
@@ -1062,7 +1063,7 @@ func TestStreamSurfacesAConversionError(t *testing.T) {
 		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[]}}`,
 	))
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	c := newWithOptions("key", false, option.WithBaseURL(url))
 	events := collect(t, c.Stream(context.Background(), agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{{Role: "wizard", Content: []agent.Block{agent.TextBlock{Text: "x"}}}},
@@ -1087,7 +1088,7 @@ func TestStreamSurfacesAnUnsupportedOutputItem(t *testing.T) {
 		`{"type":"response.completed","response":{"id":"resp_1","status":"completed","output":[{"type":"web_search_call","id":"ws_1","status":"completed"}]}}`,
 	))
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(url))
+	c := newWithOptions("key", false, option.WithBaseURL(url))
 	events := collect(t, c.Stream(context.Background(), agent.Request{
 		Model:    agent.Model{ID: "gpt-5"},
 		Messages: []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
@@ -1137,7 +1138,7 @@ func TestTheEnvironmentDoesNotReachTheRequest(t *testing.T) {
 	t.Setenv("OPENAI_PROJECT_ID", "env-project")
 	rec := &recorder{}
 
-	c := newWithOptions("configured-key", false, agent.EffortNone, option.WithHTTPClient(rec))
+	c := newWithOptions("configured-key", false, option.WithHTTPClient(rec))
 	collect(t, c.Stream(context.Background(), agent.Request{
 		Model:     agent.Model{ID: "gpt-5"},
 		MaxTokens: 100,
@@ -1175,7 +1176,7 @@ func checkKeyAgainst(t *testing.T, status int, body string) (asked string, err e
 	}))
 	defer server.Close()
 
-	c := newWithOptions("key", false, agent.EffortNone, option.WithBaseURL(server.URL))
+	c := newWithOptions("key", false, option.WithBaseURL(server.URL))
 	err = c.CheckKey(context.Background())
 	return asked, err
 }
@@ -1207,7 +1208,7 @@ func TestCheckKeyTellsAnUnreachableAPIFromARejectedKey(t *testing.T) {
 	serverURL := server.URL
 	server.Close()
 
-	c := newWithOptions("key", false, agent.EffortNone, option.WithBaseURL(serverURL))
+	c := newWithOptions("key", false, option.WithBaseURL(serverURL))
 	err := c.CheckKey(context.Background())
 	if err == nil || errors.Is(err, agent.ErrKeyRejected) {
 		t.Errorf("err = %v, want a failure that is not a rejection", err)

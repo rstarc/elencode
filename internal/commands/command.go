@@ -18,6 +18,9 @@ type Command struct {
 	// Aliases are other names the command answers to, without the slash. The
 	// menu lists the command once, under Name.
 	Aliases []string
+	// Args are the values the argument can take, when there is a fixed set of
+	// them: the input suggests them, and tab completes one.
+	Args    []string
 	Execute func(arg string) tea.Cmd
 }
 

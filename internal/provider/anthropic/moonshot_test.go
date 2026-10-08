@@ -22,9 +22,10 @@ func moonshotRequest(t *testing.T, thinking bool, effort agent.Effort, model age
 	t.Helper()
 	rec := &recorder{}
 
-	c := newMoonshotWithOptions("configured-key", thinking, effort, option.WithHTTPClient(rec))
+	c := newMoonshotWithOptions("configured-key", thinking, option.WithHTTPClient(rec))
 	collectEvents(t, c.Stream(context.Background(), agent.Request{
 		Model:     model,
+		Effort:    effort,
 		MaxTokens: 100,
 		Messages:  []agent.Message{agent.NewUserMessage([]agent.Block{agent.TextBlock{Text: "hi"}})},
 	}))
@@ -127,7 +128,7 @@ func moonshotCheckKeyAgainst(t *testing.T, status int) (asked, auth string, err 
 	}))
 	defer server.Close()
 
-	c := newMoonshotWithOptions("configured-key", false, agent.EffortNone, option.WithBaseURL(server.URL+"/anthropic"))
+	c := newMoonshotWithOptions("configured-key", false, option.WithBaseURL(server.URL+"/anthropic"))
 	err = c.CheckKey(context.Background())
 	return asked, auth, err
 }

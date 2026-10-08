@@ -30,29 +30,27 @@ type Client struct {
 	// models serves CheckKey, and only an API client has one: the ChatGPT
 	// backend is signed in to, with no key to check.
 	models openai.ModelService
-	// thinking asks for the model's reasoning, and effort says how hard an
-	// effort-based model should reason. Both are fixed for the life of the
-	// client: they come from the config file and nothing changes them at runtime.
+	// thinking asks for the model's reasoning. Fixed for the life of the
+	// client: it comes from the config file and nothing changes it at runtime.
+	// How hard to reason is the request's, since /effort changes it.
 	thinking bool
-	effort   agent.Effort
 	// chatGPT shapes requests for the ChatGPT backend rather than the API,
 	// which differ at the edges: see NewChatGPT.
 	chatGPT bool
 }
 
-func New(apiKey string, thinking bool, effort agent.Effort) *Client {
-	return newWithOptions(apiKey, thinking, effort)
+func New(apiKey string, thinking bool) *Client {
+	return newWithOptions(apiKey, thinking)
 }
 
 // newWithOptions is New with extra SDK options, which tests use to point the
 // client at a stub server.
-func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...option.RequestOption) *Client {
+func newWithOptions(apiKey string, thinking bool, opts ...option.RequestOption) *Client {
 	opts = withoutEnvironment(append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...))
 	return &Client{
 		responses: responses.NewResponseService(opts...),
 		models:    openai.NewModelService(opts...),
 		thinking:  thinking,
-		effort:    effort,
 	}
 }
 
@@ -104,7 +102,7 @@ func (c *Client) params(req agent.Request, input responses.ResponseInputParam) r
 	// Include is what makes the reasoning re-submittable — without it the items
 	// come back with no encrypted content and the next turn cannot replay them.
 	if c.thinking && req.Model.Thinking == agent.ThinkingEffort {
-		p.Reasoning = shared.ReasoningParam{Effort: toOpenAIEffort(c.effort), Summary: shared.ReasoningSummaryAuto}
+		p.Reasoning = shared.ReasoningParam{Effort: toOpenAIEffort(req.Effort), Summary: shared.ReasoningSummaryAuto}
 		p.Include = []responses.ResponseIncludable{responses.ResponseIncludableReasoningEncryptedContent}
 	}
 	return p

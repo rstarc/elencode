@@ -309,7 +309,7 @@ func TestThinkingMatchesWhatTheModelAccepts(t *testing.T) {
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			c := newWithOptions("key", true, agent.EffortMedium)
+			c := newWithOptions("key", true)
 
 			params := c.messageParams(agent.Request{Model: agent.Model{ID: "m", Thinking: test.mode}, MaxTokens: 8092}, nil)
 
@@ -324,7 +324,7 @@ func TestThinkingMatchesWhatTheModelAccepts(t *testing.T) {
 }
 
 func TestMessageParamsUsesTheRequestModel(t *testing.T) {
-	c := newWithOptions("key", false, agent.EffortMedium)
+	c := newWithOptions("key", false)
 
 	params := c.messageParams(agent.Request{Model: agent.Model{ID: "model-from-request"}, MaxTokens: 8092}, nil)
 
@@ -337,7 +337,7 @@ func TestMessageParamsUsesTheRequestModel(t *testing.T) {
 // at all: the API returns thinking blocks with empty text unless the summary is
 // asked for, which would put a heading over nothing on screen.
 func TestAdaptiveThinkingAsksForTheSummary(t *testing.T) {
-	c := newWithOptions("key", true, agent.EffortMedium)
+	c := newWithOptions("key", true)
 
 	params := c.messageParams(agent.Request{Model: agent.Model{ID: "m", Thinking: agent.ThinkingAdaptive}, MaxTokens: 8092}, nil)
 
@@ -347,7 +347,7 @@ func TestAdaptiveThinkingAsksForTheSummary(t *testing.T) {
 }
 
 func TestThinkingIsNotRequestedWhenDisabled(t *testing.T) {
-	c := newWithOptions("key", false, agent.EffortMedium)
+	c := newWithOptions("key", false)
 
 	params := c.messageParams(agent.Request{Model: agent.Model{ID: "m", Thinking: agent.ThinkingAdaptive}, MaxTokens: 8092}, nil)
 
@@ -359,7 +359,7 @@ func TestThinkingIsNotRequestedWhenDisabled(t *testing.T) {
 // TestBudgetLeavesRoomForAnAnswer guards the older kind of thinking: the API
 // rejects a budget that does not leave the request room to answer.
 func TestBudgetLeavesRoomForAnAnswer(t *testing.T) {
-	c := newWithOptions("key", true, agent.EffortMedium)
+	c := newWithOptions("key", true)
 
 	params := c.messageParams(agent.Request{Model: agent.Model{ID: "m", Thinking: agent.ThinkingBudgeted}, MaxTokens: 8092}, nil)
 
@@ -369,10 +369,10 @@ func TestBudgetLeavesRoomForAnAnswer(t *testing.T) {
 }
 
 func TestMessageParamsSetsEffort(t *testing.T) {
-	c := newWithOptions("key", true, agent.EffortHigh)
+	c := newWithOptions("key", true)
 	m := agent.Model{ID: "claude-x", Thinking: agent.ThinkingEffort}
 
-	params := c.messageParams(agent.Request{Model: m, MaxTokens: 10}, nil)
+	params := c.messageParams(agent.Request{Model: m, Effort: agent.EffortHigh, MaxTokens: 10}, nil)
 
 	if params.OutputConfig.Effort != sdk.OutputConfigEffortHigh {
 		t.Fatalf("effort = %q, want high", params.OutputConfig.Effort)
@@ -380,10 +380,10 @@ func TestMessageParamsSetsEffort(t *testing.T) {
 }
 
 func TestEffortIsNotRequestedWhenThinkingDisabled(t *testing.T) {
-	c := newWithOptions("key", false, agent.EffortHigh)
+	c := newWithOptions("key", false)
 	m := agent.Model{ID: "claude-x", Thinking: agent.ThinkingEffort}
 
-	params := c.messageParams(agent.Request{Model: m, MaxTokens: 10}, nil)
+	params := c.messageParams(agent.Request{Model: m, Effort: agent.EffortHigh, MaxTokens: 10}, nil)
 
 	if params.OutputConfig.Effort != "" {
 		t.Fatalf("effort = %q, want it left out of the request", params.OutputConfig.Effort)
@@ -393,7 +393,7 @@ func TestEffortIsNotRequestedWhenThinkingDisabled(t *testing.T) {
 // TestUnsetEffortIsLeftToTheAPI: the API's own default is high, so sending an
 // effort the user never chose would quietly reason at another level.
 func TestUnsetEffortIsLeftToTheAPI(t *testing.T) {
-	c := newWithOptions("key", true, agent.EffortNone)
+	c := newWithOptions("key", true)
 	m := agent.Model{ID: "claude-x", Thinking: agent.ThinkingEffort}
 
 	params := c.messageParams(agent.Request{Model: m, MaxTokens: 10}, nil)
@@ -422,7 +422,7 @@ func TestToAnthropicEffortClampsToKnownLevels(t *testing.T) {
 // reason, not whether the reasoning comes back. Without the thinking param an
 // effort model returns nothing to render, so both go in the request.
 func TestEffortModelsStillAskForThinking(t *testing.T) {
-	c := newWithOptions("key", true, agent.EffortHigh)
+	c := newWithOptions("key", true)
 	m := agent.Model{ID: "claude-x", Thinking: agent.ThinkingEffort}
 
 	params := c.messageParams(agent.Request{Model: m, MaxTokens: 10}, nil)
@@ -480,7 +480,7 @@ func TestStreamAssemblesAResponseFromSSE(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	c := newWithOptions("key", false, option.WithBaseURL(server.URL))
 	got := collectEvents(t, c.Stream(context.Background(), agent.Request{
 		Model:     agent.Model{ID: "claude-x"},
 		MaxTokens: 100,
@@ -551,7 +551,7 @@ func TestStreamClosesTheResponseBody(t *testing.T) {
 	defer server.Close()
 
 	tracker := &closeTracker{closed: make(chan struct{})}
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL), option.WithHTTPClient(tracker))
+	c := newWithOptions("key", false, option.WithBaseURL(server.URL), option.WithHTTPClient(tracker))
 	collectEvents(t, c.Stream(context.Background(), agent.Request{
 		Model:     agent.Model{ID: "claude-x"},
 		MaxTokens: 100,
@@ -572,7 +572,7 @@ func streamAgainst(t *testing.T, handler http.HandlerFunc) []agent.Event {
 	server := httptest.NewServer(handler)
 	t.Cleanup(server.Close)
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	c := newWithOptions("key", false, option.WithBaseURL(server.URL))
 	return collectEvents(t, c.Stream(context.Background(), agent.Request{
 		Model:     agent.Model{ID: "claude-x"},
 		MaxTokens: 100,
@@ -642,7 +642,7 @@ func TestStreamMarksAConnectionFailureRetryable(t *testing.T) {
 	serverURL := server.URL
 	server.Close() // nothing is listening on that port now
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(serverURL))
+	c := newWithOptions("key", false, option.WithBaseURL(serverURL))
 	_ = retryableError(t, collectEvents(t, c.Stream(context.Background(), agent.Request{
 		Model:     agent.Model{ID: "claude-x"},
 		MaxTokens: 100,
@@ -796,7 +796,7 @@ func TestStreamSendsToolsWithDescriptions(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	c := newWithOptions("key", false, option.WithBaseURL(server.URL))
 	collectEvents(t, c.Stream(context.Background(), agent.Request{
 		Model:     agent.Model{ID: "claude-x"},
 		MaxTokens: 10,
@@ -853,7 +853,7 @@ func TestToSdkRoleMapsSystem(t *testing.T) {
 // Stream must turn a conversion failure into an ErrorEvent rather than hanging
 // or reporting a turn that never happened.
 func TestStreamSurfacesAConversionError(t *testing.T) {
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL("http://127.0.0.1:0"))
+	c := newWithOptions("key", false, option.WithBaseURL("http://127.0.0.1:0"))
 
 	events := collectEvents(t, c.Stream(context.Background(), agent.Request{
 		Model:     agent.Model{ID: "claude-x"},
@@ -879,7 +879,7 @@ func TestStreamSurfacesATruncatedStream(t *testing.T) {
 	}))
 	defer server.Close()
 
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	c := newWithOptions("key", false, option.WithBaseURL(server.URL))
 	events := collectEvents(t, c.Stream(context.Background(), agent.Request{
 		Model:     agent.Model{ID: "claude-x"},
 		MaxTokens: 10,
@@ -905,7 +905,7 @@ func TestStreamStopsWhenContextCancelled(t *testing.T) {
 	defer server.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
-	c := newWithOptions("key", false, agent.EffortMedium, option.WithBaseURL(server.URL))
+	c := newWithOptions("key", false, option.WithBaseURL(server.URL))
 	events := c.Stream(ctx, agent.Request{
 		Model:     agent.Model{ID: "claude-x"},
 		MaxTokens: 10,
@@ -961,7 +961,7 @@ func TestTheEnvironmentDoesNotReachTheRequest(t *testing.T) {
 			t.Setenv(tc.name, tc.value)
 			rec := &recorder{}
 
-			c := newWithOptions("configured-key", false, agent.EffortNone, option.WithHTTPClient(rec))
+			c := newWithOptions("configured-key", false, option.WithHTTPClient(rec))
 			collectEvents(t, c.Stream(context.Background(), agent.Request{
 				Model:     agent.Model{ID: "claude-x"},
 				MaxTokens: 100,
@@ -1001,7 +1001,7 @@ func checkKeyAgainst(t *testing.T, status int, body string) (asked string, err e
 	}))
 	defer server.Close()
 
-	c := newWithOptions("key", false, agent.EffortNone, option.WithBaseURL(server.URL))
+	c := newWithOptions("key", false, option.WithBaseURL(server.URL))
 	err = c.CheckKey(context.Background())
 	return asked, err
 }
@@ -1033,7 +1033,7 @@ func TestCheckKeyTellsAnUnreachableAPIFromARejectedKey(t *testing.T) {
 	serverURL := server.URL
 	server.Close()
 
-	c := newWithOptions("key", false, agent.EffortNone, option.WithBaseURL(serverURL))
+	c := newWithOptions("key", false, option.WithBaseURL(serverURL))
 	err := c.CheckKey(context.Background())
 	if err == nil || errors.Is(err, agent.ErrKeyRejected) {
 		t.Errorf("err = %v, want a failure that is not a rejection", err)

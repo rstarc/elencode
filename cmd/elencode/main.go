@@ -153,7 +153,7 @@ func newChatGPTProvider(cfg config.Config) (agent.Provider, error) {
 		return err
 	}
 	source := chatgpt.NewSource(*login, chatgpt.OAuth{}, save)
-	return openai.NewChatGPT(source, cfg.ThinkingEnabled, agent.Effort(cfg.ThinkingEffort)), nil
+	return openai.NewChatGPT(source, cfg.ThinkingEnabled), nil
 }
 
 // catalog is every model this build knows about, whether or not its provider
@@ -263,6 +263,7 @@ func defaultCommands() commands.Registry {
 	return commands.NewRegistry(
 		commands.NewConfigCommand(),
 		commands.NewModelCommand(),
+		commands.NewEffortCommand(),
 		commands.NewConnectCommand(),
 		commands.NewDisconnectCommand(),
 		commands.NewVersionCommand(),

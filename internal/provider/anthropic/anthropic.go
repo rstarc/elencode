@@ -22,25 +22,24 @@ const eventBuffer = 64
 
 type Client struct {
 	client sdk.Client
-	// thinking asks for the model's reasoning, and effort says how hard an
-	// effort-based model should reason. Both are fixed for the life of the
-	// client: they come from the config file and nothing changes them at runtime.
+	// thinking asks for the model's reasoning. Fixed for the life of the
+	// client: it comes from the config file and nothing changes it at runtime.
+	// How hard to reason is the request's, since /effort changes it.
 	thinking bool
-	effort   agent.Effort
 	// moonshot shapes requests for Kimi's Anthropic-compatible API rather than
 	// Anthropic's, which differ at the edges: see NewMoonshot.
 	moonshot bool
 }
 
-func New(apiKey string, thinking bool, effort agent.Effort) *Client {
-	return newWithOptions(apiKey, thinking, effort)
+func New(apiKey string, thinking bool) *Client {
+	return newWithOptions(apiKey, thinking)
 }
 
 // newWithOptions is New with extra SDK options, which tests use to point the
 // client at a stub server.
-func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...option.RequestOption) *Client {
+func newWithOptions(apiKey string, thinking bool, opts ...option.RequestOption) *Client {
 	opts = append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
-	return newClient(thinking, effort, opts)
+	return newClient(thinking, opts)
 }
 
 // newClient is the client both Anthropic and Moonshot are reached with, given
@@ -49,7 +48,7 @@ func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...o
 // The SDK would otherwise read the environment for itself: a base URL, a
 // bearer token, extra headers, profile files. Which key a request carries and
 // where it goes is elencode's to say, so all of that is switched off.
-func newClient(thinking bool, effort agent.Effort, opts []option.RequestOption) *Client {
+func newClient(thinking bool, opts []option.RequestOption) *Client {
 	// The SDK's own default client, which turning off its environment defaults
 	// turns off too: it bounds the wait for a response to start, so a server
 	// that accepts the connection and never answers fails eventually.
@@ -65,7 +64,7 @@ func newClient(thinking bool, effort agent.Effort, opts []option.RequestOption) 
 	}, opts...)
 	// Thinking stays off until Resolve says what this model accepts: asking for
 	// the wrong kind is rejected outright, not ignored.
-	return &Client{client: sdk.NewClient(opts...), thinking: thinking, effort: effort}
+	return &Client{client: sdk.NewClient(opts...), thinking: thinking}
 }
 
 // CheckKey asks the API whether it accepts the client's key, by listing one
@@ -104,11 +103,11 @@ func (c *Client) messageParams(req agent.Request, messages []sdk.MessageParam) s
 
 	// An unset effort sends no OutputConfig at all: the API defaults to high,
 	// and filling in a level here would quietly reason at another one.
-	if c.thinking && req.Model.Thinking == agent.ThinkingEffort && c.effort != agent.EffortNone {
+	if c.thinking && req.Model.Thinking == agent.ThinkingEffort && req.Effort != agent.EffortNone {
 		if c.moonshot {
-			params.OutputConfig = sdk.OutputConfigParam{Effort: toMoonshotEffort(c.effort)}
+			params.OutputConfig = sdk.OutputConfigParam{Effort: toMoonshotEffort(req.Effort)}
 		} else {
-			params.OutputConfig = sdk.OutputConfigParam{Effort: toAnthropicEffort(c.effort)}
+			params.OutputConfig = sdk.OutputConfigParam{Effort: toAnthropicEffort(req.Effort)}
 		}
 	}
 	return params

@@ -6,7 +6,6 @@ import (
 
 	"github.com/openai/openai-go/option"
 	"github.com/openai/openai-go/responses"
-	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/chatgpt"
 )
 
@@ -30,18 +29,18 @@ type Credentials interface {
 
 // NewChatGPT is a client spending a ChatGPT plan's Codex allowance instead of
 // API credits.
-func NewChatGPT(creds Credentials, thinking bool, effort agent.Effort) *Client {
-	return newChatGPTWithOptions(creds, thinking, effort)
+func NewChatGPT(creds Credentials, thinking bool) *Client {
+	return newChatGPTWithOptions(creds, thinking)
 }
 
 // newChatGPTWithOptions is NewChatGPT with extra SDK options, which tests use
 // to point the client at a stub backend.
-func newChatGPTWithOptions(creds Credentials, thinking bool, effort agent.Effort, opts ...option.RequestOption) *Client {
+func newChatGPTWithOptions(creds Credentials, thinking bool, opts ...option.RequestOption) *Client {
 	opts = append([]option.RequestOption{
 		option.WithBaseURL(chatGPTBaseURL),
 		option.WithMiddleware(chatGPTAuth(creds)),
 	}, opts...)
-	return &Client{responses: responses.NewResponseService(withoutEnvironment(opts)...), thinking: thinking, effort: effort, chatGPT: true}
+	return &Client{responses: responses.NewResponseService(withoutEnvironment(opts)...), thinking: thinking, chatGPT: true}
 }
 
 // chatGPTAuth puts the login on a request just before it is sent. A middleware

@@ -47,6 +47,7 @@ type Agent struct {
 	// it is a request nobody can answer.
 	model     Model
 	provider  Provider
+	effort    Effort
 	maxTokens int64
 }
 
@@ -55,6 +56,7 @@ type turnMark struct {
 	generation int
 	model      Model
 	provider   Provider
+	effort     Effort
 }
 
 func (a *Agent) useTool(ctx context.Context, name string, input json.RawMessage) (string, error) {
@@ -195,6 +197,7 @@ func (a *Agent) inferOnce(ctx context.Context, events chan<- Event, mark turnMar
 	a.mu.Lock()
 	req := Request{
 		Model:     mark.model,
+		Effort:    mark.effort,
 		MaxTokens: a.maxTokens, // TODO: set dynamically from API query if not set explicitly
 		Tools:     a.tools,
 		Messages:  a.contextWindow,
@@ -313,6 +316,14 @@ func (a *Agent) SetProvider(provider Provider) {
 	a.mu.Unlock()
 }
 
+// SetEffort sets how hard an effort-based model reasons, from the next turn
+// on. A turn under way keeps the level it started with.
+func (a *Agent) SetEffort(effort Effort) {
+	a.mu.Lock()
+	a.effort = effort
+	a.mu.Unlock()
+}
+
 func (a *Agent) AppendMessage(msg Message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -330,6 +341,7 @@ func (a *Agent) beginTurn(msg Message) turnMark {
 		generation: a.contextGeneration,
 		model:      a.model,
 		provider:   a.provider,
+		effort:     a.effort,
 	}
 	a.contextWindow = append(a.contextWindow, msg)
 	return mark

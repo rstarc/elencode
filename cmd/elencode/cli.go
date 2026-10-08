@@ -27,6 +27,9 @@ type cliCommand struct {
 // only means something inside a session.
 var slashOnly = []string{
 	"quit", // outside a session there is nothing to quit
+	// thinking_effort in config.json sets it for every session; a flag for a
+	// single prompt waits for the CLI to take one
+	"effort",
 }
 
 // cliCommands is every command the CLI knows. They all run before the config

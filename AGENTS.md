@@ -66,7 +66,7 @@ local development only — CI calls the Go toolchain directly, see
   model in use and the user's shell prompt (user@host, directory, git branch). While a login waits on the user,
   its panel (`c` to copy the link, `esc` to cancel) stands in for the input and has
   the keyboard, and so does the masked key entry while connecting asks for an API
-  key. `elencode connect chatgpt` on a terminal shows the same login panel; an API
+  key, and the effort slider `/effort` opens. `elencode connect chatgpt` on a terminal shows the same login panel; an API
   key at the shell is a plain prompt that does not echo. Printed output cannot be
   changed afterwards, so anything still in flight stays in the frame until it is
   final.
@@ -93,7 +93,7 @@ local development only — CI calls the Go toolchain directly, see
   `scriptedProvider` are hand-written in the test file that needs them — no mocking library.
 - Every CLI command (`elencode <name>`) has a slash command of the same name and
   vice versa, so neither is a second-class way in. The exceptions are listed in
-  `slashOnly` with the reason (only `/quit`), and `cli_test.go` holds the two lists to
+  `slashOnly` with the reason (`/quit` and `/effort`), and `cli_test.go` holds the two lists to
   it. Aliases follow the same rule: `/login` and `elencode login` both run `connect`.
   Both sides share the logic underneath: a command is two thin entry points.
 - Connecting a provider is `connect <id>`, whatever it takes: an API key for

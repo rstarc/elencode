@@ -19,18 +19,18 @@ const moonshotBaseURL = "https://api.moonshot.ai/anthropic/"
 const moonshotModelsPath = "../v1/models"
 
 // NewMoonshot is a client for Moonshot AI's Kimi models.
-func NewMoonshot(apiKey string, thinking bool, effort agent.Effort) *Client {
-	return newMoonshotWithOptions(apiKey, thinking, effort)
+func NewMoonshot(apiKey string, thinking bool) *Client {
+	return newMoonshotWithOptions(apiKey, thinking)
 }
 
 // newMoonshotWithOptions is NewMoonshot with extra SDK options, which tests
 // use to point the client at a stub server.
-func newMoonshotWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...option.RequestOption) *Client {
+func newMoonshotWithOptions(apiKey string, thinking bool, opts ...option.RequestOption) *Client {
 	opts = append([]option.RequestOption{
 		option.WithBaseURL(moonshotBaseURL),
 		option.WithAuthToken(apiKey),
 	}, opts...)
-	client := newClient(thinking, effort, opts)
+	client := newClient(thinking, opts)
 	client.moonshot = true
 	return client
 }

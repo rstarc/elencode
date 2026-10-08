@@ -25,9 +25,7 @@ import (
 const banner = "elencode"
 
 // inputPrompt mirrors transcript.UserPromptMarker, which marks user messages in
-// the transcript, so the two stay visibly the same character. Declared at
-// package level (not inside newModel) because its *agent.Agent parameter
-// shadows the agent package name.
+// the transcript, so the two stay visibly the same character.
 const inputPrompt = transcript.UserPromptMarker
 
 type uiState int
@@ -47,7 +45,10 @@ type model struct {
 	// client answers for the model it is given.
 	providers providerSet
 	models    []agent.Model
-	config    config.Config // shown by /config, never otherwise read here
+	config    config.Config // shown by /config, and the frame's model line
+	// effort is the level /effort set, which is not saved: config holds the
+	// one the session started with.
+	effort agent.Effort
 	// in-flight turn, valid only while state is uiStateProcessing.
 	// Both are handles to this turn specifically, not to the agent.
 	events <-chan agent.Event
@@ -94,6 +95,8 @@ type model struct {
 	keyEntry keyEntry
 	checkKey keyCheck
 	newKeyed func(provider agent.ProviderName, key string, cfg config.Config) agent.Provider
+	// effortSlider replaces the input while /effort waits on a level
+	effortSlider effortSlider
 }
 
 // quitDisarmMsg withdraws the exit confirmation armed by generation
@@ -124,19 +127,26 @@ func (m model) quitHint() string {
 // providers and models are passed alongside the agent because a model switch
 // has to say which client serves the model it switches to, and the clients are
 // the caller's to build.
-func newModel(agent *agent.Agent, cfg config.Config, registry commands.Registry, providers providerSet, models []agent.Model) model {
+func newModel(a *agent.Agent, cfg config.Config, registry commands.Registry, providers providerSet, models []agent.Model) model {
 	input := textinput.New()
 	input.Placeholder = "start typing..."
 	input.SetVirtualCursor(false)
 	input.Focus()
 	input.Prompt = inputPrompt + " "
 	input.CharLimit = 0
+	input.ShowSuggestions = true
+
+	// Set here rather than by the caller, so the agent reasons at the level the
+	// frame shows. The config has already rejected a level it does not know.
+	effort := agent.Effort(cfg.ThinkingEffort)
+	a.SetEffort(effort)
 
 	return model{
-		agent:        agent,
+		agent:        a,
 		providers:    providers,
 		models:       models,
 		config:       cfg,
+		effort:       effort,
 		menu:         newCommandMenu(registry),
 		modelList:    newModelList(),
 		providerList: newProviderList(),
@@ -214,7 +224,43 @@ func (m model) forwardToInput(msg tea.Msg) (model, tea.Cmd) {
 	default:
 		m.menu = m.menu.SetQuery(m.input.Value())
 	}
-	return m, cmd
+	return m.suggestArgument(), cmd
+}
+
+// suggestArgument has the input suggest the argument of the command on the
+// line, when it takes one of a fixed set: all of them until one is being
+// typed, and then the first it could become. Shown after the cursor, and
+// typed in only by tab, so the suggestion is never mistaken for input.
+func (m model) suggestArgument() model {
+	var suggestions []string
+	if command, ok := m.menu.Highlighted(); ok && len(command.Args) > 0 {
+		line := m.input.Value()
+		word, arg, spaced := strings.Cut(line, " ")
+		named := false
+		for _, name := range append([]string{command.Name}, command.Aliases...) {
+			if strings.EqualFold(word, commands.Prefix+name) {
+				named = true
+			}
+		}
+		typed := strings.TrimLeft(arg, " ")
+		switch {
+		case !named:
+		case typed == "":
+			// After a space, whether or not it has been typed yet
+			if !spaced {
+				line += " "
+			}
+			suggestions = []string{line + "[" + strings.Join(command.Args, "|") + "]"}
+		default:
+			for _, value := range command.Args {
+				if strings.HasPrefix(value, typed) {
+					suggestions = append(suggestions, line+value[len(typed):])
+				}
+			}
+		}
+	}
+	m.input.SetSuggestions(suggestions)
+	return m
 }
 
 // runCommand handles Enter on a command line: it runs the command the menu is
@@ -453,6 +499,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.keyEntry.open() {
 			return m.pressDuringKeyEntry(msg)
 		}
+		if m.effortSlider.open {
+			return m.pressDuringEffortSlider(msg)
+		}
 		// Any other key withdraws a pending exit confirmation, so ctrl+c followed
 		// by typing does not leave a live quit waiting one keystroke away.
 		if m.quitArmed && msg.String() != "ctrl+c" {
@@ -482,7 +531,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			return m.armQuit()
-		case "esc", "up", "down", "tab":
+		case "tab":
+			// Tab completes an argument being typed. The list of them suggested
+			// before one is typed is not input, so it is never completed into it.
+			_, arg, _ := strings.Cut(m.input.Value(), " ")
+			if strings.TrimSpace(arg) != "" && m.input.CurrentSuggestion() != "" {
+				m.input.SetValue(m.input.CurrentSuggestion())
+				m.input.CursorEnd()
+				m.menu = m.menu.SetQuery(m.input.Value())
+				return m.suggestArgument(), nil
+			}
+			fallthrough
+		case "esc", "up", "down":
 			// These drive whichever list is open, and the input when none is: an
 			// arrow key still has to move the cursor.
 			var cmd tea.Cmd
@@ -570,6 +630,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case commands.ChooseModelMsg:
 		return m.chooseModel(msg.ID)
 
+	case commands.ChooseEffortMsg:
+		return m.chooseEffort(msg.Level)
+
 	case commands.QuitMsg:
 		// Abandon any in-flight turn, as ctrl+c does, so its goroutine unblocks
 		if m.cancel != nil {
@@ -595,7 +658,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			m.keyEntry, cmd = m.keyEntry.paste(msg)
 			return m, cmd
-		case m.configVisible, m.loginCancel != nil:
+		case m.configVisible, m.loginCancel != nil, m.effortSlider.open:
 			return m, nil
 		}
 		return m.forwardToInput(msg)
@@ -619,7 +682,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// would narrow it to that row and leave nowhere to move.
 		m.input.SetValue(msg.Text)
 		m.input.CursorEnd()
-		return m, nil
+		return m.suggestArgument(), nil
 
 	case picker.ClosedMsg:
 		// The list closed itself and forgot its query; clearing the input is what
@@ -708,6 +771,12 @@ func (m model) View() tea.View {
 		view.AltScreen = false
 		return view
 	}
+	if m.effortSlider.open {
+		rows = append(rows, m.effortSlider.view())
+		view := tea.NewView(lipgloss.JoinVertical(lipgloss.Top, rows...))
+		view.AltScreen = false
+		return view
+	}
 	if hint := m.quitHint(); hint != "" {
 		rows = append(rows, hint)
 	}
@@ -720,10 +789,14 @@ func (m model) View() tea.View {
 	if view := m.providerList.View(); view != "" {
 		rows = append(rows, view)
 	}
-	// The line above the input ends in the model in use
+	// The line above the input ends in the model in use, and before it the
+	// effort level when one is sent
 	inUse := lipgloss.NewStyle().Foreground(menu.DescriptionColor).Render(m.config.Model)
 	if m.config.Model != "" {
 		inUse = " " + inUse
+	}
+	if m.effortApplies() {
+		inUse = " " + effortIndicator(m.effort) + inUse
 	}
 	rows = append(rows, strings.Repeat("─", max(m.width-lipgloss.Width(inUse), 0))+inUse)
 

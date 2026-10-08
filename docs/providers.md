@@ -149,6 +149,14 @@ starts on another connected provider's default and tells you so.
 `thinking_enabled` and `thinking_effort` in `config.json` control reasoning for models
 that support it.
 
+`/effort` changes the effort level for the rest of the session without saving it.
+`/effort <level>` sets it directly, and the input suggests the levels as you type (`tab`
+completes one); `/effort` alone opens a slider (`←`/`→` to move,
+`enter` to set, `esc` to cancel). The level is one of `low`, `medium`, `high`, `xhigh`
+and `max`. A turn already running keeps the level it started with. While the model in
+use takes an effort level and thinking is on, a bracketed line left of its name fills up
+to the level.
+
 Moonshot's Kimi models always reason, whatever `thinking_enabled` says. Only `kimi-k3`
 takes a `thinking_effort`, and only `low`, `high` and `max`: `medium` is sent as
 `high`, and `xhigh` as `max`.

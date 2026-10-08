@@ -778,3 +778,46 @@ func TestSetProviderSwapsTheClientAndKeepsTheConversation(t *testing.T) {
 		t.Errorf("renewed client was sent %d messages, want the conversation so far and the new one", len(sent.Messages))
 	}
 }
+
+func TestRunSendsTheEffortLevel(t *testing.T) {
+	provider := &scriptedProvider{turns: [][]Event{{
+		ResponseEvent{Response: Response{Message: assistantMessage(TextBlock{Text: "ok"}), StopReason: StopReasonEndTurn}},
+	}}}
+	a := newAgent(provider, nil)
+	a.SetEffort(EffortHigh)
+
+	collect(t, a.Run(context.Background(), "hi"))
+
+	if got := provider.requests[0].Effort; got != EffortHigh {
+		t.Errorf("effort = %q, want high", got)
+	}
+}
+
+// A level chosen mid-turn applies from the next turn: one turn reasoning at
+// two levels would make neither of them what the user asked for.
+func TestTurnKeepsTheEffortItStartedWith(t *testing.T) {
+	toolUse := ToolUseBlock{ID: "toolu_1", Name: "read", Input: json.RawMessage(`{}`)}
+	provider := &scriptedProvider{turns: [][]Event{
+		{ResponseEvent{Response: Response{Message: assistantMessage(toolUse), StopReason: StopReasonToolUse}}},
+		{ResponseEvent{Response: Response{Message: assistantMessage(TextBlock{Text: "done"}), StopReason: StopReasonEndTurn}}},
+	}}
+	var a *Agent
+	read := Tool{
+		Name: "read",
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) {
+			a.SetEffort(EffortLow)
+			return "file contents", nil
+		},
+	}
+	a = newAgent(provider, []Tool{read})
+	a.SetEffort(EffortHigh)
+
+	collect(t, a.Run(context.Background(), "read"))
+
+	if provider.calls != 2 {
+		t.Fatalf("rounds of inference = %d, want 2", provider.calls)
+	}
+	if got := provider.requests[1].Effort; got != EffortHigh {
+		t.Errorf("second round effort = %q, want high", got)
+	}
+}

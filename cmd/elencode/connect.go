@@ -133,14 +133,13 @@ func parseConnectArgs(args []string) (agent.ProviderName, bool, error) {
 
 // newKeyedProvider is the client for provider, reached with key.
 func newKeyedProvider(provider agent.ProviderName, key string, cfg config.Config) agent.Provider {
-	effort := agent.Effort(cfg.ThinkingEffort)
 	switch provider {
 	case agent.ProviderAnthropic:
-		return anthropic.New(key, cfg.ThinkingEnabled, effort)
+		return anthropic.New(key, cfg.ThinkingEnabled)
 	case agent.ProviderOpenAI:
-		return openai.New(key, cfg.ThinkingEnabled, effort)
+		return openai.New(key, cfg.ThinkingEnabled)
 	case agent.ProviderMoonshot:
-		return anthropic.NewMoonshot(key, cfg.ThinkingEnabled, effort)
+		return anthropic.NewMoonshot(key, cfg.ThinkingEnabled)
 	}
 	return nil
 }
@@ -153,11 +152,11 @@ type keyCheck func(ctx context.Context, provider agent.ProviderName, key string)
 func checkWithAPI(ctx context.Context, provider agent.ProviderName, key string) error {
 	switch provider {
 	case agent.ProviderAnthropic:
-		return anthropic.New(key, false, agent.EffortNone).CheckKey(ctx)
+		return anthropic.New(key, false).CheckKey(ctx)
 	case agent.ProviderOpenAI:
-		return openai.New(key, false, agent.EffortNone).CheckKey(ctx)
+		return openai.New(key, false).CheckKey(ctx)
 	case agent.ProviderMoonshot:
-		return anthropic.NewMoonshot(key, false, agent.EffortNone).CheckKey(ctx)
+		return anthropic.NewMoonshot(key, false).CheckKey(ctx)
 	}
 	return fmt.Errorf("%s is not connected with an API key", provider)
 }

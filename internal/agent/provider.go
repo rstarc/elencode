@@ -114,7 +114,10 @@ var ErrKeyRejected = errors.New("the API key was rejected")
 
 // Request represents a single Request we send to the provider's API
 type Request struct {
-	Model     Model
+	Model Model
+	// Effort is how hard the model reasons, if it takes an effort level.
+	// Providers ignore it for every other model.
+	Effort    Effort
 	MaxTokens int64
 	Tools     []Tool
 	Messages  []Message
