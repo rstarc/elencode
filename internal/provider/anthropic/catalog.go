@@ -35,12 +35,38 @@ var models = []agent.Model{
 // defaultModel is used when configuration names none.
 const defaultModel = "claude-haiku-4-5"
 
+// moonshotModels is what Kimi's Anthropic-compatible API serves, newest first.
+//
+// Every one of them reasons, with or without being asked, and none is sent a
+// thinking parameter (see NewMoonshot). Only kimi-k3 takes an effort level;
+// the others are ThinkingNone because nothing about their reasoning can be set.
+var moonshotModels = []agent.Model{
+	{ID: "kimi-k3", DisplayName: "Kimi K3", Thinking: agent.ThinkingEffort},
+	{ID: "kimi-k2.7-code", DisplayName: "Kimi K2.7 Code", Thinking: agent.ThinkingNone},
+	{ID: "kimi-k2.7-code-highspeed", DisplayName: "Kimi K2.7 Code Highspeed", Thinking: agent.ThinkingNone},
+	{ID: "kimi-k2.6", DisplayName: "Kimi K2.6", Thinking: agent.ThinkingNone},
+}
+
+// defaultMoonshotModel is the newest of moonshotModels.
+const defaultMoonshotModel = "kimi-k3"
+
 // Catalog is every model this provider offers, in the order the picker lists
-// them. A copy, because the caller concatenates it with another provider's.
+// them.
 func Catalog() []agent.Model {
-	catalog := slices.Clone(models)
+	return withProvider(models, agent.ProviderAnthropic)
+}
+
+// MoonshotCatalog is every model Kimi's API serves, in picker order.
+func MoonshotCatalog() []agent.Model {
+	return withProvider(moonshotModels, agent.ProviderMoonshot)
+}
+
+// withProvider stamps provider onto a copy of list. A copy, because the caller
+// concatenates it with another provider's.
+func withProvider(list []agent.Model, provider agent.ProviderName) []agent.Model {
+	catalog := slices.Clone(list)
 	for i := range catalog {
-		catalog[i].Provider = agent.ProviderAnthropic
+		catalog[i].Provider = provider
 	}
 	return catalog
 }
@@ -48,5 +74,12 @@ func Catalog() []agent.Model {
 // Default is the model a session opens on when configuration names none.
 func Default() agent.Model {
 	model, _ := agent.FindModel(Catalog(), defaultModel)
+	return model
+}
+
+// MoonshotDefault is the model a session opens on when Moonshot is the
+// provider it starts with and configuration names no model.
+func MoonshotDefault() agent.Model {
+	model, _ := agent.FindModel(MoonshotCatalog(), defaultMoonshotModel)
 	return model
 }

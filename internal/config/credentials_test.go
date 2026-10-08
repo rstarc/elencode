@@ -132,6 +132,19 @@ func TestChatGPTHasNoAPIKeyVariable(t *testing.T) {
 	}
 }
 
+// Kimi's own documentation names the key MOONSHOT_API_KEY.
+func TestMoonshotKeyComesFromItsVariable(t *testing.T) {
+	cfg, err := Load(env(map[string]string{"MOONSHOT_API_KEY": realKey}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	key, source := cfg.APIKey(agent.ProviderMoonshot)
+	if key.Reveal() != realKey || source != KeyFromEnv {
+		t.Errorf("APIKey(moonshot) = %v from %v, want the variable's key", key, source)
+	}
+}
+
 // Keys used to live in config.json. They are not read from there any more,
 // whatever the file still says: a key is connected or it is not.
 func TestLoadIgnoresAKeyLeftInTheConfigFile(t *testing.T) {

@@ -269,6 +269,36 @@ func TestStartupModelUsesAConfiguredChatGPTModel(t *testing.T) {
 	}
 }
 
+// Moonshot is reached through Kimi's Anthropic-compatible API, so its client
+// is the anthropic package's.
+func TestLoadProvidersBuildsTheMoonshotProviderFromAKey(t *testing.T) {
+	providers := mustLoadProviders(t, withKeys(agent.ProviderMoonshot))
+
+	if _, ok := providers[agent.ProviderMoonshot].(*anthropic.Client); !ok {
+		t.Errorf("moonshot provider = %T, want *anthropic.Client", providers[agent.ProviderMoonshot])
+	}
+}
+
+func TestStartupModelUsesTheMoonshotDefaultForAMoonshotKeyAlone(t *testing.T) {
+	providers := mustLoadProviders(t, withKeys(agent.ProviderMoonshot))
+
+	model, _, err := startupModel(config.Config{}, providers)
+	if err != nil {
+		t.Fatalf("startupModel: %v", err)
+	}
+	if model != anthropic.MoonshotDefault() {
+		t.Errorf("model = %+v, want the moonshot default", model)
+	}
+}
+
+func TestCatalogOffersTheMoonshotModels(t *testing.T) {
+	for _, want := range anthropic.MoonshotCatalog() {
+		if !slices.Contains(catalog(), want) {
+			t.Errorf("catalog is missing %s", want.Qualified())
+		}
+	}
+}
+
 func TestCatalogOffersTheChatGPTModels(t *testing.T) {
 	for _, want := range openai.ChatGPTCatalog() {
 		if !slices.Contains(catalog(), want) {

@@ -20,13 +20,14 @@ import (
 
 // keyProviders are the providers connected with an API key. The rest are
 // signed in to.
-var keyProviders = []agent.ProviderName{agent.ProviderAnthropic, agent.ProviderOpenAI}
+var keyProviders = []agent.ProviderName{agent.ProviderAnthropic, agent.ProviderOpenAI, agent.ProviderMoonshot}
 
 // apiKeyPages are where a provider's keys are made, for the prompt that asks
 // for one.
 var apiKeyPages = map[agent.ProviderName]string{
 	agent.ProviderAnthropic: "https://console.anthropic.com/settings/keys",
 	agent.ProviderOpenAI:    "https://platform.openai.com/api-keys",
+	agent.ProviderMoonshot:  "https://platform.kimi.ai/console/api-keys",
 }
 
 // providerTitles are the names a provider goes by in a sentence.
@@ -34,6 +35,7 @@ var providerTitles = map[agent.ProviderName]string{
 	agent.ProviderAnthropic: "Anthropic",
 	agent.ProviderOpenAI:    "OpenAI",
 	agent.ProviderChatGPT:   "ChatGPT",
+	agent.ProviderMoonshot:  "Moonshot",
 }
 
 // providerStatus is what a session knows about one provider: whether it is
@@ -137,6 +139,8 @@ func newKeyedProvider(provider agent.ProviderName, key string, cfg config.Config
 		return anthropic.New(key, cfg.ThinkingEnabled, effort)
 	case agent.ProviderOpenAI:
 		return openai.New(key, cfg.ThinkingEnabled, effort)
+	case agent.ProviderMoonshot:
+		return anthropic.NewMoonshot(key, cfg.ThinkingEnabled, effort)
 	}
 	return nil
 }
@@ -152,6 +156,8 @@ func checkWithAPI(ctx context.Context, provider agent.ProviderName, key string) 
 		return anthropic.New(key, false, agent.EffortNone).CheckKey(ctx)
 	case agent.ProviderOpenAI:
 		return openai.New(key, false, agent.EffortNone).CheckKey(ctx)
+	case agent.ProviderMoonshot:
+		return anthropic.NewMoonshot(key, false, agent.EffortNone).CheckKey(ctx)
 	}
 	return fmt.Errorf("%s is not connected with an API key", provider)
 }

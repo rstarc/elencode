@@ -49,3 +49,43 @@ func TestCatalogCannotBeCorruptedByItsCaller(t *testing.T) {
 		t.Error("a caller's write reached the catalog")
 	}
 }
+
+func TestMoonshotCatalogNamesEveryModelOnce(t *testing.T) {
+	seen := map[string]bool{}
+	for _, model := range MoonshotCatalog() {
+		if seen[model.ID] {
+			t.Errorf("%q is in the catalog twice", model.ID)
+		}
+		seen[model.ID] = true
+	}
+}
+
+func TestMoonshotCatalogEntriesAllNameThisProvider(t *testing.T) {
+	for _, model := range MoonshotCatalog() {
+		if model.Provider != agent.ProviderMoonshot {
+			t.Errorf("%q names provider %q, want moonshot", model.ID, model.Provider)
+		}
+		if model.DisplayName == "" {
+			t.Errorf("%q has no display name to recognise it by", model.ID)
+		}
+	}
+}
+
+func TestMoonshotDefaultIsInTheCatalog(t *testing.T) {
+	found, ok := agent.FindModel(MoonshotCatalog(), MoonshotDefault().ID)
+	if !ok {
+		t.Fatalf("the default model %q is not in the catalog", MoonshotDefault().ID)
+	}
+	if found != MoonshotDefault() {
+		t.Errorf("MoonshotDefault = %+v, want the catalog entry %+v", MoonshotDefault(), found)
+	}
+}
+
+func TestMoonshotCatalogCannotBeCorruptedByItsCaller(t *testing.T) {
+	first := MoonshotCatalog()
+	first[0] = agent.Model{ID: "scribbled-over"}
+
+	if MoonshotCatalog()[0].ID == "scribbled-over" {
+		t.Error("a caller's write reached the catalog")
+	}
+}

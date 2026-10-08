@@ -20,6 +20,9 @@ const (
 	// different set of models, and which of the two a turn spends should be as
 	// visible as the model is.
 	ProviderChatGPT ProviderName = "chatgpt"
+	// ProviderMoonshot is Moonshot AI's Kimi models, spoken to through Kimi's
+	// Anthropic-compatible Messages API.
+	ProviderMoonshot ProviderName = "moonshot"
 )
 
 // Providers is every provider elencode can talk to, in the order it prefers
@@ -27,7 +30,7 @@ const (
 // was found for more than one and the config named no model. ChatGPT comes
 // before openai: signing in is a deliberate act, and it spends a plan already
 // paid for rather than API credits.
-var Providers = []ProviderName{ProviderAnthropic, ProviderChatGPT, ProviderOpenAI}
+var Providers = []ProviderName{ProviderAnthropic, ProviderChatGPT, ProviderOpenAI, ProviderMoonshot}
 
 // Model is one model a provider offers, as shown in the picker
 type Model struct {

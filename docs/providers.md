@@ -2,13 +2,14 @@
 
 A **provider** is a service that runs models for elencode. A **model** belongs to exactly
 one provider, and is written `provider/model` wherever that matters:
-`anthropic/claude-opus-5`, `openai/gpt-5.5`, `chatgpt/gpt-6.1-sol`.
+`anthropic/claude-opus-5`, `openai/gpt-5.5`, `chatgpt/gpt-6.1-sol`, `moonshot/kimi-k3`.
 
 | Provider | What you need |
 |---|---|
 | `anthropic` | an API key from [console.anthropic.com](https://console.anthropic.com/settings/keys) |
 | `openai` | an API key from [platform.openai.com](https://platform.openai.com/api-keys) |
 | `chatgpt` | a ChatGPT plan; you sign in, and use its allowance instead of API credits |
+| `moonshot` | an API key from [platform.kimi.ai](https://platform.kimi.ai/console/api-keys), for Moonshot AI's Kimi models |
 
 ## Getting started
 
@@ -27,11 +28,12 @@ No provider is connected yet. Choose one to start with:
 › anthropic  not connected · API key
 │ chatgpt    not connected · sign in with a ChatGPT plan
 │ openai     not connected · API key
+│ moonshot   not connected · API key
 ```
 
 Choose with ↑/↓ (or type to filter) and enter. Esc quits.
 
-**With an API key** (`anthropic`, `openai`), paste the key when asked. It is not shown
+**With an API key** (`anthropic`, `openai`, `moonshot`), paste the key when asked. It is not shown
 as you type:
 
 ```
@@ -109,6 +111,7 @@ comes from:
 › anthropic  connected · API key from $ANTHROPIC_API_KEY
 │ chatgpt    not connected · sign in with a ChatGPT plan
 │ openai     connected · API key in credentials.json
+│ moonshot   not connected · API key
 ```
 
 Choosing a provider that is already connected replaces its key or sign-in. Esc closes
@@ -120,6 +123,7 @@ $ elencode connect | cat
 anthropic  connected · API key from $ANTHROPIC_API_KEY
 chatgpt    not connected · sign in with a ChatGPT plan
 openai     connected · API key in credentials.json
+moonshot   not connected · API key
 ```
 
 Every connected provider is available at once. `/model` offers the models of all of
@@ -144,6 +148,10 @@ starts on another connected provider's default and tells you so.
 
 `thinking_enabled` and `thinking_effort` in `config.json` control reasoning for models
 that support it.
+
+Moonshot's Kimi models always reason, whatever `thinking_enabled` says. Only `kimi-k3`
+takes a `thinking_effort`, and only `low`, `high` and `max`: `medium` is sent as
+`high`, and `xhigh` as `max`.
 
 ## Where things are stored
 
@@ -171,6 +179,7 @@ Instead of storing a key, you can set it in the environment. It wins over a stor
 ```sh
 export ANTHROPIC_API_KEY=sk-ant-…
 export OPENAI_API_KEY=sk-…
+export MOONSHOT_API_KEY=sk-…
 ```
 
 `/connect` shows which one is in use. A key from the environment cannot be removed with

@@ -27,6 +27,9 @@ type Client struct {
 	// client: they come from the config file and nothing changes them at runtime.
 	thinking bool
 	effort   agent.Effort
+	// moonshot shapes requests for Kimi's Anthropic-compatible API rather than
+	// Anthropic's, which differ at the edges: see NewMoonshot.
+	moonshot bool
 }
 
 func New(apiKey string, thinking bool, effort agent.Effort) *Client {
@@ -35,11 +38,18 @@ func New(apiKey string, thinking bool, effort agent.Effort) *Client {
 
 // newWithOptions is New with extra SDK options, which tests use to point the
 // client at a stub server.
+func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...option.RequestOption) *Client {
+	opts = append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
+	return newClient(thinking, effort, opts)
+}
+
+// newClient is the client both Anthropic and Moonshot are reached with, given
+// the options that say where to and with what key.
 //
 // The SDK would otherwise read the environment for itself: a base URL, a
 // bearer token, extra headers, profile files. Which key a request carries and
 // where it goes is elencode's to say, so all of that is switched off.
-func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...option.RequestOption) *Client {
+func newClient(thinking bool, effort agent.Effort, opts []option.RequestOption) *Client {
 	// The SDK's own default client, which turning off its environment defaults
 	// turns off too: it bounds the wait for a response to start, so a server
 	// that accepts the connection and never answers fails eventually.
@@ -52,7 +62,6 @@ func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...o
 	opts = append([]option.RequestOption{
 		option.WithoutEnvironmentDefaults(),
 		option.WithHTTPClient(client),
-		option.WithAPIKey(apiKey),
 	}, opts...)
 	// Thinking stays off until Resolve says what this model accepts: asking for
 	// the wrong kind is rejected outright, not ignored.
@@ -63,7 +72,12 @@ func newWithOptions(apiKey string, thinking bool, effort agent.Effort, opts ...o
 // model: the cheapest request there is, costing nothing. A refusal is
 // agent.ErrKeyRejected; any other failure says nothing about the key.
 func (c *Client) CheckKey(ctx context.Context) error {
-	_, err := c.client.Models.List(ctx, sdk.ModelListParams{Limit: sdk.Int(1)}, noRetry)
+	var err error
+	if c.moonshot {
+		err = c.client.Get(ctx, moonshotModelsPath, nil, nil, noRetry)
+	} else {
+		_, err = c.client.Models.List(ctx, sdk.ModelListParams{Limit: sdk.Int(1)}, noRetry)
+	}
 	var apiErr *sdk.Error
 	if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusUnauthorized || apiErr.StatusCode == http.StatusForbidden) {
 		// The status says enough: the body repeats it, with the URL around it
@@ -91,7 +105,11 @@ func (c *Client) messageParams(req agent.Request, messages []sdk.MessageParam) s
 	// An unset effort sends no OutputConfig at all: the API defaults to high,
 	// and filling in a level here would quietly reason at another one.
 	if c.thinking && req.Model.Thinking == agent.ThinkingEffort && c.effort != agent.EffortNone {
-		params.OutputConfig = sdk.OutputConfigParam{Effort: toAnthropicEffort(c.effort)}
+		if c.moonshot {
+			params.OutputConfig = sdk.OutputConfigParam{Effort: toMoonshotEffort(c.effort)}
+		} else {
+			params.OutputConfig = sdk.OutputConfigParam{Effort: toAnthropicEffort(c.effort)}
+		}
 	}
 	return params
 }
@@ -116,7 +134,8 @@ func toAnthropicEffort(e agent.Effort) sdk.OutputConfigEffort {
 
 // thinkingParam asks for the kind of reasoning this model accepts, or for none.
 func (c *Client) thinkingParam(model agent.Model) sdk.ThinkingConfigParamUnion {
-	if !c.thinking {
+	// Kimi documents no thinking parameter: its models reason without one
+	if !c.thinking || c.moonshot {
 		return sdk.ThinkingConfigParamUnion{}
 	}
 
