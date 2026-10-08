@@ -60,7 +60,8 @@ local development only — CI calls the Go toolchain directly, see
 
 - The transcript is printed above the frame with `tea.Println`, never redrawn: the
   terminal owns it. The frame holds only what can still change — the row being
-  streamed into, the spinner, the menus, the input. While a login waits on the user,
+  streamed into, the spinner, the menus, the input between a line ending in the
+  model in use and the user's shell prompt (user@host, directory, git branch). While a login waits on the user,
   its panel (`c` to copy the link, `esc` to cancel) stands in for the input and has
   the keyboard, and so does the masked key entry while connecting asks for an API
   key. `elencode connect chatgpt` on a terminal shows the same login panel; an API
