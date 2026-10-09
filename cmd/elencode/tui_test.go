@@ -14,6 +14,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"charm.land/bubbles/v2/textinput"
 	teatest "github.com/charmbracelet/x/exp/teatest/v2"
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/commands"
@@ -1391,5 +1392,16 @@ func TestAnswerAfterThinkingFinishesTheThinkingBlock(t *testing.T) {
 	}
 	if !strings.Contains(ansi.Strip(view), "It is in internal/agent.") {
 		t.Errorf("frame does not show the answer:\n%s", view)
+	}
+}
+
+// TestUnhandledMessageSchedulesNothing: answering a message nobody handles
+// with another command keeps the event loop busy forever, burning a core while
+// the session sits idle.
+func TestUnhandledMessageSchedulesNothing(t *testing.T) {
+	m := newSizedModel(t)
+
+	if _, cmd := m.Update(textinput.Blink()); cmd != nil {
+		t.Errorf("unhandled message scheduled %T, want nothing", cmd())
 	}
 }

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"charm.land/bubbles/v2/cursor"
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
@@ -369,9 +368,10 @@ func (m model) endTurn() model {
 	return m
 }
 
-// Init implements the bubbletea Model interface
+// Init implements the bubbletea Model interface. Nothing to start: the input
+// uses the terminal's own cursor, which blinks without help.
 func (m model) Init() tea.Cmd {
-	return textinput.Blink
+	return nil
 }
 
 // Update implements the bubbletea Model interface
@@ -588,11 +588,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		rest := m.stream.End()
 		return m.endTurn(), printAbove(rest)
 
-	case cursor.BlinkMsg:
-		// Forward to textinput
-		m.input, _ = m.input.Update(msg)
-		return m, nil
-
 	case spinner.TickMsg:
 		// Once idle, stop re-issuing ticks so the spinner doesn't keep
 		// animating in the background between turns.
@@ -602,10 +597,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		m.spinner, cmd = m.spinner.Update(msg)
 		return m, cmd
-	default:
 	}
 
-	return m, textinput.Blink
+	return m, nil
 }
 
 // View implements the bubbletea Model interface
