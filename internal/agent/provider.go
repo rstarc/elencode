@@ -119,8 +119,11 @@ type Request struct {
 	// Providers ignore it for every other model.
 	Effort    Effort
 	MaxTokens int64
-	Tools     []Tool
-	Messages  []Message
+	// SystemPrompt is what the model is told before the conversation. Empty
+	// means there is nothing to say.
+	SystemPrompt string
+	Tools        []Tool
+	Messages     []Message
 }
 
 // Response represents the Response we receive from a provider's API

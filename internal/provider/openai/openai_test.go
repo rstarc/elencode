@@ -1214,3 +1214,14 @@ func TestCheckKeyTellsAnUnreachableAPIFromARejectedKey(t *testing.T) {
 		t.Errorf("err = %v, want a failure that is not a rejection", err)
 	}
 }
+
+func TestParamsSendsTheSystemPromptAsInstructions(t *testing.T) {
+	c := newWithOptions("key", false)
+	req := agent.Request{Model: agent.Model{ID: "gpt-5"}, MaxTokens: 10, SystemPrompt: "Run make test."}
+
+	p := c.params(req, nil)
+
+	if got := p.Instructions.Value; got != "Run make test." {
+		t.Errorf("instructions = %q, want the request's", got)
+	}
+}

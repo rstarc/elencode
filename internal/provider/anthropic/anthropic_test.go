@@ -1039,3 +1039,23 @@ func TestCheckKeyTellsAnUnreachableAPIFromARejectedKey(t *testing.T) {
 		t.Errorf("err = %v, want a failure that is not a rejection", err)
 	}
 }
+
+func TestMessageParamsSendsTheSystemPrompt(t *testing.T) {
+	c := newWithOptions("key", false)
+
+	params := c.messageParams(agent.Request{Model: agent.Model{ID: "m"}, MaxTokens: 10, SystemPrompt: "Run make test."}, nil)
+
+	if len(params.System) != 1 || params.System[0].Text != "Run make test." {
+		t.Errorf("system = %+v, want the request's system prompt", params.System)
+	}
+}
+
+func TestMessageParamsWithoutInstructionsSendsNoSystemPrompt(t *testing.T) {
+	c := newWithOptions("key", false)
+
+	params := c.messageParams(agent.Request{Model: agent.Model{ID: "m"}, MaxTokens: 10}, nil)
+
+	if len(params.System) != 0 {
+		t.Errorf("system = %+v, want none", params.System)
+	}
+}

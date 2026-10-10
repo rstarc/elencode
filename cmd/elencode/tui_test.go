@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -18,6 +19,7 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
+	"github.com/rstarc/elencode/internal/instructions"
 	"github.com/rstarc/elencode/internal/tui/menu"
 	"github.com/rstarc/elencode/internal/tui/transcript"
 )
@@ -569,10 +571,15 @@ func TestProgramReportsARetryAndCarriesOn(t *testing.T) {
 	//
 	// A backoff with nothing on screen is indistinguishable from a hang, so the
 	// notice matters as much as the recovery that follows it.
+	//
+	// Only what follows the notice must be free of the failed attempt: before
+	// it, the stale text may have been drawn into the frame, depending on
+	// whether a render fell between its delta and the failure.
 	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
-		return bytes.Contains(out, []byte("retrying")) &&
-			bytes.Contains(out, []byte("recovered")) &&
-			!bytes.Contains(out, []byte("stale"))
+		_, afterNotice, retried := bytes.Cut(out, []byte("retrying"))
+		return retried &&
+			bytes.Contains(afterNotice, []byte("recovered")) &&
+			!bytes.Contains(afterNotice, []byte("stale"))
 	})
 
 	if err := tm.Quit(); err != nil {
@@ -1335,6 +1342,58 @@ func TestProgramPrintsThePromptAndTheReply(t *testing.T) {
 	}
 }
 
+// toolCallingProvider asks for one tool call, then answers.
+type toolCallingProvider struct{ calls int }
+
+func (p *toolCallingProvider) Stream(ctx context.Context, req agent.Request) <-chan agent.Event {
+	events := make(chan agent.Event, 2)
+	response := agent.Response{
+		Message:    agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{agent.TextBlock{Text: "all done"}}},
+		StopReason: agent.StopReasonEndTurn,
+	}
+	if p.calls == 0 {
+		toolUse := agent.ToolUseBlock{ID: "toolu_1", Name: "read", Input: json.RawMessage(`{"path":"api/handler.go"}`)}
+		response = agent.Response{
+			Message:    agent.Message{Role: agent.RoleAssistant, Content: []agent.Block{toolUse}},
+			StopReason: agent.StopReasonToolUse,
+		}
+	} else {
+		// Assistant text reaches the screen as deltas: Landed skips it
+		events <- agent.TextDeltaEvent{Text: "all done"}
+	}
+	p.calls++
+	events <- agent.ResponseEvent{Response: response}
+	close(events)
+	return events
+}
+
+// A subdirectory's instructions reach the model inside a tool's output, which
+// the transcript does not show, so the user is told separately. The notice
+// comes after the tool that found them, before the reply they shaped.
+func TestProgramSaysWhichInstructionsAToolAttached(t *testing.T) {
+	attached := instructions.Attach("/repo", []instructions.File{{Path: "/repo/api/AGENTS.md", Content: "api rules"}})
+	read := agent.Tool{
+		Name:    "read",
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) { return "package api" + attached, nil },
+	}
+	m := newModel(newAgent(&toolCallingProvider{}, []agent.Tool{read}), config.Config{}, defaultCommands(), nil, nil)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(80, 20))
+
+	tm.Type("look at the handler")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		text := ansi.Strip(string(out))
+		notice := strings.Index(text, "found api/AGENTS.md, added its instructions")
+		reply := strings.Index(text, "all done")
+		return notice >= 0 && reply > notice
+	}, teatest.WithDuration(5*time.Second))
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("quitting the program: %v", err)
+	}
+}
+
 // TestSelectingAModelSaysSo covers the only feedback there is: the switch
 // changes nothing on screen by itself, since what is already printed stays.
 func TestSelectingAModelSaysSo(t *testing.T) {
@@ -1363,6 +1422,27 @@ func TestHeaderSpansTheTerminal(t *testing.T) {
 	}
 	if !strings.Contains(got, banner) {
 		t.Errorf("header does not carry the title %q:\n%s", banner, got)
+	}
+}
+
+// What the model was told before the conversation is invisible otherwise, so
+// the intro names every file it came from.
+func TestIntroNamesTheInstructionFiles(t *testing.T) {
+	m := newTestModel()
+	m.instructionFiles = []string{"../AGENTS.md", "CLAUDE.md"}
+
+	got := m.intro(80)
+
+	for _, file := range m.instructionFiles {
+		if !strings.Contains(got, "instructions from "+file) {
+			t.Errorf("intro does not name %s:\n%s", file, got)
+		}
+	}
+}
+
+func TestIntroWithoutInstructionsNamesNone(t *testing.T) {
+	if got := newTestModel().intro(80); strings.Contains(got, "instructions") {
+		t.Errorf("intro mentions instructions there are none of:\n%s", got)
 	}
 }
 

@@ -331,3 +331,17 @@ func TestChatGPTCatalogCannotBeCorruptedByItsCaller(t *testing.T) {
 		t.Error("a caller's write reached the catalog")
 	}
 }
+
+// The backend's own instructions are required whatever the project says, so
+// the system prompt comes after them rather than in their place.
+func TestChatGPTSendsTheSystemPromptAfterItsOwnInstructions(t *testing.T) {
+	c := newChatGPTWithOptions(&fakeCredentials{token: "access", account: "acct"}, false)
+	req := agent.Request{Model: agent.Model{ID: "gpt-6-sol"}, SystemPrompt: "Run make test."}
+
+	p := c.params(req, nil)
+
+	want := chatGPTInstructions + "\n\nRun make test."
+	if got := p.Instructions.Value; got != want {
+		t.Errorf("instructions = %q, want %q", got, want)
+	}
+}

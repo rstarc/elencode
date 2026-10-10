@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"slices"
 
 	tea "charm.land/bubbletea/v2"
@@ -13,6 +14,7 @@ import (
 	"github.com/rstarc/elencode/internal/chatgpt"
 	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
+	"github.com/rstarc/elencode/internal/instructions"
 	"github.com/rstarc/elencode/internal/provider/anthropic"
 	"github.com/rstarc/elencode/internal/provider/openai"
 	"github.com/rstarc/elencode/internal/tools"
@@ -36,20 +38,45 @@ func main() {
 		os.Exit(1)
 	}
 
+	workingDir, err := os.Getwd()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "elencode: %v\n", err)
+		os.Exit(1)
+	}
+	// The user's own file sits beside the config, where elencode keeps the rest
+	// of what is theirs
+	userDir := filepath.Dir(cfg.Path)
+	instructionFiles, err := instructions.Find(userDir, workingDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "elencode: reading instructions: %v\n", err)
+		os.Exit(1)
+	}
+	// The tools attach the instructions of a directory below the working one
+	// the first time they touch a file there. They read the conversation of an
+	// agent that needs them to be built first, so it is reached through the
+	// variable.
+	var agentConfig *agent.Agent
+	subdirectories := subdirectoryInstructions{
+		dir:          workingDir,
+		conversation: func() []agent.Message { return agentConfig.Messages() },
+	}
+
 	// TODO: Use os.OpenRoot instead
 	root := os.DirFS(".")
 	tools := []agent.Tool{
-		tools.NewReadTool(root),
-		tools.NewWriteTool(root),
-		tools.NewEditTool(root),
-		tools.NewBashTool(root),
+		subdirectories.wrap(tools.NewReadTool(root)),
+		subdirectories.wrap(tools.NewWriteTool(root)),
+		subdirectories.wrap(tools.NewEditTool(root)),
+		subdirectories.wrap(tools.NewBashTool(root)),
 	}
-	agentConfig := agent.New(tools)
+	agentConfig = agent.New(tools)
+	agentConfig.SetSystemPrompt(instructions.SystemPrompt(instructionFiles))
 	if len(providers) > 0 {
 		agentConfig.SetModel(selectedModel, providers[selectedModel.Provider])
 	}
 
 	session := newModel(agentConfig, cfg, defaultCommands(), providers, catalog())
+	session.instructionFiles = instructionNames(instructionFiles, workingDir, userDir)
 	// Nothing connected is a first start: the session opens on the providers to
 	// connect. Without a terminal there is nobody to choose one.
 	if len(providers) == 0 {
