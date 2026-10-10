@@ -16,6 +16,7 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
+	"github.com/rstarc/elencode/internal/instructions"
 	"github.com/rstarc/elencode/internal/tui/menu"
 	"github.com/rstarc/elencode/internal/tui/picker"
 	"github.com/rstarc/elencode/internal/tui/transcript"
@@ -75,6 +76,9 @@ type model struct {
 	// firstStart is a session started with nothing connected: it opens on the
 	// provider list, and leaving that list without connecting one leaves.
 	firstStart bool
+	// instructionFiles are the files the agent's instructions were read from,
+	// named relative to the working directory
+	instructionFiles []string
 	// configVisible replaces the whole frame with the read-only config view
 	configVisible bool
 	// quit confirmation. quitGeneration counts armings so a disarm message left
@@ -447,6 +451,9 @@ func (m model) endTurn() model {
 // is drawn climbs the full terminal height and overwrites the lines on screen.
 func (m model) intro(width int) string {
 	header := transcript.Header(banner, width)
+	for _, file := range m.instructionFiles {
+		header += "\n" + transcript.Notice("instructions from "+file, width)
+	}
 	if m.firstStart {
 		return header + "\n" + transcript.Notice("No provider is connected yet. Choose one to start with:", width)
 	}
@@ -594,7 +601,24 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case agent.ThinkingDeltaEvent:
 			print = printAbove(m.stream.Delta(event.Text, true))
 		case agent.MessageEvent:
-			print = printAbove(m.stream.Landed(event.Message))
+			rendered := m.stream.Landed(event.Message)
+			// Tool results are not shown, so the instructions a tool attached
+			// to its output are named here, right after the tool
+			for _, block := range event.Message.Content {
+				result, ok := block.(agent.ToolResultBlock)
+				if !ok {
+					continue
+				}
+				for _, name := range instructions.Attached(result.Content) {
+					notice := transcript.Notice("found "+name+", added its instructions", m.width)
+					if rendered == "" {
+						rendered = notice
+					} else {
+						rendered += "\n" + notice
+					}
+				}
+			}
+			print = printAbove(rendered)
 		case agent.ErrorEvent:
 			print = m.reportError(event.Err)
 		case agent.RetryEvent:

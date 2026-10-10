@@ -100,6 +100,9 @@ func (c *Client) messageParams(req agent.Request, messages []sdk.MessageParam) s
 		Tools:     toolParams(req.Tools),
 		Thinking:  c.thinkingParam(req.Model),
 	}
+	if req.SystemPrompt != "" {
+		params.System = []sdk.TextBlockParam{{Text: req.SystemPrompt}}
+	}
 
 	// An unset effort sends no OutputConfig at all: the API defaults to high,
 	// and filling in a level here would quietly reason at another one.

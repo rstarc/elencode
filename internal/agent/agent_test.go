@@ -579,6 +579,40 @@ func TestSetModelSwitchesTheProviderStreamedAgainst(t *testing.T) {
 	}
 }
 
+// The system prompt is the project's, not the conversation's: every round
+// carries it, and a model switch, which drops the conversation, keeps it.
+func TestEveryRequestCarriesTheSystemPrompt(t *testing.T) {
+	toolUse := ToolUseBlock{ID: "toolu_1", Name: "read", Input: json.RawMessage(`{}`)}
+	first := &scriptedProvider{turns: [][]Event{
+		{ResponseEvent{Response: Response{Message: assistantMessage(toolUse), StopReason: StopReasonToolUse}}},
+		{ResponseEvent{Response: Response{Message: assistantMessage(TextBlock{Text: "done"}), StopReason: StopReasonEndTurn}}},
+	}}
+	second := &scriptedProvider{turns: [][]Event{
+		{ResponseEvent{Response: Response{Message: assistantMessage(TextBlock{Text: "hi"}), StopReason: StopReasonEndTurn}}},
+	}}
+	read := Tool{
+		Name:    "read",
+		Execute: func(ctx context.Context, input json.RawMessage) (string, error) { return "", nil },
+	}
+
+	a := New([]Tool{read})
+	a.SetSystemPrompt("Run make test.")
+	a.SetModel(Model{Provider: ProviderAnthropic, ID: "claude-x"}, first)
+	collect(t, a.Run(context.Background(), "read a file"))
+	a.SetModel(Model{Provider: ProviderOpenAI, ID: "gpt-x"}, second)
+	collect(t, a.Run(context.Background(), "hi"))
+
+	requests := append(first.requests, second.requests...)
+	if len(requests) != 3 {
+		t.Fatalf("requests = %d, want 3 (two rounds, then a turn on the new model)", len(requests))
+	}
+	for i, req := range requests {
+		if req.SystemPrompt != "Run make test." {
+			t.Errorf("request %d carried system prompt %q, want %q", i, req.SystemPrompt, "Run make test.")
+		}
+	}
+}
+
 // heldRetryProvider fails its first round with a retryable error, holding the
 // failure until release so a model switch can be placed between an attempt and
 // its retry.
@@ -819,5 +853,27 @@ func TestTurnKeepsTheEffortItStartedWith(t *testing.T) {
 	}
 	if got := provider.requests[1].Effort; got != EffortHigh {
 		t.Errorf("second round effort = %q, want high", got)
+	}
+}
+
+// Messages is read by whoever needs to know what the model has been told, such
+// as which instruction files a tool already attached. A copy, so the reader
+// cannot change the conversation under the turn.
+func TestMessagesIsACopyOfTheConversation(t *testing.T) {
+	reply := assistantMessage(TextBlock{Text: "hello"})
+	a := newAgent(&scriptedProvider{turns: [][]Event{
+		{ResponseEvent{Response: Response{Message: reply, StopReason: StopReasonEndTurn}}},
+	}}, nil)
+	collect(t, a.Run(context.Background(), "hi"))
+
+	messages := a.Messages()
+	want := []Message{NewUserMessage([]Block{TextBlock{Text: "hi"}}), reply}
+	if !reflect.DeepEqual(messages, want) {
+		t.Fatalf("Messages = %#v, want %#v", messages, want)
+	}
+
+	messages[0] = reply
+	if !reflect.DeepEqual(a.Messages(), want) {
+		t.Error("changing what Messages returned changed the conversation")
 	}
 }

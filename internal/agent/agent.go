@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"time"
 )
@@ -49,6 +50,9 @@ type Agent struct {
 	provider  Provider
 	effort    Effort
 	maxTokens int64
+	// systemPrompt belongs to the project rather than the conversation, so a
+	// model switch keeps it
+	systemPrompt string
 }
 
 type turnMark struct {
@@ -196,11 +200,12 @@ func (a *Agent) inferOnce(ctx context.Context, events chan<- Event, mark turnMar
 
 	a.mu.Lock()
 	req := Request{
-		Model:     mark.model,
-		Effort:    mark.effort,
-		MaxTokens: a.maxTokens, // TODO: set dynamically from API query if not set explicitly
-		Tools:     a.tools,
-		Messages:  a.contextWindow,
+		Model:        mark.model,
+		Effort:       mark.effort,
+		MaxTokens:    a.maxTokens, // TODO: set dynamically from API query if not set explicitly
+		SystemPrompt: a.systemPrompt,
+		Tools:        a.tools,
+		Messages:     a.contextWindow,
 	}
 	a.mu.Unlock()
 
@@ -324,6 +329,13 @@ func (a *Agent) SetEffort(effort Effort) {
 	a.mu.Unlock()
 }
 
+// SetSystemPrompt sets what the model is told before every conversation.
+func (a *Agent) SetSystemPrompt(prompt string) {
+	a.mu.Lock()
+	a.systemPrompt = prompt
+	a.mu.Unlock()
+}
+
 func (a *Agent) AppendMessage(msg Message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -397,4 +409,12 @@ func New(tools []Tool) *Agent {
 		tools:         tools,
 		contextWindow: []Message{},
 	}
+}
+
+// Messages returns the conversation so far: a copy, so that the caller cannot
+// change it under a turn.
+func (a *Agent) Messages() []Message {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.contextWindow)
 }

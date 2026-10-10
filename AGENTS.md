@@ -51,6 +51,13 @@ local development only — CI calls the Go toolchain directly, see
   and a `Source` that renews the saved tokens. The OAuth is `golang.org/x/oauth2`'s;
   the provider sees it through `openai.Credentials`
 - `internal/tools` — read, write, edit and bash tools, rooted at the working directory
+- `internal/instructions` — finds the `AGENTS.md` files (`CLAUDE.md` where a directory
+  has none): the user's beside the config, then the project's from the git root down to
+  the working directory, each cut at 32 KiB. Rendered as the system prompt; the intro
+  names each file. `cmd/elencode/instructions.go` wraps the tools so that a
+  subdirectory's file is attached to the output of the first one to touch a file there
+  (bash: a word of its command that is a path), unless the conversation already holds
+  it; the transcript says so when the tool result lands
 - `internal/config` — `$XDG_CONFIG_HOME/elencode/config.json` holds the settings and
   no secrets. Credentials are in `credentials.json` beside it (mode `0600`): API keys,
   which `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `MOONSHOT_API_KEY` win over, and the ChatGPT login.

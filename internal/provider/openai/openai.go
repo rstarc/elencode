@@ -89,9 +89,17 @@ func (c *Client) params(req agent.Request, input responses.ResponseInputParam) r
 	// The backend rejects a token limit, and requires instructions, which the
 	// API leaves optional.
 	if c.chatGPT {
-		p.Instructions = openai.String(chatGPTInstructions)
+		instructions := chatGPTInstructions
+		if req.SystemPrompt != "" {
+			instructions += "\n\n" + req.SystemPrompt
+		}
+		p.Instructions = openai.String(instructions)
 	} else {
 		p.MaxOutputTokens = openai.Int(req.MaxTokens)
+		// The Responses API's name for the system prompt
+		if req.SystemPrompt != "" {
+			p.Instructions = openai.String(req.SystemPrompt)
+		}
 	}
 
 	if len(req.Tools) > 0 {
