@@ -34,6 +34,10 @@ type ToolUseBlock struct {
 	ID    string // opaque, provider specific. never change this
 	Name  string // Name of the Tool to use TODO: Use a custom type?
 	Input json.RawMessage
+	// Signature is opaque and is carried only so the block can be sent back
+	// unaltered: Gemini attaches its reasoning to the call, and rejects a
+	// history whose calls have lost it. The other providers leave it empty.
+	Signature string
 }
 
 func (b ToolUseBlock) block() {}

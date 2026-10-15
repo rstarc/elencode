@@ -15,12 +15,13 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/config"
 	"github.com/rstarc/elencode/internal/provider/anthropic"
+	"github.com/rstarc/elencode/internal/provider/gemini"
 	"github.com/rstarc/elencode/internal/provider/openai"
 )
 
 // keyProviders are the providers connected with an API key. The rest are
 // signed in to.
-var keyProviders = []agent.ProviderName{agent.ProviderAnthropic, agent.ProviderOpenAI, agent.ProviderMoonshot}
+var keyProviders = []agent.ProviderName{agent.ProviderAnthropic, agent.ProviderOpenAI, agent.ProviderMoonshot, agent.ProviderGemini}
 
 // apiKeyPages are where a provider's keys are made, for the prompt that asks
 // for one.
@@ -28,6 +29,7 @@ var apiKeyPages = map[agent.ProviderName]string{
 	agent.ProviderAnthropic: "https://console.anthropic.com/settings/keys",
 	agent.ProviderOpenAI:    "https://platform.openai.com/api-keys",
 	agent.ProviderMoonshot:  "https://platform.kimi.ai/console/api-keys",
+	agent.ProviderGemini:    "https://aistudio.google.com/apikey",
 }
 
 // providerTitles are the names a provider goes by in a sentence.
@@ -36,6 +38,7 @@ var providerTitles = map[agent.ProviderName]string{
 	agent.ProviderOpenAI:    "OpenAI",
 	agent.ProviderChatGPT:   "ChatGPT",
 	agent.ProviderMoonshot:  "Moonshot",
+	agent.ProviderGemini:    "Gemini",
 }
 
 // providerStatus is what a session knows about one provider: whether it is
@@ -140,6 +143,8 @@ func newKeyedProvider(provider agent.ProviderName, key string, cfg config.Config
 		return openai.New(key, cfg.ThinkingEnabled)
 	case agent.ProviderMoonshot:
 		return anthropic.NewMoonshot(key, cfg.ThinkingEnabled)
+	case agent.ProviderGemini:
+		return gemini.New(key, cfg.ThinkingEnabled)
 	}
 	return nil
 }
@@ -157,6 +162,8 @@ func checkWithAPI(ctx context.Context, provider agent.ProviderName, key string) 
 		return openai.New(key, false).CheckKey(ctx)
 	case agent.ProviderMoonshot:
 		return anthropic.NewMoonshot(key, false).CheckKey(ctx)
+	case agent.ProviderGemini:
+		return gemini.New(key, false).CheckKey(ctx)
 	}
 	return fmt.Errorf("%s is not connected with an API key", provider)
 }

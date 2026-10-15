@@ -11,6 +11,7 @@ import (
 	"github.com/rstarc/elencode/internal/chatgpt"
 	"github.com/rstarc/elencode/internal/config"
 	"github.com/rstarc/elencode/internal/provider/anthropic"
+	"github.com/rstarc/elencode/internal/provider/gemini"
 	"github.com/rstarc/elencode/internal/provider/openai"
 )
 
@@ -293,6 +294,34 @@ func TestStartupModelUsesTheMoonshotDefaultForAMoonshotKeyAlone(t *testing.T) {
 
 func TestCatalogOffersTheMoonshotModels(t *testing.T) {
 	for _, want := range anthropic.MoonshotCatalog() {
+		if !slices.Contains(catalog(), want) {
+			t.Errorf("catalog is missing %s", want.Qualified())
+		}
+	}
+}
+
+func TestLoadProvidersBuildsTheGeminiProviderFromAKey(t *testing.T) {
+	providers := mustLoadProviders(t, withKeys(agent.ProviderGemini))
+
+	if _, ok := providers[agent.ProviderGemini].(*gemini.Client); !ok {
+		t.Errorf("gemini provider = %T, want *gemini.Client", providers[agent.ProviderGemini])
+	}
+}
+
+func TestStartupModelUsesTheGeminiDefaultForAGeminiKeyAlone(t *testing.T) {
+	providers := mustLoadProviders(t, withKeys(agent.ProviderGemini))
+
+	model, _, err := startupModel(config.Config{}, providers)
+	if err != nil {
+		t.Fatalf("startupModel: %v", err)
+	}
+	if model != gemini.Default() {
+		t.Errorf("model = %+v, want the gemini default", model)
+	}
+}
+
+func TestCatalogOffersTheGeminiModels(t *testing.T) {
+	for _, want := range gemini.Catalog() {
 		if !slices.Contains(catalog(), want) {
 			t.Errorf("catalog is missing %s", want.Qualified())
 		}

@@ -44,6 +44,9 @@ local development only — CI calls the Go toolchain directly, see
   `chatgpt.com/backend-api/codex`, billed to a ChatGPT plan instead of API credits.
   The anthropic package also serves the `moonshot` provider: Kimi's
   Anthropic-compatible Messages API on `api.moonshot.ai/anthropic`
+- `internal/provider/gemini` — the `gemini` provider: Google's Gemini API, through the
+  `google.golang.org/genai` SDK. Gemini's reasoning returns as a signature on the
+  tool call it led to (`agent.ToolUseBlock.Signature`)
 - `internal/provider/retry` — the parts of "is this failure worth another attempt"
   that do not depend on which API answered
 - `internal/chatgpt` — "Sign in with ChatGPT": OpenAI's OAuth login, in the
@@ -53,7 +56,7 @@ local development only — CI calls the Go toolchain directly, see
 - `internal/tools` — read, write, edit and bash tools, rooted at the working directory
 - `internal/config` — `$XDG_CONFIG_HOME/elencode/config.json` holds the settings and
   no secrets. Credentials are in `credentials.json` beside it (mode `0600`): API keys,
-  which `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` and `MOONSHOT_API_KEY` win over, and the ChatGPT login.
+  which `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `MOONSHOT_API_KEY` and `GEMINI_API_KEY` win over, and the ChatGPT login.
   Every write changes one provider's entry in the file as it is then
   (`SaveCredential`, `RemoveCredential`), since another session, or a token renewal,
   may have changed the rest

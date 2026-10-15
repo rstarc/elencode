@@ -2,7 +2,8 @@
 
 A **provider** is a service that runs models for elencode. A **model** belongs to exactly
 one provider, and is written `provider/model` wherever that matters:
-`anthropic/claude-opus-5`, `openai/gpt-5.5`, `chatgpt/gpt-6.1-sol`, `moonshot/kimi-k3`.
+`anthropic/claude-opus-5`, `openai/gpt-5.5`, `chatgpt/gpt-6.1-sol`, `moonshot/kimi-k3`,
+`gemini/gemini-4-argon`.
 
 | Provider | What you need |
 |---|---|
@@ -10,6 +11,7 @@ one provider, and is written `provider/model` wherever that matters:
 | `openai` | an API key from [platform.openai.com](https://platform.openai.com/api-keys) |
 | `chatgpt` | a ChatGPT plan; you sign in, and use its allowance instead of API credits |
 | `moonshot` | an API key from [platform.kimi.ai](https://platform.kimi.ai/console/api-keys), for Moonshot AI's Kimi models |
+| `gemini` | an API key from [aistudio.google.com](https://aistudio.google.com/apikey), for Google's Gemini models |
 
 ## Getting started
 
@@ -29,12 +31,13 @@ No provider is connected yet. Choose one to start with:
 │ chatgpt    not connected · sign in with a ChatGPT plan
 │ openai     not connected · API key
 │ moonshot   not connected · API key
+│ gemini     not connected · API key
 ```
 
 Choose with ↑/↓ (or type to filter) and enter. Esc quits.
 
-**With an API key** (`anthropic`, `openai`, `moonshot`), paste the key when asked. It is not shown
-as you type:
+**With an API key** (`anthropic`, `openai`, `moonshot`, `gemini`), paste the key when asked. It is
+not shown as you type:
 
 ```
 Paste your Anthropic API key
@@ -112,6 +115,7 @@ comes from:
 │ chatgpt    not connected · sign in with a ChatGPT plan
 │ openai     connected · API key in credentials.json
 │ moonshot   not connected · API key
+│ gemini     not connected · API key
 ```
 
 Choosing a provider that is already connected replaces its key or sign-in. Esc closes
@@ -124,6 +128,7 @@ anthropic  connected · API key from $ANTHROPIC_API_KEY
 chatgpt    not connected · sign in with a ChatGPT plan
 openai     connected · API key in credentials.json
 moonshot   not connected · API key
+gemini     not connected · API key
 ```
 
 Every connected provider is available at once. `/model` offers the models of all of
@@ -161,6 +166,10 @@ Moonshot's Kimi models always reason, whatever `thinking_enabled` says. Only `ki
 takes a `thinking_effort`, and only `low`, `high` and `max`: `medium` is sent as
 `high`, and `xhigh` as `max`.
 
+Gemini models reason whatever `thinking_enabled` says, but only show it when it is on.
+They take `low`, `medium` and `high`: `xhigh` and `max` are sent as `high`. A Google AI
+Pro or Ultra plan does not cover them: Google allows third-party tools only an API key.
+
 ## Where things are stored
 
 In `~/.config/elencode/` (or `$XDG_CONFIG_HOME/elencode/`):
@@ -188,6 +197,7 @@ Instead of storing a key, you can set it in the environment. It wins over a stor
 export ANTHROPIC_API_KEY=sk-ant-…
 export OPENAI_API_KEY=sk-…
 export MOONSHOT_API_KEY=sk-…
+export GEMINI_API_KEY=AIza…
 ```
 
 `/connect` shows which one is in use. A key from the environment cannot be removed with
@@ -196,7 +206,8 @@ environment already supplies, elencode tells you before asking.
 
 These are the only variables elencode reads to reach a provider. Others that the
 providers' own tools honour, such as `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`,
-`OPENAI_BASE_URL`, `OPENAI_ORG_ID` or `OPENAI_PROJECT_ID`, have no effect. As for any
+`OPENAI_BASE_URL`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`, `GOOGLE_API_KEY`,
+`GOOGLE_GEMINI_BASE_URL` or `GOOGLE_GENAI_USE_VERTEXAI`, have no effect. As for any
 program, `HTTPS_PROXY`, `NO_PROXY` and `SSL_CERT_FILE` apply to the network connection.
 
 ## Troubleshooting

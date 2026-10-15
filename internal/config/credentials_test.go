@@ -145,6 +145,19 @@ func TestMoonshotKeyComesFromItsVariable(t *testing.T) {
 	}
 }
 
+// Google's own documentation names the key GEMINI_API_KEY.
+func TestGeminiKeyComesFromItsVariable(t *testing.T) {
+	cfg, err := Load(env(map[string]string{"GEMINI_API_KEY": realKey}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	key, source := cfg.APIKey(agent.ProviderGemini)
+	if key.Reveal() != realKey || source != KeyFromEnv {
+		t.Errorf("APIKey(gemini) = %v from %v, want the variable's key", key, source)
+	}
+}
+
 // Keys used to live in config.json. They are not read from there any more,
 // whatever the file still says: a key is connected or it is not.
 func TestLoadIgnoresAKeyLeftInTheConfigFile(t *testing.T) {

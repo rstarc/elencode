@@ -81,6 +81,7 @@ var apiKeyEnvVars = map[agent.ProviderName]string{
 	agent.ProviderAnthropic: "ANTHROPIC_API_KEY",
 	agent.ProviderOpenAI:    "OPENAI_API_KEY",
 	agent.ProviderMoonshot:  "MOONSHOT_API_KEY",
+	agent.ProviderGemini:    "GEMINI_API_KEY",
 }
 
 // APIKeyEnvVar names the variable that supplies provider's key, and is empty

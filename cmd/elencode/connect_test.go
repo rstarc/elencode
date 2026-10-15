@@ -30,6 +30,7 @@ func TestParseConnectArgs(t *testing.T) {
 		{[]string{"openai"}, agent.ProviderOpenAI, false, true},
 		{[]string{"moonshot"}, agent.ProviderMoonshot, false, true},
 		{[]string{"moonshot", "--device"}, "", false, false},
+		{[]string{"gemini"}, agent.ProviderGemini, false, true},
 		{nil, "", false, false},
 		{[]string{"--device"}, "", false, false},
 		{[]string{"chatgpt", "--browser"}, "", false, false},

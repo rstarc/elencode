@@ -1,7 +1,8 @@
 # Gemini provider — design
 
 - Date: 2026-10-14, revised 2026-10-15 (use the SDK)
-- Status: **draft, awaiting approval** — nothing implemented. Open: the catalog (below)
+- Status: **approved and implemented**; the catalog is hand-written (option A), with
+  every catalogued Gemini model treated alike
 - Topic: add Google's Gemini API as the `gemini` provider, for `gemini-4-argon`
 - SDK names verified against `google.golang.org/genai v1.74.0` sources
 - User documentation: the `docs/providers.md` changes are listed under "Files"
@@ -57,7 +58,7 @@ third-party agents, it would be a provider of its own, the way `chatgpt` sits be
    the configured key. One leak is left: with both `GOOGLE_API_KEY` and `GEMINI_API_KEY`
    set, the SDK `log.Printf`s a warning, which would land on the TUI. elencode does not
    use the standard logger, so `main` discards it (`log.SetOutput(io.Discard)`).
-4. **The SDK's retries are off** (`HTTPOptions.RetryOptions.Attempts: 1`): the agent
+4. **The SDK does not retry** (it retries only when `HTTPOptions.RetryOptions` is set): the agent
    retries, as for the other providers. A `genai.APIError`'s `Code` goes through
    `retry.RetryableStatus`. The SDK does not expose response headers, so there is no
    `Retry-After` hint; the agent's backoff applies.
@@ -88,7 +89,8 @@ Every provider's catalog is shipped today (`anthropic.Catalog()`, `openai.Catalo
 … are hand-written lists; see AGENTS.md "Which models exist is shipped, not fetched").
 Two ways for Gemini:
 
-- **A. Shipped, like the rest** — `{gemini-4-argon, "Gemini 4 Argon", ThinkingEffort}`.
+- **A. Shipped, like the rest** — chosen: `gemini-4-argon` (the default), `gemini-3.8-flash`,
+  `gemini-3.5-flash-lite`, `gemini-3.1-pro-preview`, all `ThinkingEffort`.
   No change outside the new package; other Gemini models reachable as `gemini/<id>`.
 - **B. Fetched from `Models.List`** — offer the models whose `SupportedActions` include
   `generateContent`, with `DisplayName`, and `Thinking: true` mapped to
@@ -136,7 +138,7 @@ Changed (mirrors the Moonshot commit):
 - `internal/agent/blocks.go` — `ToolUseBlock.Signature`
 - `internal/config/config.go` — `GEMINI_API_KEY` in `apiKeyEnvVars`
 - `cmd/elencode/connect.go` — `keyProviders`, `apiKeyPages`
-  (`https://aistudio.google.com/apikey`), `providerTitles` ("Google Gemini"),
+  (`https://aistudio.google.com/apikey`), `providerTitles` ("Gemini"),
   `newKeyedProvider`, `checkWithAPI`
 - `cmd/elencode/main.go` — `catalog()`, `defaultModel`, discarding the standard logger
 - tests beside each: `model_test.go`, `credentials_test.go`, `connect_test.go`,

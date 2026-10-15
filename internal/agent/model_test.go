@@ -110,7 +110,7 @@ func TestProvidersListsEveryProviderOnce(t *testing.T) {
 		}
 		seen[name] = true
 	}
-	for _, name := range []ProviderName{ProviderAnthropic, ProviderOpenAI, ProviderChatGPT, ProviderMoonshot} {
+	for _, name := range []ProviderName{ProviderAnthropic, ProviderOpenAI, ProviderChatGPT, ProviderMoonshot, ProviderGemini} {
 		if !seen[name] {
 			t.Errorf("%q is missing from Providers", name)
 		}
