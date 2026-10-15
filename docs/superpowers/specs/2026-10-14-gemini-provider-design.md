@@ -1,144 +1,155 @@
 # Gemini provider — design
 
-- Date: 2026-10-14
-- Status: **draft, awaiting approval** — nothing implemented
+- Date: 2026-10-14, revised 2026-10-15 (use the SDK)
+- Status: **draft, awaiting approval** — nothing implemented. Open: the catalog (below)
 - Topic: add Google's Gemini API as the `gemini` provider, for `gemini-4-argon`
+- SDK names verified against `google.golang.org/genai v1.74.0` sources
 - User documentation: the `docs/providers.md` changes are listed under "Files"
 
 ## Goal
 
 `elencode connect gemini`, paste a key from AI Studio, `/model gemini-4-argon`, work.
-Same shape as the Moonshot change (`5ae9646`): one new provider id, keyed, with a
-hand-written catalog, reachable everywhere a provider is listed.
+Same shape as the Moonshot change (`5ae9646`): one new provider id, keyed, reachable
+everywhere a provider is listed.
 
 ### Non-goals (first cut)
 
 - **A subscription sign-in.** See "Subscriptions" below: there is no sanctioned one.
-- Vertex AI (GCP billing, service-account / ADC auth). A different host, URL shape and
-  auth; it can join later as its own provider if wanted.
-- Older Gemini models in the catalog. Reachable as `gemini/<id>` (assumed not to
-  reason, as for any uncatalogued model).
+- Vertex AI: Google Cloud's hosting of the same models, billed to a GCP project and
+  authenticated with Google Cloud credentials rather than an AI Studio key. The SDK
+  speaks it too, so it could join later as its own provider.
 - Gemini's Interactions API, background mode (needed only for >64K output), context
   caching, images, grounding, code execution.
-- Using `RetryInfo.retryDelay` from error details as the retry hint. The agent's own
-  backoff applies.
 
 ## Subscriptions
 
 Google AI Pro / Ultra raise the limits of Google's *own* tools (Gemini app, Gemini CLI,
 Code Assist, Antigravity). The only way a third-party agent reaches that allowance is
-by reusing Gemini CLI's OAuth client against the Code Assist backend
-(`cloudcode-pa.googleapis.com`), which Gemini CLI's FAQ calls a violation of Google's
-terms; it says the supported route for third-party agents is an AI Studio or Vertex AI
-API key. Reports put enforcement (account restrictions) in place during 2026, and
-consumer accounts reportedly no longer get through at all. Coverage of the launch also
-says `gemini-4-argon` is paid-tier only and not part of AI Pro.
+by reusing Gemini CLI's OAuth client against the Code Assist backend, which Gemini CLI's
+FAQ calls a violation of Google's terms; it says the supported route for third-party
+agents is an AI Studio or Vertex AI API key. Launch coverage also says `gemini-4-argon`
+is paid-tier only and not part of AI Pro.
 
-So unlike `chatgpt`, which uses OpenAI's own sanctioned "Sign in with ChatGPT" flow,
-there is nothing to support here. **Decision: API key only.** If Google later publishes
-a sanctioned sign-in for third-party agents, it would be a `gemini-plan`-style provider of
-its own, the way `chatgpt` sits beside `openai`.
+**Decision: API key only.** If Google later publishes a sanctioned sign-in for
+third-party agents, it would be a provider of its own, the way `chatgpt` sits beside
+`openai`.
 
 ## Decisions
 
 1. **Provider id `gemini`**, keyed, env var `GEMINI_API_KEY` (Google's own name for it).
    `GOOGLE_API_KEY` is not read: one variable per provider, as elsewhere. Appended to the
    end of `agent.Providers`, so it is never preferred over an existing provider at startup.
-2. **A new package `internal/provider/gemini`, written against the REST API with
-   `net/http`, no SDK.** The alternative, `google.golang.org/genai`:
-   - is a new dependency (needs your OK), and brings `cloud.google.com/go/auth`, gRPC,
-     protobuf, a sentencepiece tokenizer and websockets with it;
-   - reads `GOOGLE_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_GENAI_USE_VERTEXAI`,
-     `GOOGLE_GEMINI_BASE_URL` etc. from the process environment, with no exported way to
-     stop it (`envVarProvider` is unexported). Explicit config wins over most of it, but
-     with both key variables set it `log.Printf`s a warning — onto the TUI. That conflicts
-     with "elencode reads the environment through `config.Env`, never the SDKs".
+2. **A new package `internal/provider/gemini` on `google.golang.org/genai`** (approved).
+   It adds `cloud.google.com/go/auth`, gRPC and protobuf as indirect dependencies;
+   `make vuln` is part of the change.
+3. **The SDK's environment defaults are overridden, not trusted.** `genai.NewClient`
+   reads `GOOGLE_API_KEY`, `GEMINI_API_KEY`, `GOOGLE_GENAI_USE_VERTEXAI`,
+   `GOOGLE_GEMINI_BASE_URL` and others itself, with no exported way to stop it. Every
+   one of those is overridden by setting it explicitly, so the client is always built
+   with all three of:
+   - `Backend: genai.BackendGeminiAPI` (else `GOOGLE_GENAI_USE_VERTEXAI=1` switches to
+     Vertex AI),
+   - `APIKey` from `config.Env` / `credentials.json`,
+   - `HTTPOptions.BaseURL: "https://generativelanguage.googleapis.com/"` (else
+     `GOOGLE_GEMINI_BASE_URL` redirects the request, key included).
 
-   What we need of the API is small and stable: one streaming endpoint, one listing, a
-   handful of JSON types. Hand-written, it is ~300 lines with nothing hidden.
-   (Gemini's OpenAI-compatible endpoint was considered and rejected: it is Chat
-   Completions, which elencode does not speak — `openai` is Responses-only — and thought
-   signatures ride in a non-standard `extra_content` field that `openai-go` does not model.)
-3. **Thought signatures ride on `agent.ToolUseBlock`.** Gemini 3+ attaches an opaque
-   `thoughtSignature` to the function-call part; replaying the history without it is a
-   400. It belongs to the call, not to a reasoning block, so `ToolUseBlock` gets a
-   `Signature string`, documented like `ThinkingBlock.Signature` ("opaque, carried only
-   so the block round-trips"). Anthropic and OpenAI leave it empty. This is the one
-   change to `internal/agent`, and it imports nothing.
-   Signatures on plain text parts are dropped: the API validates only function-call
-   signatures.
-4. **Thinking.** `gemini-4-argon` is `agent.ThinkingEffort`. With `thinking_enabled`, the
-   request sends `thinkingConfig: {includeThoughts: true, thinkingLevel}`; effort maps
-   `low→LOW`, `medium→MEDIUM`, `high|xhigh|max→HIGH`, none → omitted (API default).
-   With thinking off, no `thinkingConfig` is sent: the model still thinks at its default
-   level (it cannot be switched off), but none is shown — as with Moonshot.
-   Thought-summary parts (`thought: true`) stream as `ThinkingDeltaEvent` and land as
-   `ThinkingBlock{Thinking}`; they are not sent back (Gemini ignores them).
-5. **Tool call ids.** Gemini's `functionCall.id` is used when present; otherwise the
-   provider makes one up (`call_<n>`). A `functionResponse` needs the function's `name`,
-   which `agent.ToolResultBlock` does not carry, so `toContents` finds it from the
+   A test sets each variable and checks the request still goes to the stub server with
+   the configured key. One leak is left: with both `GOOGLE_API_KEY` and `GEMINI_API_KEY`
+   set, the SDK `log.Printf`s a warning, which would land on the TUI. elencode does not
+   use the standard logger, so `main` discards it (`log.SetOutput(io.Discard)`).
+4. **The SDK's retries are off** (`HTTPOptions.RetryOptions.Attempts: 1`): the agent
+   retries, as for the other providers. A `genai.APIError`'s `Code` goes through
+   `retry.RetryableStatus`. The SDK does not expose response headers, so there is no
+   `Retry-After` hint; the agent's backoff applies.
+5. **Thought signatures ride on `agent.ToolUseBlock`.** Gemini 3+ attaches an opaque
+   `ThoughtSignature []byte` to the function-call part; replaying the history without
+   it is a 400. It belongs to the call, not to a reasoning block, so `ToolUseBlock` gets
+   a `Signature string` (base64 of the bytes), documented like `ThinkingBlock.Signature`.
+   Anthropic and OpenAI leave it empty. This is the one change to `internal/agent`, and
+   it imports nothing. Signatures on plain text parts are dropped: the API validates
+   only function-call signatures.
+6. **Thinking.** For a model that thinks: with `thinking_enabled`, the request sends
+   `ThinkingConfig{IncludeThoughts: true, ThinkingLevel}`; effort maps `low→LOW`,
+   `medium→MEDIUM`, `high|xhigh|max→HIGH`, none → unset (API default). With thinking
+   off, no `ThinkingConfig` is sent: the model still thinks at its default level, but
+   none is shown — as with Moonshot. Thought-summary parts (`Thought: true`) stream as
+   `ThinkingDeltaEvent` and land as `ThinkingBlock{Thinking}`; they are not sent back.
+7. **Tool call ids.** `FunctionCall.ID` is used when present; otherwise the provider
+   makes one up (`call_<n>`). A `FunctionResponse` needs the function's `Name`, which
+   `agent.ToolResultBlock` does not carry, so the conversion finds it from the
    `ToolUseBlock` with the same id earlier in the history.
-6. **Key check:** `GET /v1beta/models`. Gemini answers a bad key with `400
-   INVALID_ARGUMENT` / reason `API_KEY_INVALID` (not 401), so that, 401 and 403 are
-   `agent.ErrKeyRejected`.
-7. **Retries:** non-2xx bodies are `{"error":{code,status,message}}`; the status goes
-   through `retry.RetryableStatus` (429, 5xx) and `retry.After` as the other providers do.
+8. **Key check:** `Models.List` with a page size of 1. Gemini answers a bad key with
+   `400 INVALID_ARGUMENT` and reason `API_KEY_INVALID` in `Details` (not 401), so that,
+   401 and 403 are `agent.ErrKeyRejected`.
 
-## Wire mapping (`internal/provider/gemini`)
+## Open: the catalog
 
-Request — `POST https://generativelanguage.googleapis.com/v1beta/models/{id}:streamGenerateContent?alt=sse`,
-header `x-goog-api-key`:
+Every provider's catalog is shipped today (`anthropic.Catalog()`, `openai.Catalog()`,
+… are hand-written lists; see AGENTS.md "Which models exist is shipped, not fetched").
+Two ways for Gemini:
 
-| agent | Gemini |
+- **A. Shipped, like the rest** — `{gemini-4-argon, "Gemini 4 Argon", ThinkingEffort}`.
+  No change outside the new package; other Gemini models reachable as `gemini/<id>`.
+- **B. Fetched from `Models.List`** — offer the models whose `SupportedActions` include
+  `generateContent`, with `DisplayName`, and `Thinking: true` mapped to
+  `ThinkingEffort`. Gemini's listing says whether a model thinks, which the other
+  providers' do not. But it is the first fetched catalog: `catalog()` is used
+  synchronously at startup and by `/model` and `elencode model`, so it needs a
+  request (and a failure path) where none exists today, and AGENTS.md changes.
+  The listing does not say *how* a model thinks: 2.5-era models take a token budget,
+  not a level, and would be sent the wrong kind.
+
+## Wire mapping
+
+`Models.GenerateContentStream(ctx, model.ID, contents, config)`:
+
+| agent | genai |
 |---|---|
-| `Message{Role: User}` | `content{role: "user"}` |
-| `Message{Role: Assistant}` | `content{role: "model"}` |
-| `TextBlock` | `part{text}` |
+| `Message{Role: User}` | `Content{Role: "user"}` |
+| `Message{Role: Assistant}` | `Content{Role: "model"}` |
+| `TextBlock` | `Part{Text}` |
 | `ThinkingBlock`, `RedactedThinkingBlock` | dropped |
-| `ToolUseBlock` | `part{functionCall{id, name, args}, thoughtSignature}` |
-| `ToolResultBlock` | `part{functionResponse{id, name, response: {"output": …} or {"error": …}}}` |
-| `Tools` | `tools[0].functionDeclarations[]{name, description, parameters}` |
-| `MaxTokens` | `generationConfig.maxOutputTokens` |
+| `ToolUseBlock` | `Part{FunctionCall{ID, Name, Args}, ThoughtSignature}` |
+| `ToolResultBlock` | `Part{FunctionResponse{ID, Name, Response: {"output": …} or {"error": …}}}` |
+| `Tools` | `Tools[0].FunctionDeclarations[]{Name, Description, ParametersJsonSchema}` |
+| `MaxTokens` | `MaxOutputTokens` |
 
-Stream — each SSE `data:` line is a `GenerateContentResponse`; per part of
-`candidates[0].content.parts`: `thought: true` → `ThinkingDeltaEvent`, `text` →
-`TextDeltaEvent`, `functionCall` (arrives whole) → collected. At the end one
+Stream: per part of `Candidates[0].Content.Parts`: `Thought` → `ThinkingDeltaEvent`,
+`Text` → `TextDeltaEvent`, `FunctionCall` (arrives whole) → collected. At the end one
 `ResponseEvent`. Stop reason: `MAX_TOKENS` → `max_tokens`; any function call →
 `tool_use`; `SAFETY`/`RECITATION`/`PROHIBITED_CONTENT`/… → `refusal`; else `end_turn`.
-A stream that ends with no candidate (prompt blocked: `promptFeedback.blockReason`) is
+A stream that ends with no candidate (prompt blocked: `PromptFeedback.BlockReason`) is
 an `ErrorEvent` naming the reason.
 
 ## Files
 
 New:
-- `internal/provider/gemini/gemini.go` — `Client`, `New(key, thinking)`,
-  `newWithBaseURL` for tests, `Stream`, `CheckKey`, the wire types and mapping
-- `internal/provider/gemini/catalog.go` — `Catalog()`, `Default()`: just
-  `{ID: "gemini-4-argon", DisplayName: "Gemini 4 Argon", Thinking: ThinkingEffort}`
-- `internal/provider/gemini/gemini_test.go`, `catalog_test.go` — against an
-  `httptest.Server` stub, standard library only
+- `internal/provider/gemini/gemini.go` — `Client`, `New(key, thinking)`, a constructor
+  taking a base URL for tests, `Stream`, `CheckKey`, the conversion
+- `internal/provider/gemini/catalog.go` — `Catalog()`, `Default()` (shape depends on
+  the open question)
+- tests against an `httptest.Server` stub, standard library only
 
 Changed (mirrors the Moonshot commit):
+- `go.mod`, `go.sum` — `google.golang.org/genai`
 - `internal/agent/model.go` — `ProviderGemini`, appended to `Providers`
 - `internal/agent/blocks.go` — `ToolUseBlock.Signature`
 - `internal/config/config.go` — `GEMINI_API_KEY` in `apiKeyEnvVars`
 - `cmd/elencode/connect.go` — `keyProviders`, `apiKeyPages`
   (`https://aistudio.google.com/apikey`), `providerTitles` ("Google Gemini"),
   `newKeyedProvider`, `checkWithAPI`
-- `cmd/elencode/main.go` — `catalog()`, `defaultModel`
+- `cmd/elencode/main.go` — `catalog()`, `defaultModel`, discarding the standard logger
 - tests beside each: `model_test.go`, `credentials_test.go`, `connect_test.go`,
   `main_test.go`
-- `docs/providers.md` (table, examples, env vars), `AGENTS.md` (layout line)
+- `docs/providers.md` (table, examples, env vars, the variables that have no effect),
+  `AGENTS.md` (layout line)
 
 ## Risks / to verify while implementing
 
-- Google's docs are not reachable from this environment, so the endpoint details above
-  are from prior knowledge plus the `google.golang.org/genai` v1.74.0 sources (which
-  have `thinkingLevel` LOW/MEDIUM/HIGH and `thoughtSignature` on parts). Worth one
-  manual turn with a real key before merging: a tool call, its result, and a second
-  tool call in the same turn (that is where a missing signature fails).
-- `agent.maxTokens` is 8092 and Gemini counts thinking against `maxOutputTokens`, so
+- Google's docs are not reachable from this environment; the API details are from the
+  SDK sources and prior knowledge. Worth one manual turn with a real key before
+  merging: a tool call, its result, and a second tool call in the same turn (that is
+  where a missing signature fails).
+- `agent.maxTokens` is 8092 and Gemini counts thinking against `MaxOutputTokens`, so
   `HIGH` thinking may hit `MAX_TOKENS` on hard tasks. Same situation as Anthropic today;
   not changed here.
-- `gemini-4-argon`'s introductory price ($2/$10 per M tokens) ends 2026-11-30. Nothing
-  in elencode depends on price.
