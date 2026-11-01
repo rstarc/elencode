@@ -46,3 +46,9 @@ fmt: $(TOOLS_DIR)/golangci-lint
 .PHONY: vuln
 vuln: $(TOOLS_DIR)/govulncheck
 	$(TOOLS_DIR)/govulncheck ./...
+
+# Git never turns on a repository's hooks by itself. The setting is shared by
+# every worktree of the clone, so running this once in any of them is enough.
+.PHONY: hooks
+hooks:
+	git config core.hooksPath githooks

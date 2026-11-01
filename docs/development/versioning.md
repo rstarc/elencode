@@ -33,7 +33,8 @@ To release:
    gh run list --workflow ci.yml --branch main --limit 1
    ```
 
-2. List what the release contains:
+2. List what the release contains. A `feat` commit, or one with a `!`, calls for a
+   new middle number; otherwise raise the last number:
 
    ```
    git log --oneline "$(git describe --tags --abbrev=0)"..HEAD

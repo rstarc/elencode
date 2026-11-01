@@ -1,0 +1,13 @@
+#!/bin/sh
+# Rejects a commit message that does not follow Conventional Commits, see
+# AGENTS.md under "Commits". Turned on with `make hooks`.
+
+if ! command -v cog >/dev/null 2>&1; then
+	echo "commit-msg: cocogitto (cog) is not on the PATH; commit from \`nix develop\`, see docs/development/setup.md" >&2
+	exit 1
+fi
+# On success cog prints the parsed message too; only its errors are worth reading.
+if ! output=$(cog verify --ignore-merge-commits --ignore-fixup-commits --file "$1" 2>&1); then
+	printf '%s\n' "$output" >&2
+	exit 1
+fi
