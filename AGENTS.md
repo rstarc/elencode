@@ -11,6 +11,8 @@ simple, concrete solution over the general one.
 - `make lint` — `golangci-lint run`, which reports gofumpt formatting too
 - `make fmt` — applies the formatting `make lint` checks for
 - `make vuln` — `govulncheck ./...`
+- `make hooks` — turns on `githooks/` once per clone; its `commit-msg` needs `cog`, which
+  `nix develop` provides. Commit from inside that shell, see `docs/development/setup.md`
 
 Do not call `go build`/`go test` directly; use the Makefile targets. This applies to
 local development only — CI calls the Go toolchain directly, see
@@ -63,6 +65,9 @@ local development only — CI calls the Go toolchain directly, see
 - `assets/logo` — the logo kit. `build.py` draws every variant from its pixel grids,
   including the braille logo the TUI opens with; `cmd/elencode/tui.go` holds a copy of
   `terminal/fantail-braille.txt` as `logo`, so a redrawn logo is pasted there too
+- `githooks` — the repository's git hooks, turned on with `make hooks`. `commit-msg`
+  checks the commit format below with cocogitto (`cog verify`); the Commits workflow
+  checks a pull request's commits and title the same way
 
 ## TUI
 
@@ -112,3 +117,31 @@ local development only — CI calls the Go toolchain directly, see
 - Sum types are emulated as an interface with an unexported marker method (see `agent.Event`).
 - Return errors instead of panicking, including in conversion code. Panics on the turn
   goroutine are recovered and surfaced as an `ErrorEvent`.
+
+## Commits
+
+Commit messages follow [Conventional Commits](https://www.conventionalcommits.org):
+
+```
+type(scope): description
+
+Optional body: why the change was made.
+```
+
+- `type` is one of `feat`, `fix`, `docs`, `style`, `refactor`, `test`, `perf`, `build`,
+  `ci`, `chore` or `revert`: cocogitto's defaults. `feat` and `fix` are what a release is made of, see
+  `docs/development/versioning.md`.
+- `scope` is optional and lower case: the part of elencode the change is in, such as
+  `tui`, `agent`, `openai` or `config`.
+- `description` starts lower case, in the imperative ("add", not "added"), without a
+  full stop.
+- A `!` before the colon marks a change that breaks how elencode is used:
+  `feat(config)!: drop the provider setting`.
+
+- Reverting a commit, replace the `Revert "…"` subject git suggests with
+  `revert: <the reverted subject>`; cocogitto rejects git's form.
+- A pull request's title follows the same format, since a squash merge uses it as the
+  commit message.
+
+`githooks/commit-msg` rejects any other message. If it rejects a commit, reword the
+message; do not bypass it with `--no-verify`.

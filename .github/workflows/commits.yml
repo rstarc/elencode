@@ -1,0 +1,35 @@
+name: Commits
+
+# Separate from CI because a pull request's title can change without its code:
+# "edited" reruns these checks, not the tests.
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  conventional:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      # Also puts cog on the PATH for the title check below.
+      - name: Check commit messages
+        uses: cocogitto/cocogitto-action@v4
+        with:
+          command: check
+          args: --ignore-merge-commits --ignore-fixup-commits ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+      # Squash merges use the title as the commit message. It is passed through
+      # the environment, not the action's args, which the action pastes into a
+      # shell command: a title could otherwise run commands on the runner.
+      - name: Check pull request title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: printf '%s\n' "$TITLE" | cog verify --file -
