@@ -14,11 +14,14 @@ simple, concrete solution over the general one.
 
 Do not call `go build`/`go test` directly; use the Makefile targets. This applies to
 local development only — CI calls the Go toolchain directly, see
-`.github/workflows/ci.yml`. Versioning and the checks are documented in
-`docs/development.md`.
+`.github/workflows/ci.yml`. Versioning is documented in
+`docs/development/versioning.md`.
 
 ## Working agreement
 
+- Docs first: before starting a new feature, or any change a user will notice, read
+  `docs/development/conventions.md#docs-first` and write the user's view of it in
+  the guide under `docs/` before any test.
 - Use red/green TDD: write the failing test first, run it and watch it fail for the
   expected reason, then write the minimum code to make it pass, then refactor.
 - Keep changes minimalistic. Be hesitant to extend the scope of the request — if you
