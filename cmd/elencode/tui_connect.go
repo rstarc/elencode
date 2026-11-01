@@ -7,7 +7,6 @@ import (
 	"maps"
 	"strings"
 
-	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/tui/transcript"
@@ -32,9 +31,9 @@ func (m model) connect(arg string) (model, tea.Cmd) {
 	m.menu = m.menu.SetQuery("")
 	m.keyEntry = newKeyEntry(provider)
 	if note := environmentWins(m.config, provider); note != "" {
-		return m, tea.Sequence(printAbove(transcript.Notice(note, m.width)), textinput.Blink)
+		return m, printAbove(transcript.Notice(note, m.width))
 	}
-	return m, textinput.Blink
+	return m, nil
 }
 
 // showProviders opens the list of providers, at the one in use.

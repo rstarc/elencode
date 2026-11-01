@@ -125,6 +125,16 @@ func TestARejectedKeyIsAskedForAgain(t *testing.T) {
 	}
 }
 
+// Opening the key entry has nothing to start: a command here would only be a
+// message no case handles.
+func TestConnectSchedulesNothing(t *testing.T) {
+	m := newConnectModel(t, keyed(agent.ProviderAnthropic), &fakeCheck{})
+
+	if _, cmd := updateCmd(t, m, commands.ConnectMsg{Arg: "openai"}); cmd != nil {
+		t.Errorf("connect scheduled %T, want nothing", cmd())
+	}
+}
+
 func TestEscCancelsConnecting(t *testing.T) {
 	m := newConnectModel(t, keyed(agent.ProviderAnthropic), &fakeCheck{})
 	m = update(t, m, commands.ConnectMsg{Arg: "openai"})

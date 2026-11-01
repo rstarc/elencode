@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -1461,5 +1462,16 @@ func TestAPasteIsIgnoredWhileTheConfigViewIsOpen(t *testing.T) {
 
 	if got := m.input.Value(); got != "" {
 		t.Errorf("input = %q, want nothing", got)
+	}
+}
+
+// TestUnhandledMessageSchedulesNothing: answering a message nobody handles
+// with another command keeps the event loop busy forever, burning a core while
+// the session sits idle.
+func TestUnhandledMessageSchedulesNothing(t *testing.T) {
+	m := newSizedModel(t)
+
+	if _, cmd := m.Update(textinput.Blink()); cmd != nil {
+		t.Errorf("unhandled message scheduled %T, want nothing", cmd())
 	}
 }
