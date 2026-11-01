@@ -32,4 +32,7 @@ jobs:
       - name: Check pull request title
         env:
           TITLE: ${{ github.event.pull_request.title }}
-        run: printf '%s\n' "$TITLE" | cog verify --file -
+        # A file, not stdin: the action installs cog 6.4.0, which reads only files.
+        run: |
+          printf '%s\n' "$TITLE" > "$RUNNER_TEMP/title"
+          cog verify --file "$RUNNER_TEMP/title"
