@@ -102,10 +102,12 @@ func (s subdirectoryInstructions) wrap(tool agent.Tool) agent.Tool {
 			}
 		}
 		var fresh []instructions.File
+		var failures string
 		for _, path := range touched {
 			found, err := instructions.Below(s.dir, path)
 			if err != nil {
-				return output + fmt.Sprintf("\n\n[elencode: could not read the instructions for %s: %v]", path, err), nil
+				failures += fmt.Sprintf("\n\n[elencode: could not read the instructions for %s: %v]", path, err)
+				continue
 			}
 			for _, file := range found {
 				// Named as Attach names it, which is what Attached returns
@@ -118,7 +120,7 @@ func (s subdirectoryInstructions) wrap(tool agent.Tool) agent.Tool {
 				fresh = append(fresh, file)
 			}
 		}
-		return output + instructions.Attach(s.dir, fresh), nil
+		return output + instructions.Attach(s.dir, fresh) + failures, nil
 	}
 	return tool
 }

@@ -163,6 +163,26 @@ func TestUnreadableInstructionsAreReportedNotFailed(t *testing.T) {
 	}
 }
 
+// One directory whose instructions cannot be read does not keep another's
+// from being attached
+func TestUnreadableInstructionsLeaveTheOthersAttached(t *testing.T) {
+	dir := subdirectoryProject(t)
+	if err := os.MkdirAll(filepath.Join(dir, "web", "AGENTS.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "web", "page.go"), "package web")
+	session := subdirectoryInstructions{dir: dir, conversation: noConversation}
+
+	output := runBash(t, session.wrap(bashTool()), "cat api/handler.go web/page.go")
+
+	if got, want := instructions.Attached(output), []string{"api/AGENTS.md"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("attached %q, want %q", got, want)
+	}
+	if !strings.Contains(output, "could not read the instructions for web/page.go") {
+		t.Errorf("output = %q, want the failure to read web's instructions", output)
+	}
+}
+
 func runBash(t *testing.T, tool agent.Tool, command string) string {
 	t.Helper()
 	input, _ := json.Marshal(map[string]string{"command": command})
