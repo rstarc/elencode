@@ -98,13 +98,17 @@ func block(path string, file File) string {
 // Below returns the instructions of the directories between dir and file,
 // which is relative to dir and slash-separated, as the tools take it:
 // the files Find did not read because they apply only below dir. Outermost
-// first, as Find returns them.
+// first, as Find returns them. It stops at a directory holding other
+// projects' code, whose instructions are not this project's.
 func Below(dir, file string) ([]File, error) {
 	var directories []string
 	current := dir
 	for _, name := range strings.Split(path.Dir(file), "/") {
 		if name == "." {
 			continue
+		}
+		if name == ".git" || name == "node_modules" || name == "vendor" {
+			break
 		}
 		current = filepath.Join(current, name)
 		directories = append(directories, current)

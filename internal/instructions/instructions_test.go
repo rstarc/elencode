@@ -336,6 +336,26 @@ func TestBelowReadsEachDirectoryDownToTheFile(t *testing.T) {
 	}
 }
 
+// Dependencies and git's own files hold other projects' instructions, which
+// must not override this one's
+func TestBelowSkipsOtherProjectsCode(t *testing.T) {
+	dir := t.TempDir()
+	write(t, filepath.Join(dir, "api", "AGENTS.md"), "api")
+	for _, skipped := range []string{".git", "node_modules", "vendor"} {
+		write(t, filepath.Join(dir, "api", skipped, "lib", "AGENTS.md"), "not ours")
+
+		files, err := Below(dir, "api/"+skipped+"/lib/index.js")
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		want := []File{{Path: filepath.Join(dir, "api", "AGENTS.md"), Content: "api"}}
+		if !reflect.DeepEqual(files, want) {
+			t.Errorf("Below in %s = %+v, want %+v", skipped, files, want)
+		}
+	}
+}
+
 // A directory whose instructions cannot be read does not keep the directories
 // below it from being read
 func TestBelowReadsPastAnUnreadableDirectory(t *testing.T) {
