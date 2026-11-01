@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -20,8 +21,15 @@ import (
 	"github.com/rstarc/elencode/internal/tui/transcript"
 )
 
-// banner titles the session, printed once the terminal width is known
+// banner titles the session, printed beside the logo
 const banner = "elencode"
+
+// logo is assets/logo/terminal/fantail-braille.txt; build.py there draws it.
+const logo = `⠀⡀⣤⡸⣿⡀⠀⠀⠀⠀
+⣈⠳⣝⢷⡹⡇⠀⠀⠀⠀
+⠙⢷⣌⠪⢡⠃⣴⣲⣄⡀
+⠀⠀⠙⢷⣾⣿⣿⣿⡟⠁
+⠀⠀⠀⠀⠈⣟⢻⡋⠀⠀`
 
 // inputPrompt mirrors transcript.UserPromptMarker, which marks user messages in
 // the transcript, so the two stay visibly the same character.
@@ -445,11 +453,40 @@ func (m model) endTurn() model {
 // first frame as the whole terminal, so a print that arrives before that frame
 // is drawn climbs the full terminal height and overwrites the lines on screen.
 func (m model) intro(width int) string {
-	header := transcript.Header(banner, width)
+	bi, ok := debug.ReadBuildInfo()
+	header := logoBlock(strings.TrimPrefix(versionLine(version, bi, ok), banner+" "), width)
 	if m.firstStart {
 		return header + "\n" + transcript.Notice("No provider is connected yet. Choose one to start with:", width)
 	}
 	return header
+}
+
+// logoBlock sets the title in bold and the build below it beside the logo,
+// level with its middle, and centres the whole block in width. Lines too wide
+// for the terminal are cut rather than left to wrap, which would break up the
+// logo; a width of 0 is unknown and cuts nothing.
+func logoBlock(build string, width int) string {
+	const gap = "   "
+	art := strings.Split(logo, "\n")
+	text := make([]string, len(art))
+	middle := len(art) / 2
+	text[middle] = lipgloss.NewStyle().Bold(true).Render(banner)
+	text[middle+1] = build
+
+	lines := make([]string, len(art))
+	blockWidth := 0
+	for i := range art {
+		lines[i] = art[i] + gap + text[i]
+		blockWidth = max(blockWidth, lipgloss.Width(lines[i]))
+	}
+	indent := strings.Repeat(" ", max((width-blockWidth)/2, 0))
+	for i := range lines {
+		lines[i] = strings.TrimRight(indent+lines[i], " ")
+		if width > 0 {
+			lines[i] = ansi.Truncate(lines[i], width, "…")
+		}
+	}
+	return strings.Join(lines, "\n")
 }
 
 // Init implements the bubbletea Model interface. The input needs no blink
