@@ -41,7 +41,8 @@ first: squashing a branch removes the order of its commits.
 
 Changes a user cannot notice need no guide: refactors, internal fixes, tests and
 dependency updates. A bug fix that restores the documented behavior needs none either;
-one that changes the behavior does.
+one that changes the behavior does. Nor does a change to how something looks that gives
+the user nothing new to do or learn, such as a logo, colors, spacing or wording.
 
 ### Design specs
 
