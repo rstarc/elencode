@@ -105,17 +105,47 @@ func TestInstructionsInTheConversationAreNotAttachedAgain(t *testing.T) {
 	}
 }
 
+// respondedWith is the conversation while the tools of a response run: it ends
+// in that response, calling a tool once per id.
+func respondedWith(ids ...string) []agent.Message {
+	var calls []agent.Block
+	for _, id := range ids {
+		calls = append(calls, agent.ToolUseBlock{ID: id, Name: "read"})
+	}
+	return []agent.Message{{Role: agent.RoleAssistant, Content: calls}}
+}
+
 // What the model was told is the conversation, so instructions that left it,
 // with a model switch or a turn rolled back, are attached again.
 func TestInstructionsOutOfTheConversationAreAttachedAgain(t *testing.T) {
 	dir := subdirectoryProject(t)
-	tool := subdirectoryInstructions{dir: dir, conversation: noConversation}.wrap(fileTool("package api", nil))
+	conversation := respondedWith("toolu_1")
+	session := &subdirectoryInstructions{dir: dir, conversation: func() []agent.Message { return conversation }}
+	tool := session.wrap(fileTool("package api", nil))
 
 	first, _ := touch(t, tool, "api/handler.go")
+	// The turn was rolled back, and the next one responded anew
+	conversation = respondedWith("toolu_2")
 	second, _ := touch(t, tool, "api/handler.go")
 
 	if len(instructions.Attached(first)) != 1 || len(instructions.Attached(second)) != 1 {
 		t.Errorf("attached %q, then %q; want the file both times", instructions.Attached(first), instructions.Attached(second))
+	}
+}
+
+// The results of a response join the conversation only once all of its calls
+// have run, so the second call cannot see there what the first attached
+func TestTwoCallsInOneResponseAttachOnce(t *testing.T) {
+	dir := subdirectoryProject(t)
+	conversation := func() []agent.Message { return respondedWith("toolu_1", "toolu_2") }
+	session := &subdirectoryInstructions{dir: dir, conversation: conversation}
+	tool := session.wrap(fileTool("package api", nil))
+
+	first, _ := touch(t, tool, "api/handler.go")
+	second, _ := touch(t, tool, "api/handler.go")
+
+	if len(instructions.Attached(first)) != 1 || second != "package api" {
+		t.Errorf("attached %q, then output %q; want the file once, then only the tool's", instructions.Attached(first), second)
 	}
 }
 

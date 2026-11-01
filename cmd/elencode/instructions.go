@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/rstarc/elencode/internal/agent"
 
@@ -44,6 +45,13 @@ type subdirectoryInstructions struct {
 	// of which files were attached: one that left it, with a model switch or a
 	// turn rolled back, is attached again.
 	conversation func() []agent.Message
+
+	// The results of a response join the conversation only once all of its
+	// calls have run, so until then attaching records what they attached.
+	// response names the response by the ID of its first call.
+	mu        sync.Mutex
+	response  string
+	attaching map[string]bool
 }
 
 // wrap returns tool attaching the instructions of the directories below the
@@ -51,7 +59,7 @@ type subdirectoryInstructions struct {
 // "path". bash names none as such, so its "command" is guessed at: each word,
 // unquoted, that is the path of a file or directory below the working
 // directory counts. Globs and paths inside flags are missed.
-func (s subdirectoryInstructions) wrap(tool agent.Tool) agent.Tool {
+func (s *subdirectoryInstructions) wrap(tool agent.Tool) agent.Tool {
 	execute := tool.Execute
 	tool.Execute = func(ctx context.Context, input json.RawMessage) (string, error) {
 		output, err := execute(ctx, input)
@@ -91,8 +99,28 @@ func (s subdirectoryInstructions) wrap(tool agent.Tool) agent.Tool {
 			touched = append(touched, word)
 		}
 
+		conversation := s.conversation()
+		var response string
+		if len(conversation) > 0 {
+			for _, block := range conversation[len(conversation)-1].Content {
+				if call, ok := block.(agent.ToolUseBlock); ok {
+					response = call.ID
+					break
+				}
+			}
+		}
+
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.attaching == nil || response != s.response {
+			s.response = response
+			s.attaching = map[string]bool{}
+		}
 		attached := map[string]bool{}
-		for _, message := range s.conversation() {
+		for name := range s.attaching {
+			attached[name] = true
+		}
+		for _, message := range conversation {
 			for _, block := range message.Content {
 				if result, ok := block.(agent.ToolResultBlock); ok {
 					for _, name := range instructions.Attached(result.Content) {
@@ -117,6 +145,7 @@ func (s subdirectoryInstructions) wrap(tool agent.Tool) agent.Tool {
 				}
 				// Also keeps two paths in one directory from attaching it twice
 				attached[filepath.ToSlash(name)] = true
+				s.attaching[filepath.ToSlash(name)] = true
 				fresh = append(fresh, file)
 			}
 		}

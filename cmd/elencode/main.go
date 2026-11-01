@@ -56,7 +56,7 @@ func main() {
 	// agent that needs them to be built first, so it is reached through the
 	// variable.
 	var agentConfig *agent.Agent
-	subdirectories := subdirectoryInstructions{
+	subdirectories := &subdirectoryInstructions{
 		dir:          workingDir,
 		conversation: func() []agent.Message { return agentConfig.Messages() },
 	}
