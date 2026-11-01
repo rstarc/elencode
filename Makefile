@@ -1,7 +1,7 @@
 BINARY_NAME=elencode
 
 # The tag is the source of truth for the version; without one this falls back to
-# the short commit. See docs/development.md.
+# the short commit. See docs/development/versioning.md.
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 LDFLAGS=-ldflags "-X main.version=$(VERSION)"
 
