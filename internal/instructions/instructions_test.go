@@ -336,6 +336,39 @@ func TestBelowReadsEachDirectoryDownToTheFile(t *testing.T) {
 	}
 }
 
+// A directory whose instructions cannot be read does not keep the directories
+// below it from being read
+func TestBelowReadsPastAnUnreadableDirectory(t *testing.T) {
+	dir := t.TempDir()
+	// A directory where the file should be cannot be read as one
+	if err := os.MkdirAll(filepath.Join(dir, "api", "AGENTS.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "api", "v1", "AGENTS.md"), "v1")
+
+	files, err := Below(dir, "api/v1/handler.go")
+
+	if err == nil {
+		t.Error("err = nil, want the failure to read api's instructions")
+	}
+	want := []File{{Path: filepath.Join(dir, "api", "v1", "AGENTS.md"), Content: "v1"}}
+	if !reflect.DeepEqual(files, want) {
+		t.Errorf("Below = %+v, want %+v", files, want)
+	}
+}
+
+// Starting without a file's instructions would quietly drop whatever it says
+func TestFindFailsOnAnUnreadableFile(t *testing.T) {
+	root := project(t)
+	if err := os.MkdirAll(filepath.Join(root, "AGENTS.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Find(t.TempDir(), root); err == nil {
+		t.Error("Find succeeded on a file it could not read")
+	}
+}
+
 func TestBelowAFileInDirFindsNothing(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "AGENTS.md"), "already read at startup")

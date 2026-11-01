@@ -113,9 +113,11 @@ func Below(dir, file string) ([]File, error) {
 }
 
 // read reads one file from each of directories, in order: the first of names
-// that it holds, unless that is empty.
+// that it holds, unless that is empty. A file it cannot read is reported in
+// err, and the other directories are still read.
 func read(directories []string) ([]File, error) {
 	var files []File
+	var failures []error
 	for _, directory := range directories {
 		for _, name := range names {
 			candidate := filepath.Join(directory, name)
@@ -124,7 +126,8 @@ func read(directories []string) ([]File, error) {
 				continue
 			}
 			if err != nil {
-				return nil, err
+				failures = append(failures, err)
+				break
 			}
 			if strings.TrimSpace(string(content)) == "" {
 				continue
@@ -144,7 +147,7 @@ func read(directories []string) ([]File, error) {
 			break
 		}
 	}
-	return files, nil
+	return files, errors.Join(failures...)
 }
 
 // attachedHeader opens what Attach adds to a tool's output. It is also how

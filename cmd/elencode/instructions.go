@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -34,6 +33,10 @@ func instructionNames(files []instructions.File, workingDir, userDir string) []s
 	}
 	return names
 }
+
+// unreadableNote opens the line the wrapper adds when a directory's
+// instructions cannot be read. The TUI finds the line by it to tell the user.
+const unreadableNote = "[elencode: could not read the instructions for "
 
 // subdirectoryInstructions attach the instructions of a directory below the
 // working directory to the output of a tool that touches a file there, the
@@ -133,9 +136,10 @@ func (s *subdirectoryInstructions) wrap(tool agent.Tool) agent.Tool {
 		var failures string
 		for _, path := range touched {
 			found, err := instructions.Below(s.dir, path)
+			// What could be read is still attached
 			if err != nil {
-				failures += fmt.Sprintf("\n\n[elencode: could not read the instructions for %s: %v]", path, err)
-				continue
+				// Kept to one line, which is how the TUI finds it
+				failures += "\n\n" + unreadableNote + path + ": " + strings.ReplaceAll(err.Error(), "\n", "; ") + "]"
 			}
 			for _, file := range found {
 				// Named as Attach names it, which is what Attached returns
@@ -146,6 +150,11 @@ func (s *subdirectoryInstructions) wrap(tool agent.Tool) agent.Tool {
 				// Also keeps two paths in one directory from attaching it twice
 				attached[filepath.ToSlash(name)] = true
 				s.attaching[filepath.ToSlash(name)] = true
+				// Reading the file itself returned its text already
+				if tool.Name == "read" && filepath.ToSlash(name) == named.Path {
+					file.Content = "[the read tool's output above is this file, in full]"
+					file.Truncated = false
+				}
 				fresh = append(fresh, file)
 			}
 		}

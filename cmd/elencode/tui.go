@@ -609,8 +609,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if !ok {
 					continue
 				}
+				var notices []string
 				for _, name := range instructions.Attached(result.Content) {
-					notice := transcript.Notice("found "+name+", added its instructions", m.width)
+					notices = append(notices, "found "+name+", added its instructions")
+				}
+				for _, line := range strings.Split(result.Content, "\n") {
+					if strings.HasPrefix(line, unreadableNote) && strings.HasSuffix(line, "]") {
+						notices = append(notices, strings.TrimSuffix(strings.TrimPrefix(line, "[elencode: "), "]"))
+					}
+				}
+				for _, text := range notices {
+					notice := transcript.Notice(text, m.width)
 					if rendered == "" {
 						rendered = notice
 					} else {

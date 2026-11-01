@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1385,6 +1386,34 @@ func TestProgramSaysWhichInstructionsAToolAttached(t *testing.T) {
 	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
 		text := ansi.Strip(string(out))
 		notice := strings.Index(text, "found api/AGENTS.md, added its instructions")
+		reply := strings.Index(text, "all done")
+		return notice >= 0 && reply > notice
+	}, teatest.WithDuration(5*time.Second))
+
+	if err := tm.Quit(); err != nil {
+		t.Fatalf("quitting the program: %v", err)
+	}
+}
+
+// The model hears that a subdirectory's instructions could not be read, and so
+// does the user
+func TestProgramSaysWhichInstructionsCouldNotBeRead(t *testing.T) {
+	dir := t.TempDir()
+	// A directory where the file should be cannot be read as one
+	if err := os.MkdirAll(filepath.Join(dir, "api", "AGENTS.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	session := subdirectoryInstructions{dir: dir, conversation: noConversation}
+	read := session.wrap(fileTool("package api", nil))
+	m := newModel(newAgent(&toolCallingProvider{}, []agent.Tool{read}), config.Config{}, defaultCommands(), nil, nil)
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(200, 20))
+
+	tm.Type("look at the handler")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool {
+		text := ansi.Strip(string(out))
+		notice := strings.Index(text, "could not read the instructions for api/handler.go")
 		reply := strings.Index(text, "all done")
 		return notice >= 0 && reply > notice
 	}, teatest.WithDuration(5*time.Second))

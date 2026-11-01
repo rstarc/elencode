@@ -213,6 +213,48 @@ func TestUnreadableInstructionsLeaveTheOthersAttached(t *testing.T) {
 	}
 }
 
+// A directory whose instructions cannot be read does not keep those of the
+// directories below it from being attached
+func TestUnreadableInstructionsLeaveDeeperOnesAttached(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "api", "AGENTS.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "api", "v1", "AGENTS.md"), "v1 rules")
+	session := subdirectoryInstructions{dir: dir, conversation: noConversation}
+
+	output, err := touch(t, session.wrap(fileTool("package v1", nil)), "api/v1/handler.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := instructions.Attached(output), []string{"api/v1/AGENTS.md"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("attached %q, want %q", got, want)
+	}
+	if !strings.Contains(output, "could not read the instructions for api/v1/handler.go") {
+		t.Errorf("output = %q, want the failure to read api's instructions", output)
+	}
+}
+
+// Reading a subdirectory's instructions file returns its text already, so it
+// is attached by reference rather than a second time
+func TestReadingAnInstructionsFileAttachesItWithoutItsText(t *testing.T) {
+	dir := subdirectoryProject(t)
+	session := subdirectoryInstructions{dir: dir, conversation: noConversation}
+
+	output, err := touch(t, session.wrap(fileTool("api rules", nil)), "api/AGENTS.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if strings.Count(output, "api rules") != 1 {
+		t.Errorf("output = %q, want the file's text once", output)
+	}
+	if got, want := instructions.Attached(output), []string{"api/AGENTS.md"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("attached %q, want %q", got, want)
+	}
+}
+
 func runBash(t *testing.T, tool agent.Tool, command string) string {
 	t.Helper()
 	input, _ := json.Marshal(map[string]string{"command": command})
