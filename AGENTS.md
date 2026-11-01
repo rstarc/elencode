@@ -60,6 +60,9 @@ local development only — CI calls the Go toolchain directly, see
   Every write changes one provider's entry in the file as it is then
   (`SaveCredential`, `RemoveCredential`), since another session, or a token renewal,
   may have changed the rest
+- `assets/logo` — the logo kit. `build.py` draws every variant from its pixel grids,
+  including the braille logo the TUI opens with; `cmd/elencode/tui.go` holds a copy of
+  `terminal/fantail-braille.txt` as `logo`, so a redrawn logo is pasted there too
 
 ## TUI
 

@@ -181,20 +181,6 @@ func TestNoticeSpansTheTerminal(t *testing.T) {
 	}
 }
 
-func TestHeaderSpansTheTerminal(t *testing.T) {
-	for _, width := range []int{40, 120, 200} {
-		if got := lipgloss.Width(Header("elencode", width)); got != width {
-			t.Errorf("header at width %d is %d columns wide, want the full %d", width, got, width)
-		}
-	}
-}
-
-func TestHeaderCarriesTheTitle(t *testing.T) {
-	if got := stripANSI(Header("elencode", 80)); !strings.Contains(got, "elencode") {
-		t.Errorf("header = %q, want it to carry the title", got)
-	}
-}
-
 // A retry is still a failure, so the part naming it is drawn in the same red an
 // Error box uses: a transcript scanned for what went wrong should turn it up.
 // Only what follows — the turn carrying on — is dimmed like a notice.

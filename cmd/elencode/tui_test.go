@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -1354,16 +1355,78 @@ func TestSelectingAModelSaysSo(t *testing.T) {
 	}
 }
 
-func TestHeaderSpansTheTerminal(t *testing.T) {
-	const width = 72
+func TestIntroOpensWithTheLogo(t *testing.T) {
+	got := newTestModel().intro(80)
 
-	got := newTestModel().intro(width)
-
-	if lipgloss.Width(got) != width {
-		t.Errorf("header is %d columns wide, want the full %d:\n%s", lipgloss.Width(got), width, got)
+	for _, line := range strings.Split(logo, "\n") {
+		if !strings.Contains(got, line) {
+			t.Errorf("intro is missing the logo line %q:\n%s", line, got)
+		}
 	}
 	if !strings.Contains(got, banner) {
-		t.Errorf("header does not carry the title %q:\n%s", banner, got)
+		t.Errorf("intro does not carry the title %q:\n%s", banner, got)
+	}
+	// The build line is what `elencode version` prints, which always names
+	// the Go release.
+	if !strings.Contains(got, runtime.Version()) {
+		t.Errorf("intro does not carry the build information:\n%s", got)
+	}
+}
+
+func TestLogoIsCentredWithTheNameAndBuildBesideIt(t *testing.T) {
+	const width = 80
+	const build = "v1.2.3 (go1.25.0, darwin/arm64)"
+
+	lines := strings.Split(logoBlock(build, width), "\n")
+
+	art := strings.Split(logo, "\n")
+	if len(lines) != len(art) {
+		t.Fatalf("logo block has %d lines, want the %d of the logo:\n%s", len(lines), len(art), strings.Join(lines, "\n"))
+	}
+	indent := len(lines[0]) - len(strings.TrimLeft(lines[0], " "))
+	widest := 0
+	for i, line := range lines {
+		if !strings.HasPrefix(line, strings.Repeat(" ", indent)+art[i]) {
+			t.Errorf("line %d is %q, want the logo indented by %d", i, line, indent)
+		}
+		widest = max(widest, lipgloss.Width(line))
+	}
+	if right := width - widest; right != indent && right != indent+1 {
+		t.Errorf("logo block has %d columns on the left and %d on the right, want it centred", indent, right)
+	}
+	if !strings.Contains(lines[2], lipgloss.NewStyle().Bold(true).Render(banner)) {
+		t.Errorf("middle line is %q, want the title in bold beside the logo", lines[2])
+	}
+	if !strings.HasSuffix(lines[3], build) {
+		t.Errorf("line below the title is %q, want it to end with the build %q", lines[3], build)
+	}
+}
+
+func TestLogoIsCutToANarrowTerminal(t *testing.T) {
+	const width = 30
+
+	lines := strings.Split(logoBlock("v1.2.3 (commit 952e261a4b2c, go1.25.0, darwin/arm64)", width), "\n")
+
+	art := strings.Split(logo, "\n")
+	for i, line := range lines {
+		if lipgloss.Width(line) > width {
+			t.Errorf("line %d is %d columns wide, want at most %d: %q", i, lipgloss.Width(line), width, line)
+		}
+		if !strings.HasPrefix(line, art[i]) {
+			t.Errorf("line %d is %q, want the logo against the left edge", i, line)
+		}
+	}
+	if !strings.HasSuffix(lines[3], "…") {
+		t.Errorf("build line is %q, want it cut short with an ellipsis", lines[3])
+	}
+}
+
+// Without a terminal the width is 0, which says nothing about where to cut.
+func TestLogoWithoutAWidthIsNotCut(t *testing.T) {
+	const build = "v1.2.3 (commit 952e261a4b2c, go1.25.0, darwin/arm64)"
+
+	if got := logoBlock(build, 0); !strings.Contains(got, build) {
+		t.Errorf("logo block without a width cut the build line:\n%s", got)
 	}
 }
 

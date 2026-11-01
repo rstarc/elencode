@@ -54,10 +54,7 @@ var (
 	userForeground = lipgloss.Black
 )
 
-var (
-	noticeColor = lipgloss.BrightBlack
-	headerColor = lipgloss.BrightBlue
-)
+var noticeColor = lipgloss.BrightBlack
 
 // thinkingStyle is how reasoning is set apart from the answer it led to
 func thinkingStyle() lipgloss.Style {
@@ -134,13 +131,6 @@ func Retry(err error, detail string, width int) string {
 	notice := lipgloss.NewStyle().Foreground(noticeColor)
 	failure := lipgloss.NewStyle().Foreground(errorColor).Render(err.Error())
 	return renderRule(failure+notice.Render(detail), width, notice)
-}
-
-// Header renders the title the session opens with, as the same rule a notice is
-// drawn with but colored to read as a title rather than an event.
-func Header(text string, width int) string {
-	style := lipgloss.NewStyle().Foreground(headerColor).Bold(true)
-	return renderRule(style.Render(text), width, style)
 }
 
 // renderBoxedBlock prefixes content, wrapped to width, with a colored marker
