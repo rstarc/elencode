@@ -135,7 +135,7 @@ func (s *subdirectoryInstructions) wrap(tool agent.Tool) agent.Tool {
 		var fresh []instructions.File
 		var failures string
 		for _, path := range touched {
-			found, err := instructions.Below(s.dir, path)
+			found, err := instructions.Below(s.dir, path, attached)
 			// What could be read is still attached
 			if err != nil {
 				// Kept to one line, which is how the TUI finds it
@@ -144,7 +144,7 @@ func (s *subdirectoryInstructions) wrap(tool agent.Tool) agent.Tool {
 			for _, file := range found {
 				// Named as Attach names it, which is what Attached returns
 				name, err := filepath.Rel(s.dir, file.Path)
-				if err != nil || attached[filepath.ToSlash(name)] {
+				if err != nil {
 					continue
 				}
 				// Also keeps two paths in one directory from attaching it twice

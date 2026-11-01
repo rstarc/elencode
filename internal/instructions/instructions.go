@@ -5,6 +5,7 @@ package instructions
 import (
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -62,7 +63,7 @@ func Find(userDir, dir string) ([]File, error) {
 	// First, so that every project file comes later and wins
 	directories = append([]string{userDir}, directories...)
 
-	return read(directories)
+	return read(directories, nil)
 }
 
 // SystemPrompt renders files as the model's system prompt, or nothing when
@@ -99,8 +100,9 @@ func block(path string, file File) string {
 // which is relative to dir and slash-separated, as the tools take it:
 // the files Find did not read because they apply only below dir. Outermost
 // first, as Find returns them. It stops at a directory holding other
-// projects' code, whose instructions are not this project's.
-func Below(dir, file string) ([]File, error) {
+// projects' code, whose instructions are not this project's. attached names
+// the files already attached, as Attach names them, which are not read again.
+func Below(dir, file string, attached map[string]bool) ([]File, error) {
 	var directories []string
 	current := dir
 	for _, name := range strings.Split(path.Dir(file), "/") {
@@ -113,22 +115,37 @@ func Below(dir, file string) ([]File, error) {
 		current = filepath.Join(current, name)
 		directories = append(directories, current)
 	}
-	return read(directories)
+	skip := map[string]bool{}
+	for name := range attached {
+		skip[filepath.Join(dir, filepath.FromSlash(name))] = true
+	}
+	return read(directories, skip)
 }
 
 // read reads one file from each of directories, in order: the first of names
-// that it holds, unless that is empty. A file it cannot read is reported in
-// err, and the other directories are still read.
-func read(directories []string) ([]File, error) {
+// that it holds, unless that is empty or in skip. A file it cannot read is
+// reported in err, and the other directories are still read.
+func read(directories []string, skip map[string]bool) ([]File, error) {
 	var files []File
 	var failures []error
 	for _, directory := range directories {
 		for _, name := range names {
 			candidate := filepath.Join(directory, name)
-			content, err := os.ReadFile(candidate)
+			if skip[candidate] {
+				break
+			}
+			opened, err := os.Open(candidate)
 			if errors.Is(err, fs.ErrNotExist) {
 				continue
 			}
+			if err != nil {
+				failures = append(failures, err)
+				break
+			}
+			// One byte past the limit is enough to tell that the file goes on
+			content, err := io.ReadAll(io.LimitReader(opened, MaxSize+1))
+			// Only read from, so closing cannot lose anything
+			_ = opened.Close()
 			if err != nil {
 				failures = append(failures, err)
 				break

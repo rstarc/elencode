@@ -322,7 +322,7 @@ func TestBelowReadsEachDirectoryDownToTheFile(t *testing.T) {
 	write(t, filepath.Join(dir, "services", "api", "CLAUDE.md"), "api")
 	write(t, filepath.Join(dir, "services", "api", "v2", "handler.go"), "package v2")
 
-	files, err := Below(dir, "services/api/v2/handler.go")
+	files, err := Below(dir, "services/api/v2/handler.go", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -344,7 +344,7 @@ func TestBelowSkipsOtherProjectsCode(t *testing.T) {
 	for _, skipped := range []string{".git", "node_modules", "vendor"} {
 		write(t, filepath.Join(dir, "api", skipped, "lib", "AGENTS.md"), "not ours")
 
-		files, err := Below(dir, "api/"+skipped+"/lib/index.js")
+		files, err := Below(dir, "api/"+skipped+"/lib/index.js", nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -353,6 +353,26 @@ func TestBelowSkipsOtherProjectsCode(t *testing.T) {
 		if !reflect.DeepEqual(files, want) {
 			t.Errorf("Below in %s = %+v, want %+v", skipped, files, want)
 		}
+	}
+}
+
+// A file already attached is not read again. The one here would fail if it
+// were read.
+func TestBelowSkipsTheFilesAlreadyAttached(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "api", "AGENTS.md"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	write(t, filepath.Join(dir, "api", "v1", "AGENTS.md"), "v1")
+
+	files, err := Below(dir, "api/v1/handler.go", map[string]bool{"api/AGENTS.md": true})
+	if err != nil {
+		t.Fatalf("err = %v, want api's file left unread", err)
+	}
+
+	want := []File{{Path: filepath.Join(dir, "api", "v1", "AGENTS.md"), Content: "v1"}}
+	if !reflect.DeepEqual(files, want) {
+		t.Errorf("Below = %+v, want %+v", files, want)
 	}
 }
 
@@ -366,7 +386,7 @@ func TestBelowReadsPastAnUnreadableDirectory(t *testing.T) {
 	}
 	write(t, filepath.Join(dir, "api", "v1", "AGENTS.md"), "v1")
 
-	files, err := Below(dir, "api/v1/handler.go")
+	files, err := Below(dir, "api/v1/handler.go", nil)
 
 	if err == nil {
 		t.Error("err = nil, want the failure to read api's instructions")
@@ -393,7 +413,7 @@ func TestBelowAFileInDirFindsNothing(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "AGENTS.md"), "already read at startup")
 
-	files, err := Below(dir, "main.go")
+	files, err := Below(dir, "main.go", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -406,7 +426,7 @@ func TestBelowCutsAFileShortAtTheLimit(t *testing.T) {
 	dir := t.TempDir()
 	write(t, filepath.Join(dir, "docs", "AGENTS.md"), strings.Repeat("a", MaxSize+1))
 
-	files, err := Below(dir, "docs/index.md")
+	files, err := Below(dir, "docs/index.md", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
