@@ -243,6 +243,22 @@ func TestFindCutsBetweenCharacters(t *testing.T) {
 	}
 }
 
+// Continuation bytes alone are not UTF-8, so no character starts before the
+// limit for the cut to back off to
+func TestFindCutsAFileWithoutCharactersAtTheLimit(t *testing.T) {
+	root := project(t)
+	write(t, filepath.Join(root, "AGENTS.md"), strings.Repeat("\x80", MaxSize+1))
+
+	files, err := Find(t.TempDir(), root)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(files) != 1 || !files[0].Truncated {
+		t.Errorf("Find = %+v, want the file, marked truncated", files)
+	}
+}
+
 func TestFindLeavesAFileAtTheLimitWhole(t *testing.T) {
 	root := project(t)
 	write(t, filepath.Join(root, "AGENTS.md"), strings.Repeat("a", MaxSize))

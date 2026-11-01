@@ -134,7 +134,7 @@ func read(directories []string) ([]File, error) {
 				// Backed off to the start of a character, so the cut cannot leave
 				// half of one behind
 				end := MaxSize
-				for !utf8.RuneStart(content[end]) {
+				for end > 0 && !utf8.RuneStart(content[end]) {
 					end--
 				}
 				file.Content = string(content[:end])
