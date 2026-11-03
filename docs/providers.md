@@ -2,7 +2,8 @@
 
 A **provider** is a service that runs models for elencode. A **model** belongs to exactly
 one provider, and is written `provider/model` wherever that matters:
-`anthropic/claude-opus-5`, `openai/gpt-5.5`, `chatgpt/gpt-6.1-sol`, `moonshot/kimi-k3`.
+`anthropic/claude-opus-5`, `openai/gpt-5.5`, `chatgpt/gpt-6.1-sol`, `moonshot/kimi-k3`,
+`bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0`.
 
 | Provider | What you need |
 |---|---|
@@ -10,6 +11,7 @@ one provider, and is written `provider/model` wherever that matters:
 | `openai` | an API key from [platform.openai.com](https://platform.openai.com/api-keys) |
 | `chatgpt` | a ChatGPT plan; you sign in, and use its allowance instead of API credits |
 | `moonshot` | an API key from [platform.kimi.ai](https://platform.kimi.ai/console/api-keys), for Moonshot AI's Kimi models |
+| `bedrock` | an Amazon Bedrock API key and the AWS region to use it in, for the models your AWS account has access to |
 
 ## Getting started
 
@@ -29,6 +31,7 @@ No provider is connected yet. Choose one to start with:
 │ chatgpt    not connected · sign in with a ChatGPT plan
 │ openai     not connected · API key
 │ moonshot   not connected · API key
+│ bedrock    not connected · API key and region
 ```
 
 Choose with ↑/↓ (or type to filter) and enter. Esc quits.
@@ -47,6 +50,26 @@ enter save · esc cancel
 
 elencode tries the key before saving it. A key the provider rejects is not saved, and
 you are asked again.
+
+**With Amazon Bedrock**, paste a Bedrock API key, then name the AWS region the models
+should run in. Enter alone takes the region shown:
+
+```
+Paste your Amazon Bedrock API key
+(create one in the Bedrock console: https://console.aws.amazon.com/bedrock/home#/api-keys)
+
+> ••••••••••••••••••••
+
+AWS region (us-east-1)
+
+> eu-central-1
+
+enter save · esc cancel
+```
+
+A Bedrock API key is either long-term, which lasts until it expires or you delete it, or
+short-term, which lasts up to 12 hours. Once a short-term key runs out, connect again
+with a new one. The key and the region are saved together.
 
 **With ChatGPT**, elencode opens the sign-in page in your browser. Sign in there and come
 back. `c` copies the link if the browser did not open.
@@ -112,6 +135,7 @@ comes from:
 │ chatgpt    not connected · sign in with a ChatGPT plan
 │ openai     connected · API key in credentials.json
 │ moonshot   not connected · API key
+│ bedrock    connected · API key in credentials.json · eu-central-1
 ```
 
 Choosing a provider that is already connected replaces its key or sign-in. Esc closes
@@ -124,6 +148,7 @@ anthropic  connected · API key from $ANTHROPIC_API_KEY
 chatgpt    not connected · sign in with a ChatGPT plan
 openai     connected · API key in credentials.json
 moonshot   not connected · API key
+bedrock    connected · API key in credentials.json · eu-central-1
 ```
 
 Every connected provider is available at once. `/model` offers the models of all of
@@ -161,6 +186,27 @@ Moonshot's Kimi models always reason, whatever `thinking_enabled` says. Only `ki
 takes a `thinking_effort`, and only `low`, `high` and `max`: `medium` is sent as
 `high`, and `xhigh` as `max`.
 
+Models on Amazon Bedrock do not reason in elencode yet: `thinking_enabled`,
+`thinking_effort` and `/effort` have no effect on them.
+
+### Models on Amazon Bedrock
+
+`/model` lists the Bedrock models elencode ships with. Bedrock only runs a model your
+AWS account has been given access to, in the region you connected with. Grant access
+in the Bedrock console under *Model access*.
+
+Most newer models run only through an **inference profile**, which spreads requests
+across several regions. Its id is the model's id with a prefix: `us.`, `eu.` or `apac.`
+for the regions of one geography, `global.` for any region. The ids `/model` lists are
+inference profiles where the model needs one.
+
+Any other model or inference profile Bedrock offers is reachable by its id:
+
+```
+/model bedrock/amazon.nova-pro-v1:0
+/model bedrock/arn:aws:bedrock:eu-central-1:123456789012:application-inference-profile/abc123
+```
+
 ## Where things are stored
 
 In `~/.config/elencode/` (or `$XDG_CONFIG_HOME/elencode/`):
@@ -188,7 +234,10 @@ Instead of storing a key, you can set it in the environment. It wins over a stor
 export ANTHROPIC_API_KEY=sk-ant-…
 export OPENAI_API_KEY=sk-…
 export MOONSHOT_API_KEY=sk-…
+export AWS_BEARER_TOKEN_BEDROCK=ABSK…
 ```
+
+For Bedrock, `AWS_REGION` likewise wins over the region you saved when connecting.
 
 `/connect` shows which one is in use. A key from the environment cannot be removed with
 `disconnect`: unset the variable instead. When you connect a provider whose key the
@@ -196,7 +245,9 @@ environment already supplies, elencode tells you before asking.
 
 These are the only variables elencode reads to reach a provider. Others that the
 providers' own tools honour, such as `ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`,
-`OPENAI_BASE_URL`, `OPENAI_ORG_ID` or `OPENAI_PROJECT_ID`, have no effect. As for any
+`OPENAI_BASE_URL`, `OPENAI_ORG_ID` or `OPENAI_PROJECT_ID`, have no effect. Nor do your
+other AWS credentials: `AWS_PROFILE`, `AWS_ACCESS_KEY_ID`, `~/.aws/config` and AWS SSO
+sign-ins are not used, only a Bedrock API key. As for any
 program, `HTTPS_PROXY`, `NO_PROXY` and `SSL_CERT_FILE` apply to the network connection.
 
 ## Troubleshooting
@@ -209,5 +260,13 @@ program, `HTTPS_PROXY`, `NO_PROXY` and `SSL_CERT_FILE` apply to the network conn
   fails with an authentication error, run `connect` again.
 - **You saved a key, but elencode keeps using another one.** An environment variable
   wins over a stored key. `/connect` shows which is in use.
+- **`bedrock: the API key was rejected (403 Forbidden)`.** The key is mistyped, deleted,
+  or was short-term and has expired. Create a new one and connect again.
+- **`bedrock: you don't have access to the model …`.** Your AWS account has not been
+  given access to it in this region. Grant it in the Bedrock console under
+  *Model access*.
+- **`bedrock: on-demand throughput isn't supported for …`.** The model runs only
+  through an inference profile. Use its id with a `us.`, `eu.`, `apac.` or `global.`
+  prefix.
 - **ChatGPT says you are signed out.** The sign-in expired or was revoked. Run
   `elencode connect chatgpt` again.
