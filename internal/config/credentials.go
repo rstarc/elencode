@@ -22,6 +22,10 @@ type Credentials map[agent.ProviderName]Credential
 type Credential struct {
 	APIKey Secret          `json:"api_key,omitempty"`
 	Login  *chatgpt.Tokens `json:"login,omitempty"`
+	// Region is the AWS region Bedrock is reached in. Kept with the key
+	// rather than in config.json because it is part of what connecting
+	// Bedrock asks for: see Config.BedrockRegion.
+	Region string `json:"region,omitempty"`
 }
 
 // credentialsFileMode keeps the file readable by its owner only: it holds keys

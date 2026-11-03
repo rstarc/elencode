@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -15,12 +16,13 @@ import (
 	"github.com/rstarc/elencode/internal/agent"
 	"github.com/rstarc/elencode/internal/config"
 	"github.com/rstarc/elencode/internal/provider/anthropic"
+	"github.com/rstarc/elencode/internal/provider/bedrock"
 	"github.com/rstarc/elencode/internal/provider/openai"
 )
 
 // keyProviders are the providers connected with an API key. The rest are
 // signed in to.
-var keyProviders = []agent.ProviderName{agent.ProviderAnthropic, agent.ProviderOpenAI, agent.ProviderMoonshot}
+var keyProviders = []agent.ProviderName{agent.ProviderAnthropic, agent.ProviderOpenAI, agent.ProviderMoonshot, agent.ProviderBedrock}
 
 // apiKeyPages are where a provider's keys are made, for the prompt that asks
 // for one.
@@ -28,6 +30,7 @@ var apiKeyPages = map[agent.ProviderName]string{
 	agent.ProviderAnthropic: "https://console.anthropic.com/settings/keys",
 	agent.ProviderOpenAI:    "https://platform.openai.com/api-keys",
 	agent.ProviderMoonshot:  "https://platform.kimi.ai/console/api-keys",
+	agent.ProviderBedrock:   "https://console.aws.amazon.com/bedrock/home#/api-keys",
 }
 
 // providerTitles are the names a provider goes by in a sentence.
@@ -36,6 +39,7 @@ var providerTitles = map[agent.ProviderName]string{
 	agent.ProviderOpenAI:    "OpenAI",
 	agent.ProviderChatGPT:   "ChatGPT",
 	agent.ProviderMoonshot:  "Moonshot",
+	agent.ProviderBedrock:   "Amazon Bedrock",
 }
 
 // providerStatus is what a session knows about one provider: whether it is
@@ -79,6 +83,15 @@ func providerStatuses(cfg config.Config) []providerStatus {
 			status.how = "API key in credentials.json"
 		default:
 			status.how = "API key"
+		}
+		// A Bedrock key works in one region at a time, so which one is part
+		// of what it is connected with
+		if provider == agent.ProviderBedrock {
+			if status.connected {
+				status.how += " · " + cfg.BedrockRegion()
+			} else {
+				status.how = "API key and region"
+			}
 		}
 		statuses = append(statuses, status)
 	}
@@ -140,6 +153,8 @@ func newKeyedProvider(provider agent.ProviderName, key string, cfg config.Config
 		return openai.New(key, cfg.ThinkingEnabled)
 	case agent.ProviderMoonshot:
 		return anthropic.NewMoonshot(key, cfg.ThinkingEnabled)
+	case agent.ProviderBedrock:
+		return bedrock.New(key, cfg.BedrockRegion(), cfg.ThinkingEnabled)
 	}
 	return nil
 }
@@ -157,9 +172,16 @@ func checkWithAPI(ctx context.Context, provider agent.ProviderName, key string) 
 		return openai.New(key, false).CheckKey(ctx)
 	case agent.ProviderMoonshot:
 		return anthropic.NewMoonshot(key, false).CheckKey(ctx)
+	case agent.ProviderBedrock:
+		return errBedrockUnchecked
 	}
 	return fmt.Errorf("%s is not connected with an API key", provider)
 }
+
+// errBedrockUnchecked is why a Bedrock key is saved unchecked: every request
+// that would try it runs a model, which costs money, and the one that lists
+// models does not take a Bedrock API key.
+var errBedrockUnchecked = errors.New("a Bedrock key cannot be tried without running a model")
 
 // keyCheckTimeout bounds the check, which an API that does not answer would
 // otherwise hold up indefinitely: the key is saved unchecked when it runs out.
@@ -168,8 +190,9 @@ const keyCheckTimeout = 15 * time.Second
 // connectKey checks key with provider's API and saves it to credentials.json,
 // returning cfg with the key in it. A key the API rejects is not saved. One
 // that could not be checked is, since that says nothing about the key, and
-// unchecked says why it could not be.
-func connectKey(ctx context.Context, cfg config.Config, provider agent.ProviderName, key string, check keyCheck) (connected config.Config, unchecked, err error) {
+// unchecked says why it could not be. region is saved with the key, and is
+// only ever given for Bedrock: empty leaves it to $AWS_REGION, or the default.
+func connectKey(ctx context.Context, cfg config.Config, provider agent.ProviderName, key, region string, check keyCheck) (connected config.Config, unchecked, err error) {
 	key = strings.TrimSpace(key)
 	if key == "" {
 		return cfg, nil, errors.New("no API key given")
@@ -186,7 +209,8 @@ func connectKey(ctx context.Context, cfg config.Config, provider agent.ProviderN
 		return cfg, nil, ctx.Err()
 	}
 
-	creds, err := config.SaveCredential(cfg.CredentialsPath, provider, config.Credential{APIKey: config.Secret(key)})
+	cred := config.Credential{APIKey: config.Secret(key), Region: strings.TrimSpace(region)}
+	creds, err := config.SaveCredential(cfg.CredentialsPath, provider, cred)
 	if err != nil {
 		return cfg, nil, fmt.Errorf("saving the key to %s: %w", cfg.CredentialsPath, err)
 	}
@@ -308,7 +332,30 @@ func connectCLI(args []string, out io.Writer) error {
 			}
 		}
 	}
-	return runConnectKey(ctx, cfg, provider, os.Stdin, readSecret, out, checkWithAPI)
+	var readLine func() (string, error)
+	if keys != nil {
+		lines := bufio.NewReader(os.Stdin)
+		readLine = func() (string, error) {
+			// ctrl+c reaches ctx rather than ending the process, so the read
+			// is given up on rather than waited for
+			type read struct {
+				line string
+				err  error
+			}
+			done := make(chan read, 1)
+			go func() {
+				line, err := lines.ReadString('\n')
+				done <- read{line, err}
+			}()
+			select {
+			case r := <-done:
+				return r.line, r.err
+			case <-ctx.Done():
+				return "", errConnectCancelled
+			}
+		}
+	}
+	return runConnectKey(ctx, cfg, provider, os.Stdin, readSecret, readLine, out, checkWithAPI)
 }
 
 var errConnectCancelled = errors.New("connect cancelled")
@@ -317,8 +364,9 @@ var errConnectCancelled = errors.New("connect cancelled")
 // an API key. readSecret reads a line from the terminal without echoing it:
 // with one, the key is asked for, and asked for again if the API rejects it.
 // Without, it is read from stdin, which is how a password manager hands one
-// over.
-func runConnectKey(ctx context.Context, cfg config.Config, provider agent.ProviderName, stdin io.Reader, readSecret func() (string, error), out io.Writer, check keyCheck) error {
+// over. readLine reads a line that is echoed, for Bedrock's region; a piped
+// key comes without one.
+func runConnectKey(ctx context.Context, cfg config.Config, provider agent.ProviderName, stdin io.Reader, readSecret, readLine func() (string, error), out io.Writer, check keyCheck) error {
 	if note := environmentWins(cfg, provider); note != "" {
 		_, _ = fmt.Fprintln(out, note)
 	}
@@ -336,7 +384,7 @@ func runConnectKey(ctx context.Context, cfg config.Config, provider agent.Provid
 		if key == "" {
 			return fmt.Errorf("no API key on standard input: pipe one in, as in `pass show %s | elencode connect %s`", provider, provider)
 		}
-		connected, unchecked, err = connectKey(ctx, cfg, provider, key, check)
+		connected, unchecked, err = connectKey(ctx, cfg, provider, key, "", check)
 		if err != nil {
 			return err
 		}
@@ -352,7 +400,20 @@ func runConnectKey(ctx context.Context, cfg config.Config, provider agent.Provid
 			if strings.TrimSpace(key) == "" {
 				continue
 			}
-			connected, unchecked, err = connectKey(ctx, cfg, provider, key, check)
+			region := ""
+			if provider == agent.ProviderBedrock && readLine != nil {
+				shown := cfg.BedrockRegion()
+				_, _ = fmt.Fprintf(out, "AWS region (%s): ", shown)
+				line, err := readLine()
+				if err != nil {
+					return err
+				}
+				region = strings.TrimSpace(line)
+				if region == "" {
+					region = shown
+				}
+			}
+			connected, unchecked, err = connectKey(ctx, cfg, provider, key, region, check)
 			if errors.Is(err, agent.ErrKeyRejected) {
 				_, _ = fmt.Fprintf(out, "%v: try again, or ctrl+c to give up\n", err)
 				continue

@@ -3,7 +3,7 @@
 A **provider** is a service that runs models for elencode. A **model** belongs to exactly
 one provider, and is written `provider/model` wherever that matters:
 `anthropic/claude-opus-5`, `openai/gpt-5.5`, `chatgpt/gpt-6.1-sol`, `moonshot/kimi-k3`,
-`bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0`.
+`bedrock/anthropic.claude-sonnet-5`.
 
 | Provider | What you need |
 |---|---|
@@ -51,12 +51,12 @@ enter save · esc cancel
 elencode tries the key before saving it. A key the provider rejects is not saved, and
 you are asked again.
 
-**With Amazon Bedrock**, paste a Bedrock API key, then name the AWS region the models
-should run in. Enter alone takes the region shown:
+**With Amazon Bedrock**, paste a Bedrock API key and press enter, then name the AWS
+region the models should run in. Enter alone takes the region shown:
 
 ```
 Paste your Amazon Bedrock API key
-(create one in the Bedrock console: https://console.aws.amazon.com/bedrock/home#/api-keys)
+(create one at https://console.aws.amazon.com/bedrock/home#/api-keys)
 
 > ••••••••••••••••••••
 
@@ -70,6 +70,10 @@ enter save · esc cancel
 A Bedrock API key is either long-term, which lasts until it expires or you delete it, or
 short-term, which lasts up to 12 hours. Once a short-term key runs out, connect again
 with a new one. The key and the region are saved together.
+
+elencode cannot try a Bedrock key without running a model, which costs money, so it
+saves the key without trying it and says so. A key Bedrock rejects shows when you send
+your first message.
 
 A Bedrock API key is the only way elencode connects to Bedrock. It does not use your
 other AWS credentials: AWS profiles, access keys and AWS SSO (IAM Identity Center)
@@ -191,29 +195,33 @@ takes a `thinking_effort`, and only `low`, `high` and `max`: `medium` is sent as
 `high`, and `xhigh` as `max`.
 
 On Amazon Bedrock, a model reasons as it would anywhere else, and its reasoning shows
-in the transcript. Anthropic's Claude models and OpenAI's gpt-oss models take
+in the transcript. Claude Opus and Sonnet, and OpenAI's gpt-oss models, take
 `thinking_enabled` and `thinking_effort`. gpt-oss takes only `low`, `medium` and
-`high`: `xhigh` and `max` are sent as `high`. Bedrock's other reasoning models, such as
-DeepSeek-R1, always reason, and their reasoning cannot be set.
+`high`: `xhigh` and `max` are sent as `high`. Claude Haiku is not asked to reason yet.
+Bedrock's other reasoning models, such as DeepSeek-R1, always reason, and their
+reasoning cannot be set.
 
 ### Models on Amazon Bedrock
 
-`/model` lists the Bedrock models elencode ships with, under the ids Bedrock gives them:
-`bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0`. Bedrock only runs a model your AWS
-account has been given access to, in the region you connected with. Grant access in
-the Bedrock console under *Model access*.
+`/model` lists the Bedrock models elencode ships with, under the ids Bedrock gives them,
+such as `bedrock/anthropic.claude-sonnet-5`: Claude Opus, Sonnet and Haiku, gpt-oss and
+DeepSeek-R1. Bedrock only runs a model your AWS account has been given access to, in
+the region you connected with. Grant access in the Bedrock console under
+*Model access*.
 
 Many models run only through an **inference profile**, which spreads requests across
-several regions. A profile's id is the model's id with a prefix: `us.`, `eu.` or `apac.`
-for the regions of one geography, or `global.` for any region. For a model it ships
-with, elencode picks the profile for your region's geography itself, so a model
-connected in `eu-central-1` runs as `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`.
+several regions. A profile's id is the model's id with a prefix that names the
+geography it covers, such as `us.` or `eu.`, or `global.` for any region. For a model it
+ships with, elencode picks the profile itself: `us.` in a US region, `eu.` in a European
+one, and `global.` anywhere else. So a model connected in `eu-central-1` runs as
+`eu.anthropic.claude-sonnet-5`. DeepSeek-R1 has only a `us.` profile, so it runs only
+when you connect in a US region.
 
 Any other model or inference profile Bedrock offers is reachable by its id, and is used
 exactly as written:
 
 ```
-/model bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0
+/model bedrock/global.anthropic.claude-sonnet-5
 /model bedrock/amazon.nova-pro-v1:0
 /model bedrock/arn:aws:bedrock:eu-central-1:123456789012:application-inference-profile/abc123
 ```
@@ -248,7 +256,9 @@ export MOONSHOT_API_KEY=sk-…
 export AWS_BEARER_TOKEN_BEDROCK=ABSK…
 ```
 
-For Bedrock, `AWS_REGION` likewise wins over the region you saved when connecting.
+For Bedrock, `AWS_REGION` likewise wins over the region you saved when connecting. A
+key piped to `elencode connect bedrock` is saved without a region, so it is used in
+`$AWS_REGION`, or in `us-east-1` when that is not set.
 
 `/connect` shows which one is in use. A key from the environment cannot be removed with
 `disconnect`: unset the variable instead. When you connect a provider whose key the
@@ -271,13 +281,14 @@ program, `HTTPS_PROXY`, `NO_PROXY` and `SSL_CERT_FILE` apply to the network conn
   fails with an authentication error, run `connect` again.
 - **You saved a key, but elencode keeps using another one.** An environment variable
   wins over a stored key. `/connect` shows which is in use.
-- **`bedrock: the API key was rejected (403 Forbidden)`.** The key is mistyped, deleted,
-  or was short-term and has expired. Create a new one and connect again.
-- **`bedrock: you don't have access to the model …`.** Your AWS account has not been
-  given access to it in this region. Grant it in the Bedrock console under
-  *Model access*.
-- **`bedrock: on-demand throughput isn't supported for …`.** You named a model that
-  runs only through an inference profile. Name its id with a `us.`, `eu.`, `apac.` or
-  `global.` prefix instead.
+- **Your first message to a Bedrock model fails, saying the key is not valid or not
+  authorized.** Bedrock rejected the key: it is mistyped, deleted, or was short-term and
+  has expired. Create a new one and connect again.
+- **`bedrock: You don't have access to the model with the specified model ID.
+  (AccessDeniedException)`.** Your AWS account has not been given access to it in this
+  region. Grant it in the Bedrock console under *Model access*.
+- **`bedrock: Invocation of model ID … with on-demand throughput isn't supported. …
+  (ValidationException)`.** You named a model that runs only through an inference
+  profile. Name its id with a `us.`, `eu.` or `global.` prefix instead.
 - **ChatGPT says you are signed out.** The sign-in expired or was revoked. Run
   `elencode connect chatgpt` again.

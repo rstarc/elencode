@@ -324,3 +324,53 @@ func TestAPastedKeyIsConnected(t *testing.T) {
 		t.Errorf("checked %q, want the pasted key", got)
 	}
 }
+
+// Bedrock takes a region as well as a key. Enter on the key moves on to the
+// region, and enter there saves both.
+func TestConnectingBedrockAsksForTheRegion(t *testing.T) {
+	check := &fakeCheck{}
+	m := newConnectModel(t, keyed(agent.ProviderAnthropic), check)
+	m = update(t, m, commands.ConnectMsg{Arg: "bedrock"})
+
+	m, cmd := submitKey(t, m, "ABSKkey")
+	if cmd != nil {
+		t.Fatal("the key was submitted before the region was asked for")
+	}
+	view := m.View().Content
+	for _, want := range []string{"Paste your Amazon Bedrock API key", "AWS region (us-east-1)"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("view does not mention %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "ABSKkey") {
+		t.Errorf("view shows the key:\n%s", view)
+	}
+
+	m, cmd = submitKey(t, m, "eu-central-1")
+	m = update(t, m, find[keyCheckedMsg](t, run(t, cmd)))
+
+	if m.keyEntry.open() {
+		t.Error("the key entry is still open")
+	}
+	if _, ok := m.providers[agent.ProviderBedrock]; !ok {
+		t.Error("no bedrock client after connecting it")
+	}
+	saved, err := config.LoadCredentials(m.config.CredentialsPath)
+	if err != nil || saved[agent.ProviderBedrock].APIKey != "ABSKkey" || saved[agent.ProviderBedrock].Region != "eu-central-1" {
+		t.Errorf("saved = %+v, %v, want the key and the region", saved[agent.ProviderBedrock], err)
+	}
+}
+
+func TestEnterAloneTakesTheBedrockRegionShown(t *testing.T) {
+	m := newConnectModel(t, keyed(agent.ProviderAnthropic), &fakeCheck{})
+	m = update(t, m, commands.ConnectMsg{Arg: "bedrock"})
+
+	m, _ = submitKey(t, m, "ABSKkey")
+	m, cmd := updateCmd(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	update(t, m, find[keyCheckedMsg](t, run(t, cmd)))
+
+	saved, err := config.LoadCredentials(m.config.CredentialsPath)
+	if err != nil || saved[agent.ProviderBedrock].Region != "us-east-1" {
+		t.Errorf("saved = %+v, %v, want us-east-1", saved[agent.ProviderBedrock], err)
+	}
+}

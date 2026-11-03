@@ -416,10 +416,14 @@ func TestReasoningIsAskedForTheWayTheModelTakesIt(t *testing.T) {
 		effort   agent.Effort
 		want     string // additionalModelRequestFields, or "null" for none
 	}{
-		{"claude at an effort", "anthropic.claude-opus-5", true, agent.EffortXHigh,
-			`{"output_config":{"effort":"xhigh"},"thinking":{"display":"summarized","type":"adaptive"}}`},
-		{"claude at the API's own effort", "anthropic.claude-opus-5", true, agent.EffortNone,
-			`{"thinking":{"display":"summarized","type":"adaptive"}}`},
+		{
+			"claude at an effort", "anthropic.claude-opus-5", true, agent.EffortXHigh,
+			`{"output_config":{"effort":"xhigh"},"thinking":{"display":"summarized","type":"adaptive"}}`,
+		},
+		{
+			"claude at the API's own effort", "anthropic.claude-opus-5", true, agent.EffortNone,
+			`{"thinking":{"display":"summarized","type":"adaptive"}}`,
+		},
 		{"claude with thinking off", "anthropic.claude-opus-5", false, agent.EffortHigh, `null`},
 		{"gpt-oss at an effort", "openai.gpt-oss-120b-1:0", true, agent.EffortLow, `{"reasoning_effort":"low"}`},
 		{"gpt-oss above its highest effort", "openai.gpt-oss-120b-1:0", true, agent.EffortMax, `{"reasoning_effort":"high"}`},
@@ -616,7 +620,7 @@ func TestClientLeavesRetryingToTheAgent(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	streamError(t, server)
+	_ = streamError(t, server)
 
 	if requests != 1 {
 		t.Errorf("requests = %d, want 1", requests)

@@ -11,6 +11,7 @@ import (
 	"github.com/rstarc/elencode/internal/chatgpt"
 	"github.com/rstarc/elencode/internal/config"
 	"github.com/rstarc/elencode/internal/provider/anthropic"
+	"github.com/rstarc/elencode/internal/provider/bedrock"
 	"github.com/rstarc/elencode/internal/provider/openai"
 )
 
@@ -329,5 +330,33 @@ func TestStartupModelFallsBackWhenNotSignedInToChatGPT(t *testing.T) {
 	}
 	if !strings.Contains(notice, "elencode connect chatgpt") {
 		t.Errorf("notice = %q, want it to say how to sign in", notice)
+	}
+}
+
+func TestLoadProvidersBuildsTheBedrockProviderFromAKey(t *testing.T) {
+	providers := mustLoadProviders(t, withKeys(agent.ProviderBedrock))
+
+	if _, ok := providers[agent.ProviderBedrock].(*bedrock.Client); !ok {
+		t.Errorf("bedrock provider = %T, want *bedrock.Client", providers[agent.ProviderBedrock])
+	}
+}
+
+func TestStartupModelUsesTheBedrockDefaultForABedrockKeyAlone(t *testing.T) {
+	providers := mustLoadProviders(t, withKeys(agent.ProviderBedrock))
+
+	model, _, err := startupModel(config.Config{}, providers)
+	if err != nil {
+		t.Fatalf("startupModel: %v", err)
+	}
+	if model != bedrock.Default() {
+		t.Errorf("model = %+v, want the bedrock default", model)
+	}
+}
+
+func TestCatalogOffersTheBedrockModels(t *testing.T) {
+	for _, want := range bedrock.Catalog() {
+		if !slices.Contains(catalog(), want) {
+			t.Errorf("catalog is missing %s", want.Qualified())
+		}
 	}
 }

@@ -29,7 +29,7 @@ func (m model) connect(arg string) (model, tea.Cmd) {
 	// The input it replaces belongs to what it replaces, as with the model list
 	m.input.Reset()
 	m.menu = m.menu.SetQuery("")
-	m.keyEntry = newKeyEntry(provider)
+	m.keyEntry = newKeyEntry(provider, m.config.BedrockRegion())
 	if note := environmentWins(m.config, provider); note != "" {
 		return m, printAbove(transcript.Notice(note, m.width))
 	}
@@ -93,7 +93,7 @@ func (m model) pressDuringKeyEntry(msg tea.KeyPressMsg) (model, tea.Cmd) {
 		return m, cancelled
 	}
 	if key != "" {
-		return m, checkKeyCmd(context.Background(), m.config, entry.provider, key, m.checkKey)
+		return m, checkKeyCmd(context.Background(), m.config, entry.provider, key, entry.chosenRegion(), m.checkKey)
 	}
 	return m, cmd
 }

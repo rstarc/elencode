@@ -14,6 +14,7 @@ import (
 	"github.com/rstarc/elencode/internal/commands"
 	"github.com/rstarc/elencode/internal/config"
 	"github.com/rstarc/elencode/internal/provider/anthropic"
+	"github.com/rstarc/elencode/internal/provider/bedrock"
 	"github.com/rstarc/elencode/internal/provider/openai"
 	"github.com/rstarc/elencode/internal/tools"
 )
@@ -160,7 +161,7 @@ func newChatGPTProvider(cfg config.Config) (agent.Provider, error) {
 // has a key: what to offer is a smaller question than what exists, and naming
 // a model nobody can reach deserves a better answer than "unknown model".
 func catalog() []agent.Model {
-	return slices.Concat(anthropic.Catalog(), openai.Catalog(), openai.ChatGPTCatalog(), anthropic.MoonshotCatalog())
+	return slices.Concat(anthropic.Catalog(), openai.Catalog(), openai.ChatGPTCatalog(), anthropic.MoonshotCatalog(), bedrock.Catalog())
 }
 
 // resolveModel is the model name refers to, if the session can reach it: the
@@ -247,6 +248,8 @@ func defaultModel(providers providerSet) (agent.Model, error) {
 			return openai.ChatGPTDefault(), nil
 		case agent.ProviderMoonshot:
 			return anthropic.MoonshotDefault(), nil
+		case agent.ProviderBedrock:
+			return bedrock.Default(), nil
 		}
 	}
 	return agent.Model{}, errNothingConnected

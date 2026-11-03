@@ -81,6 +81,7 @@ var apiKeyEnvVars = map[agent.ProviderName]string{
 	agent.ProviderAnthropic: "ANTHROPIC_API_KEY",
 	agent.ProviderOpenAI:    "OPENAI_API_KEY",
 	agent.ProviderMoonshot:  "MOONSHOT_API_KEY",
+	agent.ProviderBedrock:   "AWS_BEARER_TOKEN_BEDROCK",
 }
 
 // APIKeyEnvVar names the variable that supplies provider's key, and is empty
@@ -102,6 +103,25 @@ func (c Config) APIKey(provider agent.ProviderName) (Secret, KeySource) {
 		return key, KeyFromCredentials
 	}
 	return "", KeyMissing
+}
+
+// defaultBedrockRegion is where Bedrock is reached when nothing names a
+// region: the one AWS's own examples use, and where models arrive first.
+const defaultBedrockRegion = "us-east-1"
+
+// BedrockRegion is the AWS region Bedrock is reached in. AWS_REGION wins over
+// the region saved with the key, as a key's variable wins over the saved key,
+// and only when it holds something.
+func (c Config) BedrockRegion() string {
+	if c.Env != nil {
+		if val, ok := c.Env("AWS_REGION"); ok && val != "" {
+			return val
+		}
+	}
+	if region := c.Credentials[agent.ProviderBedrock].Region; region != "" {
+		return region
+	}
+	return defaultBedrockRegion
 }
 
 // Save writes the configuration back to c.Path.

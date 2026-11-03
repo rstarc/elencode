@@ -376,3 +376,56 @@ func TestRemoveCredentialChangesOnlyItsProvider(t *testing.T) {
 		t.Error("removed a credential that was not there")
 	}
 }
+
+// AWS's own tools name the key AWS_BEARER_TOKEN_BEDROCK.
+func TestBedrockKeyComesFromItsVariable(t *testing.T) {
+	cfg, err := Load(env(map[string]string{"AWS_BEARER_TOKEN_BEDROCK": realKey}))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	key, source := cfg.APIKey(agent.ProviderBedrock)
+	if key.Reveal() != realKey || source != KeyFromEnv {
+		t.Errorf("APIKey(bedrock) = %v from %v, want the variable's key", key, source)
+	}
+}
+
+func TestBedrockRegion(t *testing.T) {
+	saved := Credentials{agent.ProviderBedrock: {APIKey: realKey, Region: "eu-central-1"}}
+	cases := []struct {
+		name  string
+		env   map[string]string
+		creds Credentials
+		want  string
+	}{
+		{"saved with the key", nil, saved, "eu-central-1"},
+		{"from the environment, over the saved one", map[string]string{"AWS_REGION": "us-west-2"}, saved, "us-west-2"},
+		{"an empty variable does not hide the saved one", map[string]string{"AWS_REGION": ""}, saved, "eu-central-1"},
+		{"none saved", nil, Credentials{agent.ProviderBedrock: {APIKey: realKey}}, "us-east-1"},
+		{"nothing connected", nil, nil, "us-east-1"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := Config{Env: env(c.env), Credentials: c.creds}
+
+			if got := cfg.BedrockRegion(); got != c.want {
+				t.Errorf("BedrockRegion() = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestTheBedrockRegionIsSavedWithTheKey(t *testing.T) {
+	file := path.Join(t.TempDir(), "credentials.json")
+	if _, err := SaveCredential(file, agent.ProviderBedrock, Credential{APIKey: realKey, Region: "eu-central-1"}); err != nil {
+		t.Fatalf("SaveCredential: %v", err)
+	}
+
+	creds, err := LoadCredentials(file)
+	if err != nil {
+		t.Fatalf("LoadCredentials: %v", err)
+	}
+	if got := creds[agent.ProviderBedrock].Region; got != "eu-central-1" {
+		t.Errorf("region = %q, want eu-central-1", got)
+	}
+}

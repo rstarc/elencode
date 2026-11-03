@@ -16,14 +16,22 @@ import (
 // a masked input, the page that issues keys, and why the last key was not
 // taken. Shared by the session and `elencode connect` on a terminal, so both
 // answer the same keys the same way. The zero value is closed.
+//
+// Bedrock asks for a region as well, once the key has been entered.
 type keyEntry struct {
 	provider agent.ProviderName
 	input    textinput.Model
 	checking bool   // a key was submitted and the API has not answered yet
 	problem  string // why the last key was not taken, until another is typed
+
+	region      textinput.Model
+	onRegion    bool   // the key is entered and the region is being typed
+	shownRegion string // what enter alone takes for the region
 }
 
-func newKeyEntry(provider agent.ProviderName) keyEntry {
+// newKeyEntry asks for provider's key. shownRegion is the region Bedrock is
+// offered, and is not used for any other provider.
+func newKeyEntry(provider agent.ProviderName, shownRegion string) keyEntry {
 	input := textinput.New()
 	input.Prompt = "> "
 	// Masked as it is typed or pasted: a key on screen is a key in a
@@ -32,7 +40,26 @@ func newKeyEntry(provider agent.ProviderName) keyEntry {
 	input.EchoCharacter = '•'
 	input.CharLimit = 0
 	input.Focus()
-	return keyEntry{provider: provider, input: input}
+
+	region := textinput.New()
+	region.Prompt = "> "
+	region.CharLimit = 0
+	return keyEntry{provider: provider, input: input, region: region, shownRegion: shownRegion}
+}
+
+// asksRegion reports whether the provider is reached in a region of its own.
+func (e keyEntry) asksRegion() bool { return e.provider == agent.ProviderBedrock }
+
+// chosenRegion is the region to save with the key: what was typed, or the one
+// shown when nothing was. Empty for a provider that takes none.
+func (e keyEntry) chosenRegion() string {
+	if !e.asksRegion() {
+		return ""
+	}
+	if typed := strings.TrimSpace(e.region.Value()); typed != "" {
+		return typed
+	}
+	return e.shownRegion
 }
 
 // open reports whether a key is being asked for.
@@ -50,12 +77,22 @@ func (e keyEntry) press(msg tea.KeyPressMsg) (next keyEntry, submitted string, c
 		if e.checking || key == "" {
 			return e, "", false, nil
 		}
+		if e.asksRegion() && !e.onRegion {
+			e.onRegion = true
+			e.input.Blur()
+			e.region.Focus()
+			return e, "", false, nil
+		}
 		e.checking = true
 		e.problem = ""
 		return e, key, false, nil
 	}
 	if e.checking {
 		return e, "", false, nil
+	}
+	if e.onRegion {
+		e.region, cmd = e.region.Update(msg)
+		return e, "", false, cmd
 	}
 	e.input, cmd = e.input.Update(msg)
 	return e, "", false, cmd
@@ -68,6 +105,10 @@ func (e keyEntry) paste(msg tea.PasteMsg) (keyEntry, tea.Cmd) {
 		return e, nil
 	}
 	var cmd tea.Cmd
+	if e.onRegion {
+		e.region, cmd = e.region.Update(msg)
+		return e, cmd
+	}
 	e.input, cmd = e.input.Update(msg)
 	return e, cmd
 }
@@ -78,6 +119,10 @@ func (e keyEntry) rejected(err error) keyEntry {
 	e.checking = false
 	e.problem = err.Error()
 	e.input.Reset()
+	e.input.Focus()
+	e.region.Reset()
+	e.region.Blur()
+	e.onRegion = false
 	return e
 }
 
@@ -90,10 +135,16 @@ func (e keyEntry) view() string {
 		lines = append(lines, dim.Render("(create one at "+page+")"))
 	}
 	lines = append(lines, "", e.input.View())
+	if e.onRegion {
+		lines = append(lines, "", "AWS region ("+e.shownRegion+")", "", e.region.View())
+	}
 	if e.problem != "" {
 		lines = append(lines, lipgloss.NewStyle().Foreground(problemColor).Render(e.problem))
 	}
 	hint := "enter save · esc cancel"
+	if e.asksRegion() && !e.onRegion {
+		hint = "enter next · esc cancel"
+	}
 	if e.checking {
 		hint = "checking the key..."
 	}
@@ -111,9 +162,9 @@ type keyCheckedMsg struct {
 
 // checkKeyCmd checks key and saves it, off the update loop: the check is a
 // request to the API.
-func checkKeyCmd(ctx context.Context, cfg config.Config, provider agent.ProviderName, key string, check keyCheck) tea.Cmd {
+func checkKeyCmd(ctx context.Context, cfg config.Config, provider agent.ProviderName, key, region string, check keyCheck) tea.Cmd {
 	return func() tea.Msg {
-		connected, unchecked, err := connectKey(ctx, cfg, provider, key, check)
+		connected, unchecked, err := connectKey(ctx, cfg, provider, key, region, check)
 		return keyCheckedMsg{provider: provider, cfg: connected, unchecked: unchecked, err: err}
 	}
 }

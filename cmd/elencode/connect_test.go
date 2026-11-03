@@ -118,7 +118,7 @@ func TestConnectKeySavesAKeyTheAPIAccepts(t *testing.T) {
 	cfg := connectionConfig(t, config.Credentials{agent.ProviderOpenAI: {APIKey: "sk-oai"}})
 	check := &fakeCheck{}
 
-	connected, unchecked, err := connectKey(context.Background(), cfg, agent.ProviderAnthropic, "sk-ant", check.check)
+	connected, unchecked, err := connectKey(context.Background(), cfg, agent.ProviderAnthropic, "sk-ant", "", check.check)
 	if err != nil || unchecked != nil {
 		t.Fatalf("connectKey = %v, %v", unchecked, err)
 	}
@@ -142,7 +142,7 @@ func TestConnectKeyDoesNotSaveARejectedKey(t *testing.T) {
 	cfg := connectionConfig(t, nil)
 	check := &fakeCheck{answers: map[string]error{"sk-typo": errRejected}}
 
-	_, _, err := connectKey(context.Background(), cfg, agent.ProviderAnthropic, "sk-typo", check.check)
+	_, _, err := connectKey(context.Background(), cfg, agent.ProviderAnthropic, "sk-typo", "", check.check)
 	if !errors.Is(err, agent.ErrKeyRejected) {
 		t.Errorf("err = %v, want the rejection", err)
 	}
@@ -158,7 +158,7 @@ func TestConnectKeySavesAKeyItCouldNotCheck(t *testing.T) {
 	offline := errors.New("dial tcp: no route to host")
 	check := &fakeCheck{answers: map[string]error{"sk-ant": offline}}
 
-	_, unchecked, err := connectKey(context.Background(), cfg, agent.ProviderAnthropic, "sk-ant", check.check)
+	_, unchecked, err := connectKey(context.Background(), cfg, agent.ProviderAnthropic, "sk-ant", "", check.check)
 	if err != nil {
 		t.Fatalf("connectKey: %v", err)
 	}
@@ -172,7 +172,7 @@ func TestConnectKeySavesAKeyItCouldNotCheck(t *testing.T) {
 
 func TestConnectKeyRefusesAnEmptyKey(t *testing.T) {
 	check := &fakeCheck{}
-	if _, _, err := connectKey(context.Background(), connectionConfig(t, nil), agent.ProviderAnthropic, "", check.check); err == nil {
+	if _, _, err := connectKey(context.Background(), connectionConfig(t, nil), agent.ProviderAnthropic, "", "", check.check); err == nil {
 		t.Error("connectKey accepted an empty key")
 	}
 	if len(check.asked) != 0 {
@@ -236,7 +236,7 @@ func TestDisconnectKeyWithoutAKeySaysSo(t *testing.T) {
 func runConnectKeyFromPipe(t *testing.T, cfg config.Config, provider agent.ProviderName, stdin string, check keyCheck) (string, error) {
 	t.Helper()
 	var out bytes.Buffer
-	err := runConnectKey(context.Background(), cfg, provider, strings.NewReader(stdin), nil, &out, check)
+	err := runConnectKey(context.Background(), cfg, provider, strings.NewReader(stdin), nil, nil, &out, check)
 	return out.String(), err
 }
 
@@ -338,7 +338,7 @@ func TestConnectKeyKeepsWhatAnotherSessionSaved(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := connectKey(context.Background(), cfg, agent.ProviderAnthropic, "sk-ant", (&fakeCheck{}).check); err != nil {
+	if _, _, err := connectKey(context.Background(), cfg, agent.ProviderAnthropic, "sk-ant", "", (&fakeCheck{}).check); err != nil {
 		t.Fatalf("connectKey: %v", err)
 	}
 
@@ -422,7 +422,7 @@ func TestConnectCLIOnATerminalAsksAgainAfterARejection(t *testing.T) {
 	}
 	var out bytes.Buffer
 
-	err := runConnectKey(context.Background(), cfg, agent.ProviderAnthropic, strings.NewReader(""), readSecret, &out, check.check)
+	err := runConnectKey(context.Background(), cfg, agent.ProviderAnthropic, strings.NewReader(""), readSecret, nil, &out, check.check)
 	if err != nil {
 		t.Fatalf("runConnectKey: %v", err)
 	}
@@ -447,8 +447,104 @@ func TestConnectCLIOnATerminalCanBeCancelled(t *testing.T) {
 	cfg := connectionConfig(t, nil)
 	readSecret := func() (string, error) { return "", errConnectCancelled }
 
-	err := runConnectKey(context.Background(), cfg, agent.ProviderAnthropic, strings.NewReader(""), readSecret, &bytes.Buffer{}, (&fakeCheck{}).check)
+	err := runConnectKey(context.Background(), cfg, agent.ProviderAnthropic, strings.NewReader(""), readSecret, nil, &bytes.Buffer{}, (&fakeCheck{}).check)
 	if !errors.Is(err, errConnectCancelled) {
 		t.Errorf("err = %v, want it cancelled", err)
+	}
+}
+
+func TestConnectKeySavesTheBedrockRegionWithTheKey(t *testing.T) {
+	cfg := connectionConfig(t, nil)
+
+	connected, _, err := connectKey(context.Background(), cfg, agent.ProviderBedrock, "ABSKkey", " eu-central-1 ", (&fakeCheck{}).check)
+	if err != nil {
+		t.Fatalf("connectKey: %v", err)
+	}
+	saved := savedCredentials(t, cfg)[agent.ProviderBedrock]
+	if saved.APIKey != "ABSKkey" || saved.Region != "eu-central-1" {
+		t.Errorf("saved %+v, want the key and the region", saved)
+	}
+	if got := connected.BedrockRegion(); got != "eu-central-1" {
+		t.Errorf("region = %q, want the one saved", got)
+	}
+}
+
+// Bedrock has no request that tries a key without running a model, which
+// costs money. The key is saved as one that could not be checked.
+func TestABedrockKeyIsNotChecked(t *testing.T) {
+	err := checkWithAPI(context.Background(), agent.ProviderBedrock, "ABSKkey")
+	if err == nil || errors.Is(err, agent.ErrKeyRejected) {
+		t.Errorf("err = %v, want one saying the key was not checked", err)
+	}
+}
+
+// On a terminal, connecting Bedrock asks for the region after the key, offering
+// the one in use; a piped key leaves it to $AWS_REGION, or the default.
+func TestConnectCLIOnATerminalAsksForTheBedrockRegion(t *testing.T) {
+	cases := []struct {
+		typed string
+		want  string
+	}{
+		{"eu-central-1", "eu-central-1"},
+		{"", "us-east-1"},
+	}
+	for _, c := range cases {
+		t.Run(c.want, func(t *testing.T) {
+			cfg := connectionConfig(t, nil)
+			readSecret := func() (string, error) { return "ABSKkey", nil }
+			readLine := func() (string, error) { return c.typed, nil }
+			var out bytes.Buffer
+
+			err := runConnectKey(context.Background(), cfg, agent.ProviderBedrock, strings.NewReader(""), readSecret, readLine, &out, (&fakeCheck{}).check)
+			if err != nil {
+				t.Fatalf("runConnectKey: %v", err)
+			}
+			if saved := savedCredentials(t, cfg)[agent.ProviderBedrock]; saved.Region != c.want {
+				t.Errorf("region = %q, want %q", saved.Region, c.want)
+			}
+			for _, want := range []string{"Paste your Amazon Bedrock API key", "AWS region (us-east-1)", "Connected bedrock"} {
+				if !strings.Contains(out.String(), want) {
+					t.Errorf("output does not mention %q:\n%s", want, out.String())
+				}
+			}
+		})
+	}
+}
+
+func TestConnectCLIFromAPipeDoesNotAskForTheBedrockRegion(t *testing.T) {
+	cfg := connectionConfig(t, nil)
+
+	if _, err := runConnectKeyFromPipe(t, cfg, agent.ProviderBedrock, "ABSKkey\n", (&fakeCheck{}).check); err != nil {
+		t.Fatalf("runConnectKey: %v", err)
+	}
+	if saved := savedCredentials(t, cfg)[agent.ProviderBedrock]; saved.APIKey != "ABSKkey" || saved.Region != "" {
+		t.Errorf("saved %+v, want the key without a region", saved)
+	}
+}
+
+func TestProviderStatusesShowTheBedrockRegion(t *testing.T) {
+	statusOf := func(cfg config.Config) string {
+		for _, status := range providerStatuses(cfg) {
+			if status.provider == agent.ProviderBedrock {
+				return status.description()
+			}
+		}
+		t.Fatal("bedrock is not listed")
+		return ""
+	}
+
+	if got, want := statusOf(config.Config{}), "not connected · API key and region"; got != want {
+		t.Errorf("not connected: %q, want %q", got, want)
+	}
+	saved := config.Config{Credentials: config.Credentials{agent.ProviderBedrock: {APIKey: "ABSKkey", Region: "eu-central-1"}}}
+	if got, want := statusOf(saved), "connected · API key in credentials.json · eu-central-1"; got != want {
+		t.Errorf("saved: %q, want %q", got, want)
+	}
+	saved.Env = func(name string) (string, bool) {
+		value, ok := map[string]string{"AWS_BEARER_TOKEN_BEDROCK": "ABSKenv", "AWS_REGION": "us-west-2"}[name]
+		return value, ok
+	}
+	if got, want := statusOf(saved), "connected · API key from $AWS_BEARER_TOKEN_BEDROCK · us-west-2"; got != want {
+		t.Errorf("from the environment: %q, want %q", got, want)
 	}
 }
