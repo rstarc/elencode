@@ -10,6 +10,7 @@
   <a href="https://github.com/rstarc/elencode/actions/workflows/ci.yml"><img alt="CI status" src="https://github.com/rstarc/elencode/actions/workflows/ci.yml/badge.svg?branch=main"></a>
   <a href="https://github.com/rstarc/elencode/tags"><img alt="Latest version" src="https://img.shields.io/github/v/tag/rstarc/elencode?sort=semver&label=version"></a>
   <a href="go.mod"><img alt="Go version" src="https://img.shields.io/github/go-mod/go-version/rstarc/elencode"></a>
+  <a href="LICENSE"><img alt="License: MIT" src="https://img.shields.io/github/license/rstarc/elencode"></a>
 </p>
 
 # elencode - Coding Agent in Go
