@@ -23,6 +23,9 @@ const (
 	// ProviderMoonshot is Moonshot AI's Kimi models, spoken to through Kimi's
 	// Anthropic-compatible Messages API.
 	ProviderMoonshot ProviderName = "moonshot"
+	// ProviderBedrock is the models an AWS account runs on Amazon Bedrock,
+	// spoken to through the Converse API, which is the same for all of them.
+	ProviderBedrock ProviderName = "bedrock"
 )
 
 // Providers is every provider elencode can talk to, in the order it prefers
@@ -30,7 +33,7 @@ const (
 // was found for more than one and the config named no model. ChatGPT comes
 // before openai: signing in is a deliberate act, and it spends a plan already
 // paid for rather than API credits.
-var Providers = []ProviderName{ProviderAnthropic, ProviderChatGPT, ProviderOpenAI, ProviderMoonshot}
+var Providers = []ProviderName{ProviderAnthropic, ProviderChatGPT, ProviderOpenAI, ProviderMoonshot, ProviderBedrock}
 
 // Model is one model a provider offers, as shown in the picker
 type Model struct {
