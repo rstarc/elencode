@@ -3,7 +3,7 @@
 A **provider** is a service that runs models for elencode. A **model** belongs to exactly
 one provider, and is written `provider/model` wherever that matters:
 `anthropic/claude-opus-5`, `openai/gpt-5.5`, `chatgpt/gpt-6.1-sol`, `moonshot/kimi-k3`,
-`bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0`.
+`bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0`.
 
 | Provider | What you need |
 |---|---|
@@ -70,6 +70,10 @@ enter save · esc cancel
 A Bedrock API key is either long-term, which lasts until it expires or you delete it, or
 short-term, which lasts up to 12 hours. Once a short-term key runs out, connect again
 with a new one. The key and the region are saved together.
+
+A Bedrock API key is the only way elencode connects to Bedrock. It does not use your
+other AWS credentials: AWS profiles, access keys and AWS SSO (IAM Identity Center)
+sign-ins are not supported.
 
 **With ChatGPT**, elencode opens the sign-in page in your browser. Sign in there and come
 back. `c` copies the link if the browser did not open.
@@ -186,23 +190,30 @@ Moonshot's Kimi models always reason, whatever `thinking_enabled` says. Only `ki
 takes a `thinking_effort`, and only `low`, `high` and `max`: `medium` is sent as
 `high`, and `xhigh` as `max`.
 
-Models on Amazon Bedrock do not reason in elencode yet: `thinking_enabled`,
-`thinking_effort` and `/effort` have no effect on them.
+On Amazon Bedrock, a model reasons as it would anywhere else, and its reasoning shows
+in the transcript. Anthropic's Claude models and OpenAI's gpt-oss models take
+`thinking_enabled` and `thinking_effort`. gpt-oss takes only `low`, `medium` and
+`high`: `xhigh` and `max` are sent as `high`. Bedrock's other reasoning models, such as
+DeepSeek-R1, always reason, and their reasoning cannot be set.
 
 ### Models on Amazon Bedrock
 
-`/model` lists the Bedrock models elencode ships with. Bedrock only runs a model your
-AWS account has been given access to, in the region you connected with. Grant access
-in the Bedrock console under *Model access*.
+`/model` lists the Bedrock models elencode ships with, under the ids Bedrock gives them:
+`bedrock/anthropic.claude-sonnet-4-5-20250929-v1:0`. Bedrock only runs a model your AWS
+account has been given access to, in the region you connected with. Grant access in
+the Bedrock console under *Model access*.
 
-Most newer models run only through an **inference profile**, which spreads requests
-across several regions. Its id is the model's id with a prefix: `us.`, `eu.` or `apac.`
-for the regions of one geography, `global.` for any region. The ids `/model` lists are
-inference profiles where the model needs one.
+Many models run only through an **inference profile**, which spreads requests across
+several regions. A profile's id is the model's id with a prefix: `us.`, `eu.` or `apac.`
+for the regions of one geography, or `global.` for any region. For a model it ships
+with, elencode picks the profile for your region's geography itself, so a model
+connected in `eu-central-1` runs as `eu.anthropic.claude-sonnet-4-5-20250929-v1:0`.
 
-Any other model or inference profile Bedrock offers is reachable by its id:
+Any other model or inference profile Bedrock offers is reachable by its id, and is used
+exactly as written:
 
 ```
+/model bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0
 /model bedrock/amazon.nova-pro-v1:0
 /model bedrock/arn:aws:bedrock:eu-central-1:123456789012:application-inference-profile/abc123
 ```
@@ -265,8 +276,8 @@ program, `HTTPS_PROXY`, `NO_PROXY` and `SSL_CERT_FILE` apply to the network conn
 - **`bedrock: you don't have access to the model …`.** Your AWS account has not been
   given access to it in this region. Grant it in the Bedrock console under
   *Model access*.
-- **`bedrock: on-demand throughput isn't supported for …`.** The model runs only
-  through an inference profile. Use its id with a `us.`, `eu.`, `apac.` or `global.`
-  prefix.
+- **`bedrock: on-demand throughput isn't supported for …`.** You named a model that
+  runs only through an inference profile. Name its id with a `us.`, `eu.`, `apac.` or
+  `global.` prefix instead.
 - **ChatGPT says you are signed out.** The sign-in expired or was revoked. Run
   `elencode connect chatgpt` again.
